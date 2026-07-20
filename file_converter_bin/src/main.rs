@@ -1,4 +1,5 @@
 #![allow(clippy::all, warnings)]
+#![windows_subsystem = "windows"]
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
