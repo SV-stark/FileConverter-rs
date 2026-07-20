@@ -116,10 +116,36 @@ struct FileConverterApp {
     user_xml_path: PathBuf,
     selected_preset_index: usize,
     status_msg: String,
+    dark_mode: bool,
 }
 
 impl eframe::App for FileConverterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Handle Drag & Drop Files
+        let dropped_files = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        if !dropped_files.is_empty() {
+            let file_paths: Vec<String> = dropped_files
+                .iter()
+                .filter_map(|f| f.path.as_ref().map(|p| p.to_string_lossy().to_string()))
+                .collect();
+            if !file_paths.is_empty()
+                && self.selected_preset_index < self.settings.conversion_presets.len()
+            {
+                let preset_name = self.settings.conversion_presets[self.selected_preset_index]
+                    .name
+                    .clone();
+                let mut cmd_args = vec![
+                    "fcrs".to_string(),
+                    "--conversion-preset".to_string(),
+                    preset_name,
+                ];
+                cmd_args.extend(file_paths);
+                thread::spawn(move || {
+                    run_conversion_gui(cmd_args);
+                });
+            }
+        }
+
         // Top Header Frame
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -134,10 +160,35 @@ impl eframe::App for FileConverterApp {
                     if ui.button("⚙️ Register Shell Extension").clicked() {
                         self.status_msg = register_shell_extension_dll();
                     }
+                    if ui.selectable_label(self.dark_mode, "🌙 Dark").clicked() {
+                        self.dark_mode = true;
+                        ui.ctx().set_visuals(egui::Visuals::dark());
+                    }
+                    if ui.selectable_label(!self.dark_mode, "☀️ Light").clicked() {
+                        self.dark_mode = false;
+                        ui.ctx().set_visuals(egui::Visuals::light());
+                    }
                 });
             });
 
             ui.separator();
+
+            // Drag and Drop Zone
+            egui::Frame::group(ui.style())
+                .fill(if self.dark_mode {
+                    egui::Color32::from_rgb(30, 35, 45)
+                } else {
+                    egui::Color32::from_rgb(240, 245, 250)
+                })
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("📂 Drag & Drop Files Here to Convert").strong(),
+                        );
+                        ui.add_space(4.0);
+                    });
+                });
 
             ui.horizontal(|ui| {
                 ui.label("Max Concurrency:");
@@ -359,6 +410,7 @@ fn run_settings_native_gui() {
         user_xml_path,
         selected_preset_index: 0,
         status_msg: "Ready".to_string(),
+        dark_mode: true,
     };
 
     let _ = eframe::run_native(
