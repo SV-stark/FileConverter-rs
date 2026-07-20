@@ -20,27 +20,24 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Compile Workspace in Release Mode
         run: cargo build --release --workspace
 
-      - name: Compile NSIS Installer Setup
-        run: makensis installer.nsi
+      - name: Create Portable Zip Package
+        run: |
+          Compress-Archive -Path "target\release\file_converter_bin.exe", "target\release\file_converter_shell.dll" -DestinationPath "FileConverter_Portable.zip"
 
-      - name: Create GitHub Release and Upload Installer
+      - name: Compile NSIS Installer Setup
+        uses: joncloud/makensis-action@v4
+        with:
+          script-file: installer.nsi
+
+      - name: Create GitHub Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: FileConverter_Setup.exe
+          files: |
+            FileConverter_Setup.exe
+            FileConverter_Portable.zip
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
