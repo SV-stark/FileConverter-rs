@@ -274,6 +274,12 @@ struct FileConverterShell {
     shell_ext_vtbl: *const IShellExtInitVtbl,
     ref_count: AtomicU32,
     selected_files: Vec<String>,
+    /// Preset names in the order their menu IDs were assigned during QueryContextMenu.
+    /// Index == (lpVerb offset from idCmdFirst) for a conversion item.
+    active_presets: Vec<String>,
+    /// The lpVerb offset that maps to the "Configure..." item (only valid when a
+    /// submenu was built, i.e. more than 5 presets).
+    configure_cmd_offset: Option<usize>,
 }
 
 static CONTEXT_MENU_VTBL: IContextMenuVtbl = IContextMenuVtbl {
@@ -356,6 +362,7 @@ unsafe extern "system" fn FileConverterShell_Release(this: *mut c_void) -> ULONG
     let count = (*this).ref_count.fetch_sub(1, Ordering::AcqRel) - 1;
     if count == 0 {
         std::ptr::drop_in_place(&mut (*this).selected_files);
+        std::ptr::drop_in_place(&mut (*this).active_presets);
         let layout = std::alloc::Layout::new::<FileConverterShell>();
         std::alloc::dealloc(this as *mut u8, layout);
         G_OBJECT_COUNT.fetch_sub(1, Ordering::Relaxed);
@@ -505,13 +512,9 @@ fn is_compatible(output_type: OutputType, category: &str) -> bool {
     }
 }
 
-struct PresetMenuInfo {
-    name: String,
-    id: u32,
-}
-
-static G_ACTIVE_PRESETS: LazyLock<RwLock<Vec<PresetMenuInfo>>> =
-    LazyLock::new(|| RwLock::new(Vec::new()));
+// (PresetMenuInfo and G_ACTIVE_PRESETS removed – state is now stored per-instance
+// in FileConverterShell::active_presets / configure_cmd_offset to avoid races
+// between concurrent COM objects sharing the old global.)
 
 unsafe extern "system" fn FileConverterShell_QueryContextMenu(
     this: *mut c_void,
@@ -555,26 +558,26 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
         return S_FALSE;
     }
 
-    let mut active_presets = G_ACTIVE_PRESETS.write().unwrap();
-    active_presets.clear();
-
-    let cmd_id = idCmdFirst;
-    for (i, p) in compatible_presets.iter().enumerate() {
-        active_presets.push(PresetMenuInfo {
-            name: p.name.clone(),
-            id: cmd_id + i as u32,
-        });
+    // Store preset names on this instance so InvokeCommand always sees the list
+    // that was used when building the menu, even if another COM object is alive
+    // concurrently.
+    (*this).active_presets.clear();
+    for p in &compatible_presets {
+        (*this).active_presets.push(p.name.clone());
     }
+    (*this).configure_cmd_offset = None;
 
-    let presets_count = active_presets.len();
+    let presets_count = compatible_presets.len();
+    let cmd_id = idCmdFirst;
     let configure_cmd_id = cmd_id + presets_count as u32;
 
     let parent_text = "File Converter\0";
     let parent_text_wide: Vec<u16> = parent_text.encode_utf16().collect();
 
     if presets_count <= 5 {
-        for (i, info) in active_presets.iter().enumerate() {
-            let mut name_wide: Vec<u16> = info.name.encode_utf16().collect();
+        // Flat items directly on the context menu – no "Configure..." here.
+        for (i, preset) in compatible_presets.iter().enumerate() {
+            let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
             name_wide.push(0);
 
             let mii = MENUITEMINFOW {
@@ -582,7 +585,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
                 fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
                 fType: MFT_STRING,
                 fState: 0,
-                wID: info.id,
+                wID: cmd_id + i as u32,
                 hSubMenu: std::ptr::null_mut(),
                 hbmpChecked: std::ptr::null_mut(),
                 hbmpUnchecked: std::ptr::null_mut(),
@@ -595,16 +598,16 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             InsertMenuItemW(hmenu, indexMenu + i as u32, 1, &mii);
         }
 
-        let count_inserted = presets_count as i32;
-        (count_inserted).into()
+        (presets_count as i32).into()
     } else {
+        // Cascading submenu with all presets + separator + "Configure..."
         let h_sub_menu = CreatePopupMenu();
         if h_sub_menu.is_null() {
             return E_FAIL;
         }
 
-        for (i, info) in active_presets.iter().enumerate() {
-            let mut name_wide: Vec<u16> = info.name.encode_utf16().collect();
+        for (i, preset) in compatible_presets.iter().enumerate() {
+            let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
             name_wide.push(0);
 
             let mii = MENUITEMINFOW {
@@ -612,7 +615,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
                 fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
                 fType: MFT_STRING,
                 fState: 0,
-                wID: info.id,
+                wID: cmd_id + i as u32,
                 hSubMenu: std::ptr::null_mut(),
                 hbmpChecked: std::ptr::null_mut(),
                 hbmpUnchecked: std::ptr::null_mut(),
@@ -659,6 +662,9 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
         };
         InsertMenuItemW(h_sub_menu, (presets_count + 1) as u32, 1, &config_mii);
 
+        // Record which verb offset corresponds to "Configure..."
+        (*this).configure_cmd_offset = Some(presets_count);
+
         let parent_mii = MENUITEMINFOW {
             cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
             fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_FTYPE,
@@ -676,8 +682,9 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
 
         InsertMenuItemW(hmenu, indexMenu, 1, &parent_mii);
 
-        let total_commands = presets_count as i32 + 2;
-        (total_commands).into()
+        // IDs used: preset[0..N] + configure = N+1 commands total
+        // (separator has no ID so doesn't count)
+        (presets_count as i32 + 1).into()
     }
 }
 
@@ -690,14 +697,27 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         return E_FAIL;
     }
 
+    // lpVerb is a MAKEINTRESOURCE value when its high word is 0 – the low word
+    // is the zero-based offset from idCmdFirst that was returned by QueryContextMenu.
     let verb_val = (*pici).lpVerb as usize;
-    let low_word_verb = verb_val & 0xFFFF;
+    if verb_val >> 16 != 0 {
+        // String verb – not handled
+        return E_FAIL;
+    }
+    let verb_offset = verb_val & 0xFFFF;
 
-    let active_presets = G_ACTIVE_PRESETS.read().unwrap();
-    let presets_count = active_presets.len();
+    // Use per-instance state populated during QueryContextMenu so we are immune
+    // to concurrent shell objects overwriting the previously-global preset list.
+    let presets_count = (*this).active_presets.len();
 
-    if low_word_verb < presets_count {
-        let preset_name = &active_presets[low_word_verb].name;
+    if presets_count == 0 {
+        // QueryContextMenu was never called on this instance – nothing to do.
+        return E_FAIL;
+    }
+
+    if verb_offset < presets_count {
+        // A conversion preset was chosen.
+        let preset_name = (&(*this).active_presets)[verb_offset].clone();
 
         let bin_path = get_bin_path();
         if !bin_path.exists() {
@@ -705,7 +725,7 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         }
 
         let mut cmd = Command::new(&bin_path);
-        cmd.arg("--conversion-preset").arg(preset_name);
+        cmd.arg("--conversion-preset").arg(&preset_name);
 
         let mut total_len = preset_name.len() + 30;
         for file in &(*this).selected_files {
@@ -739,8 +759,8 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         } else {
             E_FAIL
         }
-    } else if low_word_verb == presets_count {
-        // "Configure..." command clicked!
+    } else if (*this).configure_cmd_offset == Some(verb_offset) {
+        // "Configure..." item from the submenu was chosen.
         let bin_path = get_bin_path();
         if bin_path.exists() {
             let _ = Command::new(&bin_path).arg("-settings").spawn();
@@ -877,6 +897,8 @@ unsafe extern "system" fn ClassFactory_CreateInstance(
             shell_ext_vtbl: &SHELL_EXT_VTBL,
             ref_count: AtomicU32::new(1),
             selected_files: Vec::new(),
+            active_presets: Vec::new(),
+            configure_cmd_offset: None,
         },
     );
 
