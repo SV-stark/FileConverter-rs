@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
 
-use file_converter_core::settings::Settings;
+use file_converter_core::settings::{ConversionPreset, Settings};
 use file_converter_core::types::OutputType;
 
 // Standard Win32 Types and Constants
@@ -512,9 +512,29 @@ fn is_compatible(output_type: OutputType, category: &str) -> bool {
     }
 }
 
-// (PresetMenuInfo and G_ACTIVE_PRESETS removed – state is now stored per-instance
-// in FileConverterShell::active_presets / configure_cmd_offset to avoid races
-// between concurrent COM objects sharing the old global.)
+fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) -> bool {
+    let ext = Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext.is_empty() {
+        return true;
+    }
+
+    if !preset.input_types.is_empty() {
+        if preset.input_types.iter().any(|it| {
+            let clean_it = it.trim().trim_start_matches('.').to_lowercase();
+            clean_it == "*" || clean_it == ext
+        }) {
+            return true;
+        }
+    }
+
+    let cat = get_extension_category(&ext);
+    is_compatible(preset.output_type, cat)
+}
 
 unsafe extern "system" fn FileConverterShell_QueryContextMenu(
     this: *mut c_void,
@@ -532,25 +552,14 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
     let mut settings = get_cached_settings();
     settings.merge(create_default_settings());
 
-    let categories: Vec<String> = (*this)
-        .selected_files
-        .iter()
-        .map(|f| {
-            let ext = Path::new(f)
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
-            get_extension_category(&ext.to_lowercase()).to_string()
-        })
-        .collect();
-
     let compatible_presets: Vec<_> = settings
         .conversion_presets
         .into_iter()
         .filter(|preset| {
-            categories
+            (*this)
+                .selected_files
                 .iter()
-                .all(|cat| is_compatible(preset.output_type, cat))
+                .all(|file| is_preset_compatible_with_file(preset, file))
         })
         .collect();
 
@@ -727,9 +736,10 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
             .conversion_presets
             .into_iter()
             .filter(|preset| {
-                categories
+                (*this)
+                    .selected_files
                     .iter()
-                    .all(|cat| is_compatible(preset.output_type, cat))
+                    .all(|file| is_preset_compatible_with_file(preset, file))
             })
             .map(|p| p.name)
             .collect();
