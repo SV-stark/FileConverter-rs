@@ -1,3 +1,9 @@
+//! Pure-Rust High Performance Image & PDF Rasterization Engine.
+//!
+//! Replaces legacy ImageMagick bindings with zero-copy memory-mapped file I/O (`memmap2`),
+//! native HEIC/HEIF decoding (`heic`), SIMD-accelerated resizing (`fast_image_resize`),
+//! and multi-core PDF page rendering (`hayro` + `rayon`).
+
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +20,7 @@ use fast_image_resize::{PixelType, Resizer, images::Image};
 use heic::{DecoderConfig, PixelLayout};
 use memmap2::Mmap;
 
+/// Returns total page count of a PDF document using memory-mapped parsing.
 pub fn get_pdf_page_count(input_path: &str) -> Result<usize, String> {
     let file =
         std::fs::File::open(input_path).map_err(|e| format!("Failed to open PDF file: {:?}", e))?;
@@ -27,6 +34,7 @@ pub fn get_pdf_page_count(input_path: &str) -> Result<usize, String> {
     Ok(pdf.pages().len())
 }
 
+/// Retrieves image dimensions (width, height) without full image decoding.
 pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32), String> {
     let ext = Path::new(input_path)
         .extension()
@@ -53,6 +61,7 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32), String> {
     Ok(img.dimensions())
 }
 
+/// Resizes images using CPU SIMD vectors (AVX2/NEON/SSE4.1) via `fast_image_resize`.
 fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage, String> {
     let rgba_img = img.to_rgba8();
     let src_image = Image::from_vec_u8(
@@ -77,7 +86,8 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
     Ok(DynamicImage::ImageRgba8(rgba_buf))
 }
 
-pub fn run_imagemagick_conversion(
+/// Executes image and PDF page conversion operations.
+pub fn run_image_conversion(
     preset: &ConversionPreset,
     input_path: &str,
     output_file_paths: &[String],
@@ -106,7 +116,6 @@ pub fn run_imagemagick_conversion(
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(1.0);
 
-        // We set up the hayro PDF rendering interpreter settings
         let interp_settings = InterpreterSettings {
             font_resolver: Arc::new(|query| match query {
                 FontQuery::Standard(s) => Some(s.get_font_data()),
@@ -258,9 +267,7 @@ fn save_image(
         OutputType::Gif => ImageFormat::Gif,
         OutputType::Webp => ImageFormat::WebP,
         OutputType::Ico => ImageFormat::Ico,
-        OutputType::Pdf => {
-            ImageFormat::Png // default fallback
-        }
+        OutputType::Pdf => ImageFormat::Png,
         _ => ImageFormat::Png,
     };
 

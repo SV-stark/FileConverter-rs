@@ -1331,7 +1331,7 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
 name = "file_converter_bin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "eframe",
  "file_converter_core",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "chrono",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_shell"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "file_converter_core",
  "winreg",

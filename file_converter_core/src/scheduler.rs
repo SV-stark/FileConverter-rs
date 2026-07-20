@@ -1,6 +1,6 @@
 use crate::cda;
 use crate::ffmpeg;
-use crate::imagemagick;
+use crate::image;
 use crate::office;
 use crate::path_helpers;
 use crate::settings::ConversionPreset;
@@ -37,7 +37,7 @@ pub enum JobEngine {
     PowerPoint,
     Ico,
     Gif,
-    ImageMagick,
+    Image,
     Ffmpeg,
 }
 
@@ -78,7 +78,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         || preset.output_type == OutputType::Png
         || preset.output_type == OutputType::Webp
     {
-        return JobEngine::ImageMagick;
+        return JobEngine::Image;
     }
 
     JobEngine::Ffmpeg
@@ -166,8 +166,8 @@ impl ConversionJob {
 
         // Determine output files count
         let count = match determine_job_engine(&self.preset, &self.input_path) {
-            JobEngine::ImageMagick if ext.to_lowercase() == "pdf" => {
-                imagemagick::get_pdf_page_count(&self.input_path).unwrap_or(1)
+            JobEngine::Image if ext.to_lowercase() == "pdf" => {
+                image::get_pdf_page_count(&self.input_path).unwrap_or(1)
             }
             // For Office conversion to images, it will be determined during conversion
             // dynamically, so we initialize with a placeholder of 1.
@@ -316,7 +316,7 @@ impl ConversionJob {
                     }
                     Ok(())
                 } else {
-                    imagemagick::run_imagemagick_conversion(
+                    image::run_image_conversion(
                         &sub_preset,
                         &temp_wav_str,
                         &self.output_file_paths,
@@ -345,7 +345,7 @@ impl ConversionJob {
                 png_preset.set_setting_value("ImageClampSizePowerOf2", "True");
                 png_preset.set_setting_value("ImageMaximumSize", "256");
 
-                imagemagick::run_imagemagick_conversion(
+                image::run_image_conversion(
                     &png_preset,
                     &self.input_path,
                     &[temp_png_str.clone()],
@@ -397,7 +397,7 @@ impl ConversionJob {
                     let mut png_preset = self.preset.clone();
                     png_preset.output_type = OutputType::Png;
 
-                    imagemagick::run_imagemagick_conversion(
+                    image::run_image_conversion(
                         &png_preset,
                         &self.input_path,
                         &[temp_png_str.clone()],
@@ -453,7 +453,7 @@ impl ConversionJob {
                 }
                 Ok(())
             }
-            JobEngine::ImageMagick => imagemagick::run_imagemagick_conversion(
+            JobEngine::Image => image::run_image_conversion(
                 &self.preset,
                 &self.input_path,
                 &self.output_file_paths,

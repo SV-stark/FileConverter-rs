@@ -1,4 +1,4 @@
-use crate::imagemagick;
+use crate::image;
 use crate::settings::ConversionPreset;
 use std::path::Path;
 use std::process::Command;
@@ -123,7 +123,7 @@ pub fn run_office_conversion(
         convert_office_to_pdf(app_name, input_path, &temp_pdf_str)?;
 
         // Convert intermediate PDF to images
-        let conversion_res = imagemagick::run_imagemagick_conversion(
+        let conversion_res = image::run_image_conversion(
             preset,
             &temp_pdf_str,
             output_file_paths,

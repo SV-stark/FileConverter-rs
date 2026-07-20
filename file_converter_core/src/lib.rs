@@ -1,7 +1,7 @@
 #![allow(clippy::all, warnings)]
 pub mod cda;
 pub mod ffmpeg;
-pub mod imagemagick;
+pub mod image;
 pub mod office;
 pub mod path_helpers;
 pub mod scheduler;
