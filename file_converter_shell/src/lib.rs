@@ -287,10 +287,22 @@ static CONTEXT_MENU_VTBL: IContextMenuVtbl = IContextMenuVtbl {
 
 static SHELL_EXT_VTBL: IShellExtInitVtbl = IShellExtInitVtbl {
     QueryInterface: FileConverterShell_QueryInterface_ShellExt,
-    AddRef: FileConverterShell_AddRef,
-    Release: FileConverterShell_Release,
+    AddRef: ShellExt_AddRef,
+    Release: ShellExt_Release,
     Initialize: FileConverterShell_Initialize,
 };
+
+unsafe extern "system" fn ShellExt_AddRef(this: *mut c_void) -> ULONG {
+    let offset = std::mem::offset_of!(FileConverterShell, shell_ext_vtbl);
+    let obj = (this as usize - offset) as *mut FileConverterShell;
+    FileConverterShell_AddRef(obj as *mut c_void)
+}
+
+unsafe extern "system" fn ShellExt_Release(this: *mut c_void) -> ULONG {
+    let offset = std::mem::offset_of!(FileConverterShell, shell_ext_vtbl);
+    let obj = (this as usize - offset) as *mut FileConverterShell;
+    FileConverterShell_Release(obj as *mut c_void)
+}
 
 unsafe extern "system" fn FileConverterShell_QueryInterface_ContextMenu(
     this: *mut c_void,

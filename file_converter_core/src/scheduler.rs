@@ -181,7 +181,7 @@ impl ConversionJob {
             // Generate templated path
             let generated = path_helpers::generate_file_path_from_template(
                 &self.input_path,
-                &format!("{:?}", self.preset.output_type),
+                self.preset.output_type.extension(),
                 &out_path,
                 list_index + index + 1,
                 total_count,

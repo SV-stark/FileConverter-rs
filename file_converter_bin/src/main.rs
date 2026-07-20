@@ -251,7 +251,7 @@ impl eframe::App for FileConverterApp {
                     ui.separator();
 
                     // File Template Sample Preview (Matches WPF SettingsWindow.xaml)
-                    let ext_str = format!("{:?}", preset.output_type).to_lowercase();
+                    let ext_str = preset.output_type.extension();
                     let sample_output =
                         format!("C:\\ConvertedFiles\\MyDocument_converted.{}", ext_str);
                     ui.label("File Name Sample Preview:");

@@ -5,6 +5,7 @@
 //! and multi-core PDF page rendering (`hayro` + `rayon`).
 
 use image::{DynamicImage, GenericImageView, ImageFormat};
+use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -63,27 +64,67 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32), String> {
 
 /// Resizes images using CPU SIMD vectors (AVX2/NEON/SSE4.1) via `fast_image_resize`.
 fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage, String> {
-    let rgba_img = img.to_rgba8();
-    let src_image = Image::from_vec_u8(
-        img.width(),
-        img.height(),
-        rgba_img.into_raw(),
-        PixelType::U8x4,
-    )
-    .map_err(|e| format!("Failed to create SIMD source image: {:?}", e))?;
+    match img {
+        DynamicImage::ImageRgb8(buf) => {
+            let src_image = Image::from_vec_u8(
+                buf.width(),
+                buf.height(),
+                buf.as_raw().clone(),
+                PixelType::U8x3,
+            )
+            .map_err(|e| format!("Failed to create SIMD RGB image: {:?}", e))?;
+            let mut dst_image = Image::new(target_w, target_h, PixelType::U8x3);
+            let mut resizer = Resizer::new();
+            resizer
+                .resize(&src_image, &mut dst_image, None)
+                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+            let buffer = dst_image.buffer().to_vec();
+            let rgb_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
+                .ok_or_else(|| "Failed to create ImageBuffer from resized RGB data".to_string())?;
+            Ok(DynamicImage::ImageRgb8(rgb_buf))
+        }
+        DynamicImage::ImageLuma8(buf) => {
+            let src_image = Image::from_vec_u8(
+                buf.width(),
+                buf.height(),
+                buf.as_raw().clone(),
+                PixelType::U8,
+            )
+            .map_err(|e| format!("Failed to create SIMD Luma image: {:?}", e))?;
+            let mut dst_image = Image::new(target_w, target_h, PixelType::U8);
+            let mut resizer = Resizer::new();
+            resizer
+                .resize(&src_image, &mut dst_image, None)
+                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+            let buffer = dst_image.buffer().to_vec();
+            let luma_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
+                .ok_or_else(|| "Failed to create ImageBuffer from resized Luma data".to_string())?;
+            Ok(DynamicImage::ImageLuma8(luma_buf))
+        }
+        _ => {
+            let rgba_img = img.to_rgba8();
+            let src_image = Image::from_vec_u8(
+                img.width(),
+                img.height(),
+                rgba_img.into_raw(),
+                PixelType::U8x4,
+            )
+            .map_err(|e| format!("Failed to create SIMD source image: {:?}", e))?;
 
-    let mut dst_image = Image::new(target_w, target_h, PixelType::U8x4);
+            let mut dst_image = Image::new(target_w, target_h, PixelType::U8x4);
 
-    let mut resizer = Resizer::new();
-    resizer
-        .resize(&src_image, &mut dst_image, None)
-        .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+            let mut resizer = Resizer::new();
+            resizer
+                .resize(&src_image, &mut dst_image, None)
+                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
 
-    let buffer = dst_image.buffer().to_vec();
-    let rgba_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
-        .ok_or_else(|| "Failed to create ImageBuffer from resized data".to_string())?;
+            let buffer = dst_image.buffer().to_vec();
+            let rgba_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
+                .ok_or_else(|| "Failed to create ImageBuffer from resized data".to_string())?;
 
-    Ok(DynamicImage::ImageRgba8(rgba_buf))
+            Ok(DynamicImage::ImageRgba8(rgba_buf))
+        }
+    }
 }
 
 /// Executes image and PDF page conversion operations.
@@ -130,7 +171,8 @@ pub fn run_image_conversion(
             ..Default::default()
         };
 
-        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let pages_done = AtomicUsize::new(0);
 
         let pages = pdf.pages();
         let results: Result<(), String> = (0..page_count)
@@ -140,7 +182,8 @@ pub fn run_image_conversion(
                     return Ok(());
                 }
 
-                progress_callback(index as f32 / page_count as f32, "Rendering PDF page");
+                let done = pages_done.fetch_add(1, Ordering::Relaxed) + 1;
+                progress_callback(done as f32 / page_count as f32, "Rendering PDF page");
 
                 let page = &pages[index];
                 let mut local_cache = RenderCache::default();

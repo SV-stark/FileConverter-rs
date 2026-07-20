@@ -22,6 +22,31 @@ pub enum OutputType {
     Webp,
 }
 
+impl OutputType {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            OutputType::Aac => "aac",
+            OutputType::Avi => "avi",
+            OutputType::Avif => "avif",
+            OutputType::Flac => "flac",
+            OutputType::Gif => "gif",
+            OutputType::Ico => "ico",
+            OutputType::Jpg => "jpg",
+            OutputType::Mkv => "mkv",
+            OutputType::Mp3 => "mp3",
+            OutputType::Mp4 => "mp4",
+            OutputType::Ogg => "ogg",
+            OutputType::Ogv => "ogv",
+            OutputType::Pdf => "pdf",
+            OutputType::Png => "png",
+            OutputType::Wav => "wav",
+            OutputType::Webm => "webm",
+            OutputType::Webp => "webp",
+            OutputType::None => "",
+        }
+    }
+}
+
 impl Default for OutputType {
     fn default() -> Self {
         OutputType::None

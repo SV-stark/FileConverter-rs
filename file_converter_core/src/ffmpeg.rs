@@ -32,11 +32,7 @@ pub fn get_ffmpeg_passes(
     hw_accel: HardwareAccelerationMode,
 ) -> Result<Vec<FfmpegPass>, String> {
     let mut passes = Vec::new();
-    let base_args = vec![
-        "-n".to_string(),
-        "-progress".to_string(),
-        "pipe:1".to_string(),
-    ];
+    let base_args = vec!["-n".to_string()];
 
     // Helper to check custom command
     let custom_cmd_enabled = preset
@@ -795,7 +791,7 @@ pub fn run_ffmpeg_pass(
 
     let mut child = Command::new(&ffmpeg_path)
         .args(&pass.arguments)
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start FFMpeg process: {:?}", e))?;
