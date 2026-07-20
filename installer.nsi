@@ -34,6 +34,7 @@ Section "Install"
     ; Copy build outputs
     File "target\release\file_converter_bin.exe"
     File "target\release\file_converter_shell.dll"
+    File "Settings.default.xml"
     
     ; Register shell extension DLL
     RegDLL "$INSTDIR\file_converter_shell.dll"

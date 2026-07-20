@@ -142,6 +142,7 @@ extern "system" {
     ) -> i32;
 
     fn GetModuleFileNameW(hModule: *mut c_void, lpFilename: *mut u16, nSize: u32) -> u32;
+    fn GetModuleHandleW(lpModuleName: *const u16) -> *mut c_void;
 }
 
 // static DLL instance handle
@@ -880,15 +881,17 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[cfg(target_os = "windows")]
 #[no_mangle]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
+    use winreg::enums::{KEY_ALL_ACCESS, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::RegKey;
 
+    let mut hmodule = G_DLL_INSTANCE.unwrap_or(std::ptr::null_mut());
+    if hmodule.is_null() {
+        let dll_name: Vec<u16> = "file_converter_shell.dll\0".encode_utf16().collect();
+        hmodule = GetModuleHandleW(dll_name.as_ptr());
+    }
+
     let mut dll_path_buf = vec![0u16; 512];
-    let len = GetModuleFileNameW(
-        G_DLL_INSTANCE.unwrap_or(std::ptr::null_mut()),
-        dll_path_buf.as_mut_ptr(),
-        512,
-    );
+    let len = GetModuleFileNameW(hmodule, dll_path_buf.as_mut_ptr(), 512);
     if len == 0 {
         return E_FAIL;
     }
@@ -897,48 +900,67 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
 
-    // Register CLSID
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let clsid_key_path = format!("CLSID\\{}", clsid_str);
-    if let Ok((key, _)) = hkcr.create_subkey(&clsid_key_path) {
-        let _ = key.set_value("", &"File Converter Context Menu Handler");
-        if let Ok((inproc_key, _)) = key.create_subkey("InprocServer32") {
-            let _ = inproc_key.set_value("", &dll_path);
-            let _ = inproc_key.set_value("ThreadingModel", &"Apartment");
-        }
-    } else {
-        return E_FAIL;
-    }
-
-    // Register Shell Extension Context Menu Handler
-    let register_context_menu = |parent: &str| {
-        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", parent);
-        if let Ok((key, _)) = hkcr.create_subkey(&path) {
-            let _ = key.set_value("", &clsid_str);
-        }
-    };
-
-    register_context_menu("*");
-    register_context_menu("Directory");
-    register_context_menu("Folder");
-
-    // Register Direct Shell Verb for Windows 11 context menu fallback
-    let bin_path = get_bin_path();
-    let bin_str = bin_path.to_string_lossy().to_string();
-    let register_verb = |parent: &str| {
-        let verb_path = format!("{}\\shell\\FileConverter", parent);
-        if let Ok((key, _)) = hkcr.create_subkey(&verb_path) {
-            let _ = key.set_value("", &"File Converter");
-            let _ = key.set_value("Icon", &format!("\"{}\",0", bin_str));
-            if let Ok((cmd_key, _)) = key.create_subkey("command") {
-                let _ = cmd_key.set_value("", &format!("\"{}\" -settings", bin_str));
+    // Register CLSID in HKCR, HKLM\Software\Classes, and HKCU\Software\Classes
+    let register_clsid_in = |root: &RegKey| {
+        let clsid_key_path = format!("CLSID\\{}", clsid_str);
+        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
+            let _ = key.set_value("", &"File Converter Context Menu Handler");
+            if let Ok((inproc_key, _)) = key.create_subkey("InprocServer32") {
+                let _ = inproc_key.set_value("", &dll_path);
+                let _ = inproc_key.set_value("ThreadingModel", &"Apartment");
             }
         }
     };
 
-    register_verb("*");
-    register_verb("Directory");
-    register_verb("Folder");
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+
+    register_clsid_in(&hkcr);
+    if let Ok(ref root) = hklm_classes {
+        register_clsid_in(root);
+    }
+    if let Ok(ref root) = hkcu_classes {
+        register_clsid_in(root);
+    }
+
+    // Register Shell Extension Context Menu Handler across all associations
+    let associations = ["*", "AllFilesystemObjects", "Directory", "Directory\\Background", "Drive", "Folder"];
+
+    for assoc in &associations {
+        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
+        let _ = hkcr.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+        if let Ok(ref root) = hklm_classes {
+            let _ = root.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+        }
+        if let Ok(ref root) = hkcu_classes {
+            let _ = root.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+        }
+    }
+
+    // Register Direct Shell Verb for Windows 11 context menu fallback
+    let bin_path = get_bin_path();
+    let bin_str = bin_path.to_string_lossy().to_string();
+
+    for assoc in &associations {
+        let verb_path = format!("{}\\shell\\FileConverter", assoc);
+        let reg_verb = |root: &RegKey| {
+            if let Ok((key, _)) = root.create_subkey(&verb_path) {
+                let _ = key.set_value("", &"File Converter");
+                let _ = key.set_value("Icon", &format!("\"{}\",0", bin_str));
+                if let Ok((cmd_key, _)) = key.create_subkey("command") {
+                    let _ = cmd_key.set_value("", &format!("\"{}\" -settings", bin_str));
+                }
+            }
+        };
+        reg_verb(&hkcr);
+        if let Ok(ref root) = hklm_classes {
+            reg_verb(root);
+        }
+        if let Ok(ref root) = hkcu_classes {
+            reg_verb(root);
+        }
+    }
 
     // Mark as approved shell extension in registry
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -961,32 +983,44 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 #[cfg(target_os = "windows")]
 #[no_mangle]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE};
+    use winreg::enums::{KEY_ALL_ACCESS, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::RegKey;
 
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
 
     let clsid_key_path = format!("CLSID\\{}", clsid_str);
     let _ = hkcr.delete_subkey_all(&clsid_key_path);
+    if let Ok(ref root) = hklm_classes {
+        let _ = root.delete_subkey_all(&clsid_key_path);
+    }
+    if let Ok(ref root) = hkcu_classes {
+        let _ = root.delete_subkey_all(&clsid_key_path);
+    }
 
-    let unregister_context_menu = |parent: &str| {
-        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", parent);
+    let associations = ["*", "AllFilesystemObjects", "Directory", "Directory\\Background", "Drive", "Folder"];
+
+    for assoc in &associations {
+        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
         let _ = hkcr.delete_subkey_all(&path);
-    };
+        if let Ok(ref root) = hklm_classes {
+            let _ = root.delete_subkey_all(&path);
+        }
+        if let Ok(ref root) = hkcu_classes {
+            let _ = root.delete_subkey_all(&path);
+        }
 
-    unregister_context_menu("*");
-    unregister_context_menu("Directory");
-    unregister_context_menu("Folder");
-
-    let unregister_verb = |parent: &str| {
-        let verb_path = format!("{}\\shell\\FileConverter", parent);
+        let verb_path = format!("{}\\shell\\FileConverter", assoc);
         let _ = hkcr.delete_subkey_all(&verb_path);
-    };
-
-    unregister_verb("*");
-    unregister_verb("Directory");
-    unregister_verb("Folder");
+        if let Ok(ref root) = hklm_classes {
+            let _ = root.delete_subkey_all(&verb_path);
+        }
+        if let Ok(ref root) = hkcu_classes {
+            let _ = root.delete_subkey_all(&verb_path);
+        }
+    }
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok(key) =

@@ -23,6 +23,8 @@ fn get_settings_paths() -> (PathBuf, PathBuf) {
     (default_xml, user_xml)
 }
 
+const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
+
 fn initialize_user_settings_if_needed() -> Result<Settings, String> {
     let (default_xml, user_xml) = get_settings_paths();
 
@@ -34,21 +36,32 @@ fn initialize_user_settings_if_needed() -> Result<Settings, String> {
         if default_xml.exists() {
             let _ = std::fs::copy(&default_xml, &user_xml);
         } else {
-            let basic_default = r#"<?xml version="1.0" encoding="utf-8"?>
-<Settings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SerializationVersion="4">
-  <MaximumNumberOfSimultaneousConversions>2</MaximumNumberOfSimultaneousConversions>
-  <ExitApplicationWhenConversionsFinished>true</ExitApplicationWhenConversionsFinished>
-  <DurationBetweenEndOfConversionsAndApplicationExit>2</DurationBetweenEndOfConversionsAndApplicationExit>
-  <CheckUpgradeAtStartup>true</CheckUpgradeAtStartup>
-  <ApplicationLanguageName>en</ApplicationLanguageName>
-  <CopyFilesInClipboardAfterConversion>true</CopyFilesInClipboardAfterConversion>
-  <HardwareAccelerationMode>Off</HardwareAccelerationMode>
-</Settings>"#;
-            let _ = std::fs::write(&user_xml, basic_default);
+            let _ = std::fs::write(&user_xml, DEFAULT_SETTINGS_XML);
         }
     }
 
     Settings::load_from_file(&user_xml).map_err(|e| format!("Failed to load settings: {:?}", e))
+}
+
+fn register_shell_extension_dll() -> String {
+    let mut exe_dir = env::current_exe().unwrap_or_default();
+    exe_dir.pop();
+    let dll_path = exe_dir.join("file_converter_shell.dll");
+
+    if !dll_path.exists() {
+        return format!("Shell DLL not found at {:?}", dll_path);
+    }
+
+    let status = std::process::Command::new("regsvr32.exe")
+        .arg("/s")
+        .arg(&dll_path)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => "Shell extension context menu registered successfully!".to_string(),
+        Ok(s) => format!("regsvr32 failed with exit code: {:?}", s.code()),
+        Err(e) => format!("Failed to run regsvr32: {:?}", e),
+    }
 }
 
 fn main() {
@@ -83,6 +96,9 @@ impl eframe::App for FileConverterApp {
                         Ok(_) => self.status_msg = "Settings saved successfully!".to_string(),
                         Err(e) => self.status_msg = format!("Failed to save: {:?}", e),
                     }
+                }
+                if ui.button("⚙️ Register Context Menu").clicked() {
+                    self.status_msg = register_shell_extension_dll();
                 }
             });
         });
