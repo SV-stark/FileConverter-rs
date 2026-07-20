@@ -922,6 +922,24 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     register_context_menu("Directory");
     register_context_menu("Folder");
 
+    // Register Direct Shell Verb for Windows 11 context menu fallback
+    let bin_path = get_bin_path();
+    let bin_str = bin_path.to_string_lossy().to_string();
+    let register_verb = |parent: &str| {
+        let verb_path = format!("{}\\shell\\FileConverter", parent);
+        if let Ok((key, _)) = hkcr.create_subkey(&verb_path) {
+            let _ = key.set_value("", &"File Converter");
+            let _ = key.set_value("Icon", &format!("\"{}\",0", bin_str));
+            if let Ok((cmd_key, _)) = key.create_subkey("command") {
+                let _ = cmd_key.set_value("", &format!("\"{}\" -settings", bin_str));
+            }
+        }
+    };
+
+    register_verb("*");
+    register_verb("Directory");
+    register_verb("Folder");
+
     // Mark as approved shell extension in registry
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok((key, _)) = hklm
@@ -929,6 +947,13 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     {
         let _ = key.set_value(clsid_str, &"File Converter Context Menu Handler");
     }
+
+    // Refresh Windows Shell Cache immediately
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(wEventId: i32, uFlags: u32, dwItem1: *const c_void, dwItem2: *const c_void);
+    }
+    SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0x0000 /* SHCNF_IDLIST */, std::ptr::null(), std::ptr::null());
 
     S_OK
 }
@@ -954,12 +979,27 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
     unregister_context_menu("Directory");
     unregister_context_menu("Folder");
 
+    let unregister_verb = |parent: &str| {
+        let verb_path = format!("{}\\shell\\FileConverter", parent);
+        let _ = hkcr.delete_subkey_all(&verb_path);
+    };
+
+    unregister_verb("*");
+    unregister_verb("Directory");
+    unregister_verb("Folder");
+
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok(key) =
         hklm.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved")
     {
         let _ = key.delete_value(clsid_str);
     }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(wEventId: i32, uFlags: u32, dwItem1: *const c_void, dwItem2: *const c_void);
+    }
+    SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0x0000 /* SHCNF_IDLIST */, std::ptr::null(), std::ptr::null());
 
     S_OK
 }

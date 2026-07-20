@@ -28,6 +28,7 @@ OutFile "FileConverter_Setup.exe"
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install"
+    SetRegView 64
     SetOutPath "$INSTDIR"
     
     ; Copy build outputs
@@ -51,6 +52,7 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+    SetRegView 64
     ; Unregister shell DLL
     UnRegDLL "$INSTDIR\file_converter_shell.dll"
     
