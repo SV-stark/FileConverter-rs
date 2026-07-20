@@ -88,6 +88,93 @@ pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> 
     Ok(())
 }
 
+pub fn convert_office_batch_to_pdf(
+    app: &str,
+    input_output_pairs: &[(&str, &str)],
+) -> Result<(), String> {
+    if input_output_pairs.is_empty() {
+        return Ok(());
+    }
+
+    if input_output_pairs.len() == 1 {
+        return convert_office_to_pdf(app, input_output_pairs[0].0, input_output_pairs[0].1);
+    }
+
+    let script = match app.to_lowercase().as_str() {
+        "word" | "winword.exe" => {
+            let mut pair_code = String::new();
+            for (inp, out) in input_output_pairs {
+                pair_code.push_str(&format!(
+                    "$doc = $word.Documents.Open('{}'); \
+                     $doc.ExportAsFixedFormat('{}', 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true); \
+                     $doc.Close(0); ",
+                    inp.replace('\'', "''"),
+                    out.replace('\'', "''")
+                ));
+            }
+            format!(
+                "$word = New-Object -ComObject Word.Application; \
+                 $word.Visible = $false; \
+                 {} \
+                 $word.Quit();",
+                pair_code
+            )
+        }
+        "excel" | "excel.exe" => {
+            let mut pair_code = String::new();
+            for (inp, out) in input_output_pairs {
+                pair_code.push_str(&format!(
+                    "$wb = $excel.Workbooks.Open('{}', [System.Type]::Missing, $true); \
+                     $wb.ExportAsFixedFormat(0, '{}'); \
+                     $wb.Close($false); ",
+                    inp.replace('\'', "''"),
+                    out.replace('\'', "''")
+                ));
+            }
+            format!(
+                "$excel = New-Object -ComObject Excel.Application; \
+                 $excel.Visible = $false; \
+                 {} \
+                 $excel.Quit();",
+                pair_code
+            )
+        }
+        "powerpoint" | "powerpnt.exe" => {
+            let mut pair_code = String::new();
+            for (inp, out) in input_output_pairs {
+                pair_code.push_str(&format!(
+                    "$doc = $ppt.Presentations.Open('{}', $true, $true, $false); \
+                     $doc.ExportAsFixedFormat('{}', 2); \
+                     $doc.Close(); ",
+                    inp.replace('\'', "''"),
+                    out.replace('\'', "''")
+                ));
+            }
+            format!(
+                "$ppt = New-Object -ComObject PowerPoint.Application; \
+                 {} \
+                 $ppt.Quit();",
+                pair_code
+            )
+        }
+        _ => return Err(format!("Unsupported office application: {}", app)),
+    };
+
+    let output = Command::new("powershell")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to execute powershell: {:?}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Office conversion script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn run_office_conversion(
     preset: &ConversionPreset,
     app_name: &str,
