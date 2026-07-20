@@ -630,63 +630,40 @@ impl ConversionScheduler {
             self.max_threads
         };
 
-        let running_count = Arc::new(Mutex::new(0));
-        let cda_lock = Arc::new(Mutex::new(false)); // Mutex to prevent multiple CD extractions running concurrently
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, ConversionJob)>();
+        let rx = Arc::new(Mutex::new(rx));
 
-        let mut threads = Vec::new();
+        for (idx, job) in self.jobs.iter().enumerate() {
+            let _ = tx.send((idx, job.clone()));
+        }
+        drop(tx); // Close queue so workers terminate when finished
 
-        for job in &self.jobs {
-            let job = job.clone();
-            let running_count = running_count.clone();
-            let cda_lock = cda_lock.clone();
+        let cda_mutex = Arc::new(Mutex::new(()));
+
+        let mut handles = Vec::new();
+        for _ in 0..max_concurrency {
+            let rx = rx.clone();
+            let cda_mutex = cda_mutex.clone();
             let hw_accel = self.hw_accel;
 
             let handle = thread::spawn(move || {
-                // Wait until we have a thread slot available
-                loop {
-                    // Check CDA lock first if it is CDA
+                while let Ok((_, job)) = {
+                    let lock = rx.lock().unwrap();
+                    lock.recv()
+                } {
                     if job.is_cda {
-                        let mut locked = cda_lock.lock().unwrap();
-                        if *locked {
-                            thread::sleep(Duration::from_millis(50));
-                            continue;
-                        }
-                        // Try to take thread slot
-                        let mut count = running_count.lock().unwrap();
-                        if *count < max_concurrency {
-                            *count += 1;
-                            *locked = true;
-                            break;
-                        }
+                        let _cda_guard = cda_mutex.lock().unwrap();
+                        job.run(hw_accel);
                     } else {
-                        let mut count = running_count.lock().unwrap();
-                        if *count < max_concurrency {
-                            *count += 1;
-                            break;
-                        }
+                        job.run(hw_accel);
                     }
-                    thread::sleep(Duration::from_millis(50));
-                }
-
-                // Run the job
-                job.run(hw_accel);
-
-                // Release slot
-                {
-                    let mut count = running_count.lock().unwrap();
-                    *count -= 1;
-                }
-                if job.is_cda {
-                    let mut locked = cda_lock.lock().unwrap();
-                    *locked = false;
                 }
             });
-
-            threads.push(handle);
+            handles.push(handle);
         }
 
-        for t in threads {
-            let _ = t.join();
+        for h in handles {
+            let _ = h.join();
         }
 
         // Copy files to clipboard on completion

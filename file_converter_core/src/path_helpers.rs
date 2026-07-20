@@ -2,6 +2,16 @@ use chrono::Local;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+static RE_DRIVE_LETTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]:\\").unwrap());
+static RE_CDA_TRACK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[a-zA-Z]:\\Track([0-9]+)\.cda").unwrap());
+static RE_VALID_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\)(?:[^\\/:*?<>|\r\n]+\\)*[^\.\\/:*?<>|\r\n][^\\/:*?<>|\r\n]*$").unwrap()
+});
+static RE_DATE_FMT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(d:(?P<format>[^)]*)\)").unwrap());
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
@@ -34,13 +44,11 @@ pub fn get_cd_drive_letters() -> Vec<char> {
 }
 
 pub fn is_path_drive_letter_valid(path: &str) -> bool {
-    let re = Regex::new(r"^[a-zA-Z]:\\").unwrap();
-    re.is_match(path)
+    RE_DRIVE_LETTER.is_match(path)
 }
 
 pub fn get_path_drive_letter(path: &str) -> Option<String> {
-    let re = Regex::new(r"^[a-zA-Z]:\\").unwrap();
-    re.find(path).map(|m| m.as_str().to_string())
+    RE_DRIVE_LETTER.find(path).map(|m| m.as_str().to_string())
 }
 
 pub fn is_on_cd_drive(path: &str) -> bool {
@@ -54,8 +62,7 @@ pub fn is_on_cd_drive(path: &str) -> bool {
 }
 
 pub fn get_cda_track_number(path: &str) -> Option<i32> {
-    let re = Regex::new(r"(?i)[a-zA-Z]:\\Track([0-9]+)\.cda").unwrap();
-    if let Some(caps) = re.captures(path) {
+    if let Some(caps) = RE_CDA_TRACK.captures(path) {
         if let Some(m) = caps.get(1) {
             return m.as_str().parse::<i32>().ok();
         }
@@ -64,9 +71,7 @@ pub fn get_cda_track_number(path: &str) -> Option<i32> {
 }
 
 pub fn is_path_valid(path: &str) -> bool {
-    // Valid Windows path regex matching C# pathRegex
-    let re = Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\)(?:[^\\/:*?<>|\r\n]+\\)*[^\.\\/:*?<>|\r\n][^\\/:*?<>|\r\n]*$").unwrap();
-    re.is_match(path)
+    RE_VALID_PATH.is_match(path)
 }
 
 pub fn generate_unique_path<P: AsRef<Path>>(path: P, blacklist: &[String]) -> PathBuf {
@@ -260,10 +265,9 @@ pub fn generate_file_path_from_template(
     output_path = output_path.replace("(n:c)", &number_max.to_string());
 
     // Date formatting (d:format)
-    let date_re = Regex::new(r"\(d:(?P<format>[^)]*)\)").unwrap();
     let now = Local::now();
 
-    output_path = date_re
+    output_path = RE_DATE_FMT
         .replace_all(&output_path, |caps: &regex::Captures| {
             let fmt_str = translate_csharp_date_format(&caps["format"]);
             now.format(&fmt_str)
