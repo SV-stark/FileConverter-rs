@@ -1,5 +1,5 @@
 !define APP_NAME "FileConverter"
-!define APP_VERSION "0.1.7"
+!define APP_VERSION "0.1.8"
 !define APP_PUBLISHER "SV-stark"
 !define APP_WEBSITE "https://github.com/SV-stark/FileConverter-rs"
 
@@ -50,6 +50,11 @@ Section "Install"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayVersion" "${APP_VERSION}"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoModify" 1
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoRepair" 1
+
+    ; Create Start Menu Shortcuts
+    CreateDirectory "$SMPROGRAMS\${APP_NAME}"
+    CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\file_converter_bin.exe" "" "$INSTDIR\file_converter_bin.exe" 0
+    CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
 SectionEnd
 
 Section "Uninstall"
@@ -57,9 +62,15 @@ Section "Uninstall"
     ; Unregister shell DLL
     UnRegDLL "$INSTDIR\file_converter_shell.dll"
     
+    ; Delete Start Menu Shortcuts
+    Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
+    Delete "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk"
+    RMDir "$SMPROGRAMS\${APP_NAME}"
+
     ; Delete files
     Delete "$INSTDIR\file_converter_bin.exe"
     Delete "$INSTDIR\file_converter_shell.dll"
+    Delete "$INSTDIR\Settings.default.xml"
     Delete "$INSTDIR\uninstall.exe"
     
     RMDir "$INSTDIR"
