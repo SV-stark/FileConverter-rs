@@ -111,8 +111,10 @@ impl eframe::App for FileConverterApp {
             ui.horizontal(|ui| {
                 ui.label("Max Concurrency:");
                 ui.add(
-                    egui::DragValue::new(&mut self.settings.maximum_number_of_simultaneous_conversions)
-                        .range(1..=32),
+                    egui::DragValue::new(
+                        &mut self.settings.maximum_number_of_simultaneous_conversions,
+                    )
+                    .range(1..=32),
                 );
 
                 ui.separator();
@@ -126,9 +128,21 @@ impl eframe::App for FileConverterApp {
                 egui::ComboBox::from_id_salt("hw_accel")
                     .selected_text(format!("{:?}", self.settings.hardware_acceleration_mode))
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Off, "Off (CPU)");
-                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Cuda, "NVIDIA (CUDA)");
-                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Amf, "AMD (AMF)");
+                        ui.selectable_value(
+                            &mut self.settings.hardware_acceleration_mode,
+                            HardwareAccelerationMode::Off,
+                            "Off (CPU)",
+                        );
+                        ui.selectable_value(
+                            &mut self.settings.hardware_acceleration_mode,
+                            HardwareAccelerationMode::Cuda,
+                            "NVIDIA (CUDA)",
+                        );
+                        ui.selectable_value(
+                            &mut self.settings.hardware_acceleration_mode,
+                            HardwareAccelerationMode::Amf,
+                            "AMD (AMF)",
+                        );
                     });
             });
         });
@@ -179,20 +193,28 @@ impl eframe::App for FileConverterApp {
 
                     if self.selected_preset_index < self.settings.conversion_presets.len() {
                         if ui.button("🗑️ Delete").clicked() {
-                            self.settings.conversion_presets.remove(self.selected_preset_index);
+                            self.settings
+                                .conversion_presets
+                                .remove(self.selected_preset_index);
                             if self.selected_preset_index > 0 {
                                 self.selected_preset_index -= 1;
                             }
                         }
                         if self.selected_preset_index > 0 {
                             if ui.button("⬆️ Up").clicked() {
-                                self.settings.conversion_presets.swap(self.selected_preset_index, self.selected_preset_index - 1);
+                                self.settings.conversion_presets.swap(
+                                    self.selected_preset_index,
+                                    self.selected_preset_index - 1,
+                                );
                                 self.selected_preset_index -= 1;
                             }
                         }
                         if self.selected_preset_index + 1 < self.settings.conversion_presets.len() {
                             if ui.button("⬇️ Down").clicked() {
-                                self.settings.conversion_presets.swap(self.selected_preset_index, self.selected_preset_index + 1);
+                                self.settings.conversion_presets.swap(
+                                    self.selected_preset_index,
+                                    self.selected_preset_index + 1,
+                                );
                                 self.selected_preset_index += 1;
                             }
                         }
@@ -229,9 +251,14 @@ impl eframe::App for FileConverterApp {
 
                     // File Template Sample Preview (Matches WPF SettingsWindow.xaml)
                     let ext_str = format!("{:?}", preset.output_type).to_lowercase();
-                    let sample_output = format!("C:\\ConvertedFiles\\MyDocument_converted.{}", ext_str);
+                    let sample_output =
+                        format!("C:\\ConvertedFiles\\MyDocument_converted.{}", ext_str);
                     ui.label("File Name Sample Preview:");
-                    ui.label(egui::RichText::new(format!("Example: {}", sample_output)).italics().weak());
+                    ui.label(
+                        egui::RichText::new(format!("Example: {}", sample_output))
+                            .italics()
+                            .weak(),
+                    );
 
                     ui.separator();
 
@@ -241,8 +268,16 @@ impl eframe::App for FileConverterApp {
                         egui::ComboBox::from_id_salt("post_action")
                             .selected_text(format!("{:?}", preset.input_post_conversion_action))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut preset.input_post_conversion_action, InputPostConversionAction::None, "None (Keep Original)");
-                                ui.selectable_value(&mut preset.input_post_conversion_action, InputPostConversionAction::Delete, "Delete Original File");
+                                ui.selectable_value(
+                                    &mut preset.input_post_conversion_action,
+                                    InputPostConversionAction::None,
+                                    "None (Keep Original)",
+                                );
+                                ui.selectable_value(
+                                    &mut preset.input_post_conversion_action,
+                                    InputPostConversionAction::Delete,
+                                    "Delete Original File",
+                                );
                             });
                     });
 
@@ -449,7 +484,12 @@ fn run_conversion_gui(args: Vec<String>) {
     let hw_accel = settings.hardware_acceleration_mode;
     let copy_clipboard = settings.copy_files_in_clipboard_after_conversion;
 
-    let scheduler = Arc::new(ConversionScheduler::new(jobs, max_threads, hw_accel, copy_clipboard));
+    let scheduler = Arc::new(ConversionScheduler::new(
+        jobs,
+        max_threads,
+        hw_accel,
+        copy_clipboard,
+    ));
 
     let scheduler_clone = Arc::clone(&scheduler);
     thread::spawn(move || {

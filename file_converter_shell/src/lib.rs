@@ -1,4 +1,10 @@
-#![allow(non_snake_case, non_camel_case_types, clippy::missing_safety_doc, clippy::all, warnings)]
+#![allow(
+    non_snake_case,
+    non_camel_case_types,
+    clippy::missing_safety_doc,
+    clippy::all,
+    warnings
+)]
 
 use std::ffi::{c_void, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -881,7 +887,7 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[cfg(target_os = "windows")]
 #[no_mangle]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
-    use winreg::enums::{KEY_ALL_ACCESS, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
     use winreg::RegKey;
 
     let mut hmodule = G_DLL_INSTANCE.unwrap_or(std::ptr::null_mut());
@@ -913,8 +919,10 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     };
 
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
-    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
 
     register_clsid_in(&hkcr);
     if let Ok(ref root) = hklm_classes {
@@ -925,16 +933,29 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     }
 
     // Register Shell Extension Context Menu Handler across all associations
-    let associations = ["*", "AllFilesystemObjects", "Directory", "Directory\\Background", "Drive", "Folder"];
+    let associations = [
+        "*",
+        "AllFilesystemObjects",
+        "Directory",
+        "Directory\\Background",
+        "Drive",
+        "Folder",
+    ];
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-        let _ = hkcr.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+        let _ = hkcr
+            .create_subkey(&path)
+            .map(|(k, _)| k.set_value("", &clsid_str));
         if let Ok(ref root) = hklm_classes {
-            let _ = root.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+            let _ = root
+                .create_subkey(&path)
+                .map(|(k, _)| k.set_value("", &clsid_str));
         }
         if let Ok(ref root) = hkcu_classes {
-            let _ = root.create_subkey(&path).map(|(k, _)| k.set_value("", &clsid_str));
+            let _ = root
+                .create_subkey(&path)
+                .map(|(k, _)| k.set_value("", &clsid_str));
         }
     }
 
@@ -973,9 +994,19 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     // Refresh Windows Shell Cache immediately
     #[link(name = "shell32")]
     extern "system" {
-        fn SHChangeNotify(wEventId: i32, uFlags: u32, dwItem1: *const c_void, dwItem2: *const c_void);
+        fn SHChangeNotify(
+            wEventId: i32,
+            uFlags: u32,
+            dwItem1: *const c_void,
+            dwItem2: *const c_void,
+        );
     }
-    SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0x0000 /* SHCNF_IDLIST */, std::ptr::null(), std::ptr::null());
+    SHChangeNotify(
+        0x08000000, /* SHCNE_ASSOCCHANGED */
+        0x0000,     /* SHCNF_IDLIST */
+        std::ptr::null(),
+        std::ptr::null(),
+    );
 
     S_OK
 }
@@ -983,13 +1014,15 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 #[cfg(target_os = "windows")]
 #[no_mangle]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
-    use winreg::enums::{KEY_ALL_ACCESS, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
     use winreg::RegKey;
 
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
-    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
 
     let clsid_key_path = format!("CLSID\\{}", clsid_str);
     let _ = hkcr.delete_subkey_all(&clsid_key_path);
@@ -1000,7 +1033,14 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
         let _ = root.delete_subkey_all(&clsid_key_path);
     }
 
-    let associations = ["*", "AllFilesystemObjects", "Directory", "Directory\\Background", "Drive", "Folder"];
+    let associations = [
+        "*",
+        "AllFilesystemObjects",
+        "Directory",
+        "Directory\\Background",
+        "Drive",
+        "Folder",
+    ];
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
@@ -1031,9 +1071,19 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
 
     #[link(name = "shell32")]
     extern "system" {
-        fn SHChangeNotify(wEventId: i32, uFlags: u32, dwItem1: *const c_void, dwItem2: *const c_void);
+        fn SHChangeNotify(
+            wEventId: i32,
+            uFlags: u32,
+            dwItem1: *const c_void,
+            dwItem2: *const c_void,
+        );
     }
-    SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0x0000 /* SHCNF_IDLIST */, std::ptr::null(), std::ptr::null());
+    SHChangeNotify(
+        0x08000000, /* SHCNE_ASSOCCHANGED */
+        0x0000,     /* SHCNF_IDLIST */
+        std::ptr::null(),
+        std::ptr::null(),
+    );
 
     S_OK
 }
