@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>File Converter Settings</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #0f0c1b 0%, #15102a 50%, #06020f 100%);
+            --panel-bg: rgba(25, 20, 45, 0.45);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --accent-primary: linear-gradient(90deg, #8a2be2, #da70d6);
+            --accent-hover: linear-gradient(90deg, #9b46ef, #e38ce0);
+            --text-primary: #f0f0f5;
+            --text-secondary: #a09cb0;
+            --text-dim: #706b85;
+            --input-bg: rgba(10, 5, 20, 0.6);
+            --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+            scrollbar-width: thin;
+            scrollbar-color: var(--text-dim) var(--input-bg);
+        }
+
+        body {
+            background: var(--bg-gradient);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(15, 10, 30, 0.5);
+            backdrop-filter: blur(10px);
+        }
+
+        .logo-section h1 {
+            font-size: 24px;
+            font-weight: 800;
+            background: var(--accent-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 1px;
+        }
+
+        .logo-section p {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        button {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .btn-primary {
+            background: var(--accent-primary);
+            color: white;
+            box-shadow: 0 4px 15px rgba(138, 43, 226, 0.4);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(138, 43, 226, 0.6);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .main-container {
+            display: flex;
+            flex: 1;
+            padding: 30px 40px;
+            gap: 30px;
+            height: calc(100vh - 80px);
+        }
+
+        /* Sidebar for presets */
+        .sidebar {
+            width: 320px;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            backdrop-filter: blur(12px);
+            box-shadow: var(--shadow);
+        }
+
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sidebar-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .presets-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-right: 5px;
+        }
+
+        .preset-item {
+            padding: 12px 16px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            transition: all 0.25s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .preset-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.1);
+            transform: translateX(3px);
+        }
+
+        .preset-item.active {
+            background: rgba(138, 43, 226, 0.15);
+            border-color: rgba(138, 43, 226, 0.4);
+        }
+
+        .preset-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .preset-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .preset-type {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .preset-badge {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            font-weight: 600;
+        }
+
+        /* Editing Panel */
+        .editor-panel {
+            flex: 1;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 30px;
+            display: flex;
+            flex-direction: column;
+            backdrop-filter: blur(12px);
+            box-shadow: var(--shadow);
+            overflow-y: auto;
+        }
+
+        .no-preset-selected {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            color: var(--text-dim);
+            gap: 15px;
+        }
+
+        .editor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+        }
+
+        .editor-title-group h2 {
+            font-size: 22px;
+            font-weight: 600;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        .tab-btn {
+            background: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 14px;
+            padding: 8px 16px;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+        }
+
+        .tab-btn.active {
+            color: var(--text-primary);
+            border-bottom-color: #da70d6;
+        }
+
+        .tab-content {
+            display: none;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 20px;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        input[type="text"], select, textarea {
+            width: 100%;
+            background: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.25s ease;
+        }
+
+        input[type="text"]:focus, select:focus, textarea:focus {
+            border-color: rgba(138, 43, 226, 0.6);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        .checkbox-group input {
+            cursor: pointer;
+        }
+
+        .advanced-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+
+        /* Top global settings bar */
+        .global-settings-bar {
+            display: flex;
+            gap: 20px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px 25px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .global-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .global-item label {
+            white-space: nowrap;
+        }
+
+        .global-item select, .global-item input[type="text"] {
+            padding: 8px 12px;
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-section">
+            <h1>File Converter</h1>
+            <p>Rust Implementation v1.0</p>
+        </div>
+        <div class="header-actions">
+            <button class="btn-secondary" onclick="addNewPreset()">+ New Preset</button>
+            <button class="btn-primary" onclick="saveSettings()">Save Configuration</button>
+        </div>
+    </header>
+
+    <div style="padding: 20px 40px 0 40px;">
+        <div class="global-settings-bar">
+            <div class="global-item">
+                <label>Simultaneous Conversions:</label>
+                <select id="global-sim-conv">
+                    <option value="1">1</option>
+                    <option value="2" selected>2</option>
+                    <option value="4">4</option>
+                    <option value="8">8</option>
+                </select>
+            </div>
+            <div class="global-item">
+                <label>Hardware Acceleration:</label>
+                <select id="global-hw-accel">
+                    <option value="Off">Off</option>
+                    <option value="CUDA">CUDA (NVIDIA)</option>
+                    <option value="AMF">AMF (AMD)</option>
+                </select>
+            </div>
+            <div class="global-item checkbox-group" style="margin-top:0;">
+                <input type="checkbox" id="global-copy-clipboard">
+                <label for="global-copy-clipboard">Copy outputs to clipboard</label>
+            </div>
+            <div class="global-item checkbox-group" style="margin-top:0;">
+                <input type="checkbox" id="global-exit-finished">
+                <label for="global-exit-finished">Exit when finished</label>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <!-- Presets list -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Presets</h2>
+            </div>
+            <div class="presets-list" id="presets-container">
+                <!-- Preset items loaded dynamically -->
+            </div>
+        </div>
+
+        <!-- Editor panel -->
+        <div class="editor-panel" id="editor-container">
+            <div class="no-preset-selected">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 4"/>
+                    <path d="M12 8v8M8 12h8"/>
+                </svg>
+                <p>Select a preset from the sidebar or create a new one to customize.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let appSettings = null;
+        let selectedPresetIndex = null;
+
+        // Fetch settings from API
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/settings');
+                appSettings = await res.json();
+                renderGlobalSettings();
+                renderPresetsList();
+            } catch (e) {
+                console.error("Failed to load settings", e);
+            }
+        }
+
+        function renderGlobalSettings() {
+            document.getElementById('global-sim-conv').value = appSettings.MaximumNumberOfSimultaneousConversions;
+            document.getElementById('global-hw-accel').value = appSettings.HardwareAccelerationMode;
+            document.getElementById('global-copy-clipboard').checked = appSettings.CopyFilesInClipboardAfterConversion;
+            document.getElementById('global-exit-finished').checked = appSettings.ExitApplicationWhenConversionsFinished;
+        }
+
+        function renderPresetsList() {
+            const container = document.getElementById('presets-container');
+            container.innerHTML = '';
+            
+            appSettings.ConversionPreset.forEach((preset, index) => {
+                const item = document.createElement('div');
+                item.className = `preset-item ${selectedPresetIndex === index ? 'active' : ''}`;
+                item.onclick = () => selectPreset(index);
+                
+                item.innerHTML = `
+                    <div class="preset-info">
+                        <span class="preset-name">${preset.Name}</span>
+                        <span class="preset-type">${preset.InputTypes.join(', ')}</span>
+                    </div>
+                    <span class="preset-badge">${preset.OutputType}</span>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        function selectPreset(index) {
+            selectedPresetIndex = index;
+            renderPresetsList();
+            renderPresetEditor(index);
+        }
+
+        function renderPresetEditor(index) {
+            const preset = appSettings.ConversionPreset[index];
+            const container = document.getElementById('editor-container');
+            
+            // Generate Key Value inputs for settings
+            const settingsMap = {};
+            preset.Settings.forEach(s => {
+                settingsMap[s.Key] = s.Value;
+            });
+
+            container.innerHTML = `
+                <div class="editor-header">
+                    <div class="editor-title-group">
+                        <h2>Preset: ${preset.Name}</h2>
+                    </div>
+                    <button class="btn-secondary" style="padding: 6px 16px; background: rgba(220,50,50,0.1); border-color: rgba(220,50,50,0.3); color: #ff5050;" onclick="deletePreset(${index})">Delete Preset</button>
+                </div>
+                
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="switchTab(event, 'tab-general')">General</button>
+                    <button class="tab-btn" onclick="switchTab(event, 'tab-audio')">Audio</button>
+                    <button class="tab-btn" onclick="switchTab(event, 'tab-video')">Video / Image</button>
+                    <button class="tab-btn" onclick="switchTab(event, 'tab-post')">Workflow</button>
+                </div>
+
+                <!-- Tab: General -->
+                <div class="tab-content active" id="tab-general">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Preset Name</label>
+                            <input type="text" id="preset-name-input" value="${preset.Name}" onchange="updatePresetMeta('Name', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Output Extension</label>
+                            <select id="preset-output-type" onchange="updatePresetMeta('OutputType', this.value)">
+                                <option value="Mp3" ${preset.OutputType === 'Mp3' ? 'selected' : ''}>MP3 Audio</option>
+                                <option value="Aac" ${preset.OutputType === 'Aac' ? 'selected' : ''}>AAC Audio</option>
+                                <option value="Flac" ${preset.OutputType === 'Flac' ? 'selected' : ''}>FLAC Audio (Lossless)</option>
+                                <option value="Wav" ${preset.OutputType === 'Wav' ? 'selected' : ''}>WAV Audio</option>
+                                <option value="Ogg" ${preset.OutputType === 'Ogg' ? 'selected' : ''}>OGG Audio</option>
+                                <option value="Mp4" ${preset.OutputType === 'Mp4' ? 'selected' : ''}>MP4 Video</option>
+                                <option value="Mkv" ${preset.OutputType === 'Mkv' ? 'selected' : ''}>MKV Video</option>
+                                <option value="Webm" ${preset.OutputType === 'Webm' ? 'selected' : ''}>WEBM Video</option>
+                                <option value="Avi" ${preset.OutputType === 'Avi' ? 'selected' : ''}>AVI Video</option>
+                                <option value="Gif" ${preset.OutputType === 'Gif' ? 'selected' : ''}>GIF Animated Image</option>
+                                <option value="Jpg" ${preset.OutputType === 'Jpg' ? 'selected' : ''}>JPEG Image</option>
+                                <option value="Png" ${preset.OutputType === 'Png' ? 'selected' : ''}>PNG Image</option>
+                                <option value="Webp" ${preset.OutputType === 'Webp' ? 'selected' : ''}>WEBP Image</option>
+                                <option value="Pdf" ${preset.OutputType === 'Pdf' ? 'selected' : ''}>PDF Document</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Supported Input Formats (comma separated)</label>
+                        <input type="text" id="preset-inputs" value="${preset.InputTypes.join(', ')}" onchange="updatePresetInputs(this.value)">
+                    </div>
+                    <div class="form-group">
+                        <label>Output Path / Filename Template</label>
+                        <input type="text" id="preset-template" value="${preset.OutputFileTemplate || preset.OutputFileNameTemplate}" onchange="updatePresetMeta('OutputFileNameTemplate', this.value)">
+                        <p style="font-size: 11px; color: var(--text-dim); margin-top:4px;">Placeholders: (p) parent folder, (f) filename, (o) output extension, (d0) parent directory, (d:yyyy-MM-dd) date formatting</p>
+                    </div>
+                </div>
+
+                <!-- Tab: Audio -->
+                <div class="tab-content" id="tab-audio">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="preset-audio-enable" ${settingsMap['EnableAudio'] !== 'False' ? 'checked' : ''} onchange="updatePresetSetting('EnableAudio', this.checked ? 'True' : 'False')">
+                        <label for="preset-audio-enable">Enable Audio Track</label>
+                    </div>
+                    <div class="advanced-grid">
+                        <div class="form-group">
+                            <label>Audio Bitrate (kbps)</label>
+                            <select onchange="updatePresetSetting('AudioBitrate', this.value)">
+                                <option value="320" ${settingsMap['AudioBitrate'] === '320' ? 'selected' : ''}>320 kbps</option>
+                                <option value="256" ${settingsMap['AudioBitrate'] === '256' ? 'selected' : ''}>256 kbps</option>
+                                <option value="192" ${settingsMap['AudioBitrate'] === '192' ? 'selected' : ''}>192 kbps</option>
+                                <option value="160" ${settingsMap['AudioBitrate'] === '160' ? 'selected' : ''}>160 kbps</option>
+                                <option value="128" ${settingsMap['AudioBitrate'] === '128' ? 'selected' : ''}>128 kbps</option>
+                                <option value="96" ${settingsMap['AudioBitrate'] === '96' ? 'selected' : ''}>96 kbps</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Channels</label>
+                            <select onchange="updatePresetSetting('AudioChannelCount', this.value)">
+                                <option value="0" ${settingsMap['AudioChannelCount'] === '0' || !settingsMap['AudioChannelCount'] ? 'selected' : ''}>Same as original</option>
+                                <option value="1" ${settingsMap['AudioChannelCount'] === '1' ? 'selected' : ''}>Mono</option>
+                                <option value="2" ${settingsMap['AudioChannelCount'] === '2' ? 'selected' : ''}>Stereo (2.0)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Video / Image -->
+                <div class="tab-content" id="tab-video">
+                    <div class="advanced-grid">
+                        <div class="form-group">
+                            <label>Video Quality (CRF/QP Scale)</label>
+                            <input type="text" value="${settingsMap['VideoQuality'] || '30'}" onchange="updatePresetSetting('VideoQuality', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Video Scaling (Multiplier)</label>
+                            <input type="text" value="${settingsMap['VideoScale'] || '1.0'}" onchange="updatePresetSetting('VideoScale', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Image Quality (1-100)</label>
+                            <input type="text" value="${settingsMap['ImageQuality'] || '90'}" onchange="updatePresetSetting('ImageQuality', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Image Scaling (Multiplier)</label>
+                            <input type="text" value="${settingsMap['ImageScale'] || '1.0'}" onchange="updatePresetSetting('ImageScale', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Rotation (Degrees)</label>
+                            <select onchange="updatePresetSetting('VideoRotation', this.value)">
+                                <option value="0" ${settingsMap['VideoRotation'] === '0' ? 'selected' : ''}>0</option>
+                                <option value="90" ${settingsMap['VideoRotation'] === '90' ? 'selected' : ''}>90 Clockwise</option>
+                                <option value="180" ${settingsMap['VideoRotation'] === '180' ? 'selected' : ''}>180</option>
+                                <option value="270" ${settingsMap['VideoRotation'] === '270' ? 'selected' : ''}>90 Counterclockwise</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Encoding Speed / Preset</label>
+                            <select onchange="updatePresetSetting('VideoEncodingSpeed', this.value)">
+                                <option value="Fast" ${settingsMap['VideoEncodingSpeed'] === 'Fast' ? 'selected' : ''}>Fast</option>
+                                <option value="Medium" ${settingsMap['VideoEncodingSpeed'] === 'Medium' || !settingsMap['VideoEncodingSpeed'] ? 'selected' : ''}>Medium</option>
+                                <option value="Slow" ${settingsMap['VideoEncodingSpeed'] === 'Slow' ? 'selected' : ''}>Slow</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab: Post-conversion Workflow -->
+                <div class="tab-content" id="tab-post">
+                    <div class="form-group">
+                        <label>Input File Action (Post-conversion)</label>
+                        <select onchange="updatePresetMeta('InputPostConversionAction', this.value)">
+                            <option value="None" ${preset.InputPostConversionAction === 'None' ? 'selected' : ''}>Do nothing (Keep original)</option>
+                            <option value="MoveInArchiveFolder" ${preset.InputPostConversionAction === 'MoveInArchiveFolder' ? 'selected' : ''}>Move original to Archive sub-folder</option>
+                            <option value="Delete" ${preset.InputPostConversionAction === 'Delete' ? 'selected' : ''}>Delete original file</option>
+                        </select>
+                    </div>
+                </div>
+            `;
+        }
+
+        function switchTab(evt, tabId) {
+            const tabs = document.querySelectorAll('.tab-btn');
+            const contents = document.querySelectorAll('.tab-content');
+            
+            tabs.forEach(t => t.classList.remove('active'));
+            contents.forEach(c => c.classList.remove('active'));
+            
+            evt.currentTarget.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        function updatePresetMeta(field, value) {
+            const preset = appSettings.ConversionPreset[selectedPresetIndex];
+            preset[field] = value;
+            renderPresetsList();
+        }
+
+        function updatePresetInputs(val) {
+            const preset = appSettings.ConversionPreset[selectedPresetIndex];
+            preset.InputTypes = val.split(',').map(s => s.trim()).filter(s => s.length > 0);
+            renderPresetsList();
+        }
+
+        function updatePresetSetting(key, val) {
+            const preset = appSettings.ConversionPreset[selectedPresetIndex];
+            const settingIdx = preset.Settings.findIndex(s => s.Key === key);
+            if (settingIdx > -1) {
+                preset.Settings[settingIdx].Value = val;
+            } else {
+                preset.Settings.push({ Key: key, Value: val });
+            }
+        }
+
+        function addNewPreset() {
+            const newP = {
+                Name: "New Preset",
+                OutputType: "Mp4",
+                IsDefaultSettings: false,
+                InputTypes: ["avi", "mkv", "mov"],
+                InputPostConversionAction: "None",
+                Settings: [
+                    { Key: "EnableAudio", Value: "True" },
+                    { Key: "AudioBitrate", Value: "192" },
+                    { Key: "VideoQuality", Value: "30" }
+                ],
+                OutputFileNameTemplate: "(p)(f)"
+            };
+            appSettings.ConversionPreset.push(newP);
+            selectedPresetIndex = appSettings.ConversionPreset.length - 1;
+            renderPresetsList();
+            renderPresetEditor(selectedPresetIndex);
+        }
+
+        function deletePreset(index) {
+            appSettings.ConversionPreset.splice(index, 1);
+            selectedPresetIndex = null;
+            renderPresetsList();
+            document.getElementById('editor-container').innerHTML = `
+                <div class="no-preset-selected">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 4"/>
+                        <path d="M12 8v8M8 12h8"/>
+                    </svg>
+                    <p>Select a preset from the sidebar or create a new one to customize.</p>
+                </div>
+            `;
+        }
+
+        async function saveSettings() {
+            // Read globals
+            appSettings.MaximumNumberOfSimultaneousConversions = parseInt(document.getElementById('global-sim-conv').value);
+            appSettings.HardwareAccelerationMode = document.getElementById('global-hw-accel').value;
+            appSettings.CopyFilesInClipboardAfterConversion = document.getElementById('global-copy-clipboard').checked;
+            appSettings.ExitApplicationWhenConversionsFinished = document.getElementById('global-exit-finished').checked;
+
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(appSettings)
+                });
+                
+                if (res.ok) {
+                    alert("Configuration saved successfully!");
+                } else {
+                    alert("Failed to save configuration.");
+                }
+            } catch (e) {
+                alert("Error saving configuration: " + e);
+            }
+        }
+
+        // Initialize
+        loadSettings();
+    </script>
+</body>
+</html>

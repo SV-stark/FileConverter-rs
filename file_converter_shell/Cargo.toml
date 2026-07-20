@@ -1,0 +1,13 @@
+[package]
+name = "file_converter_shell"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+file_converter_core = { path = "../file_converter_core" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
