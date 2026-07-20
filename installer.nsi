@@ -1,5 +1,5 @@
 !define APP_NAME "FileConverter"
-!define APP_VERSION "0.3.2"
+!define APP_VERSION "0.3.3"
 !define APP_PUBLISHER "SV-stark"
 !define APP_WEBSITE "https://github.com/SV-stark/FileConverter-rs"
 
