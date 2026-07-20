@@ -8,7 +8,7 @@ use std::time::Duration;
 use eframe::egui;
 use file_converter_core::scheduler::{ConversionJob, ConversionScheduler, JobStatus};
 use file_converter_core::settings::{ConversionPreset, Settings};
-use file_converter_core::types::{InputPostConversionAction, OutputType};
+use file_converter_core::types::{HardwareAccelerationMode, InputPostConversionAction, OutputType};
 
 fn get_settings_paths() -> (PathBuf, PathBuf) {
     let mut exe_dir = env::current_exe().unwrap_or_default();
@@ -89,113 +89,181 @@ struct FileConverterApp {
 
 impl eframe::App for FileConverterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.horizontal(|ui| {
-            ui.heading("⚡ File Converter Native Settings");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("💾 Save Settings").clicked() {
-                    match self.settings.save_to_file(&self.user_xml_path) {
-                        Ok(_) => self.status_msg = "Settings saved successfully!".to_string(),
-                        Err(e) => self.status_msg = format!("Failed to save: {:?}", e),
+        // Top Header Frame
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("⚡ File Converter Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("💾 Save Settings").clicked() {
+                        match self.settings.save_to_file(&self.user_xml_path) {
+                            Ok(_) => self.status_msg = "Settings saved successfully!".to_string(),
+                            Err(e) => self.status_msg = format!("Failed to save: {:?}", e),
+                        }
                     }
-                }
-                if ui.button("⚙️ Register Context Menu").clicked() {
-                    self.status_msg = register_shell_extension_dll();
-                }
+                    if ui.button("⚙️ Register Shell Extension").clicked() {
+                        self.status_msg = register_shell_extension_dll();
+                    }
+                });
+            });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("Max Concurrency:");
+                ui.add(
+                    egui::DragValue::new(&mut self.settings.maximum_number_of_simultaneous_conversions)
+                        .range(1..=32),
+                );
+
+                ui.separator();
+                ui.checkbox(
+                    &mut self.settings.copy_files_in_clipboard_after_conversion,
+                    "Copy output files to Clipboard",
+                );
+
+                ui.separator();
+                ui.label("Hardware Acceleration:");
+                egui::ComboBox::from_id_salt("hw_accel")
+                    .selected_text(format!("{:?}", self.settings.hardware_acceleration_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Off, "Off (CPU)");
+                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Cuda, "NVIDIA (CUDA)");
+                        ui.selectable_value(&mut self.settings.hardware_acceleration_mode, HardwareAccelerationMode::Amf, "AMD (AMF)");
+                    });
             });
         });
-        ui.separator();
 
-        ui.horizontal(|ui| {
-            ui.label("Max Simultaneous Conversions:");
-            ui.add(
-                egui::DragValue::new(&mut self.settings.maximum_number_of_simultaneous_conversions)
-                    .range(1..=32),
-            );
+        ui.add_space(6.0);
 
-            ui.checkbox(
-                &mut self.settings.copy_files_in_clipboard_after_conversion,
-                "Copy output files to Clipboard",
-            );
-        });
-
-        ui.separator();
-
+        // Main 2-column Layout (Preset List on Left, Active Preset Config on Right)
         ui.columns(2, |columns| {
-            // Left Column: Presets List
-            columns[0].vertical(|ui| {
-                ui.heading("Conversion Presets");
+            // Left Panel: Preset List & Actions
+            columns[0].group(|ui| {
+                ui.heading("Presets List");
                 ui.separator();
 
-                for i in 0..self.settings.conversion_presets.len() {
-                    let name = self.settings.conversion_presets[i].name.clone();
-                    let is_selected = i == self.selected_preset_index;
-                    let label = if name.is_empty() {
-                        "Unnamed Preset"
-                    } else {
-                        &name
-                    };
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        let len = self.settings.conversion_presets.len();
+                        for i in 0..len {
+                            let name = self.settings.conversion_presets[i].name.clone();
+                            let is_selected = i == self.selected_preset_index;
+                            let label = if name.is_empty() {
+                                "Unnamed Preset"
+                            } else {
+                                &name
+                            };
 
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        self.selected_preset_index = i;
+                            if ui.selectable_label(is_selected, label).clicked() {
+                                self.selected_preset_index = i;
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("➕ Add").clicked() {
+                        let new_preset = ConversionPreset {
+                            name: "New Preset".to_string(),
+                            output_type: OutputType::Png,
+                            output_file_name_template: "(p)\\(f)".to_string(),
+                            is_default_settings: false,
+                            input_types: vec![],
+                            input_post_conversion_action: InputPostConversionAction::None,
+                            settings: vec![],
+                        };
+                        self.settings.conversion_presets.push(new_preset);
+                        self.selected_preset_index = self.settings.conversion_presets.len() - 1;
                     }
-                }
 
-                ui.separator();
-                if ui.button("➕ Add Preset").clicked() {
-                    let new_preset = ConversionPreset {
-                        name: "New Preset".to_string(),
-                        output_type: OutputType::Png,
-                        output_file_name_template: "(p)\\(f)".to_string(),
-                        is_default_settings: false,
-                        input_types: vec![],
-                        input_post_conversion_action: InputPostConversionAction::None,
-                        settings: vec![],
-                    };
-                    self.settings.conversion_presets.push(new_preset);
-                    self.selected_preset_index = self.settings.conversion_presets.len() - 1;
-                }
+                    if self.selected_preset_index < self.settings.conversion_presets.len() {
+                        if ui.button("🗑️ Delete").clicked() {
+                            self.settings.conversion_presets.remove(self.selected_preset_index);
+                            if self.selected_preset_index > 0 {
+                                self.selected_preset_index -= 1;
+                            }
+                        }
+                        if self.selected_preset_index > 0 {
+                            if ui.button("⬆️ Up").clicked() {
+                                self.settings.conversion_presets.swap(self.selected_preset_index, self.selected_preset_index - 1);
+                                self.selected_preset_index -= 1;
+                            }
+                        }
+                        if self.selected_preset_index + 1 < self.settings.conversion_presets.len() {
+                            if ui.button("⬇️ Down").clicked() {
+                                self.settings.conversion_presets.swap(self.selected_preset_index, self.selected_preset_index + 1);
+                                self.selected_preset_index += 1;
+                            }
+                        }
+                    }
+                });
             });
 
-            // Right Column: Active Preset Configuration
-            columns[1].vertical(|ui| {
+            // Right Panel: Selected Preset Details & Form Fields
+            columns[1].group(|ui| {
                 if self.selected_preset_index < self.settings.conversion_presets.len() {
                     let preset = &mut self.settings.conversion_presets[self.selected_preset_index];
 
-                    ui.heading(format!("Edit Preset: {}", preset.name));
+                    ui.heading(format!("Edit: {}", preset.name));
                     ui.separator();
 
+                    egui::Grid::new("preset_fields_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("Preset Name:");
+                            ui.text_edit_singleline(&mut preset.name);
+                            ui.end_row();
+
+                            ui.label("Output Format:");
+                            ui.label(format!("{:?}", preset.output_type));
+                            ui.end_row();
+
+                            ui.label("Path Template:");
+                            ui.text_edit_singleline(&mut preset.output_file_name_template);
+                            ui.end_row();
+                        });
+
+                    ui.separator();
+
+                    // File Template Sample Preview (Matches WPF SettingsWindow.xaml)
+                    let ext_str = format!("{:?}", preset.output_type).to_lowercase();
+                    let sample_output = format!("C:\\ConvertedFiles\\MyDocument_converted.{}", ext_str);
+                    ui.label("File Name Sample Preview:");
+                    ui.label(egui::RichText::new(format!("Example: {}", sample_output)).italics().weak());
+
+                    ui.separator();
+
+                    // Post-Conversion Action Selector
                     ui.horizontal(|ui| {
-                        ui.label("Preset Name:");
-                        ui.text_edit_singleline(&mut preset.name);
+                        ui.label("Post-Conversion Action:");
+                        egui::ComboBox::from_id_salt("post_action")
+                            .selected_text(format!("{:?}", preset.input_post_conversion_action))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut preset.input_post_conversion_action, InputPostConversionAction::None, "None (Keep Original)");
+                                ui.selectable_value(&mut preset.input_post_conversion_action, InputPostConversionAction::Delete, "Delete Original File");
+                            });
                     });
 
-                    ui.horizontal(|ui| {
-                        ui.label("Output Format:");
-                        ui.label(format!("{:?}", preset.output_type));
-                    });
+                    ui.separator();
 
-                    ui.horizontal(|ui| {
-                        ui.label("Output File Template:");
-                        ui.text_edit_singleline(&mut preset.output_file_name_template);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Input Extensions (comma separated):");
-                        let mut input_str = preset.input_types.join(", ");
-                        if ui.text_edit_singleline(&mut input_str).changed() {
-                            preset.input_types = input_str
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
-                    });
+                    ui.label("Input File Extensions (comma separated):");
+                    let mut input_str = preset.input_types.join(", ");
+                    if ui.text_edit_singleline(&mut input_str).changed() {
+                        preset.input_types = input_str
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
                 } else {
-                    ui.label("Select or create a preset on the left panel to configure.");
+                    ui.label("Select a preset on the left panel to configure its options.");
                 }
             });
         });
 
+        ui.add_space(5.0);
         ui.separator();
         ui.label(&self.status_msg);
     }
@@ -215,7 +283,7 @@ fn run_settings_native_gui() {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([850.0, 600.0])
+            .with_inner_size([880.0, 620.0])
             .with_title("File Converter Native Settings"),
         ..Default::default()
     };
@@ -383,7 +451,6 @@ fn run_conversion_gui(args: Vec<String>) {
 
     let scheduler = Arc::new(ConversionScheduler::new(jobs, max_threads, hw_accel, copy_clipboard));
 
-    // Spawn conversion execution on worker thread
     let scheduler_clone = Arc::clone(&scheduler);
     thread::spawn(move || {
         scheduler_clone.execute_all();
