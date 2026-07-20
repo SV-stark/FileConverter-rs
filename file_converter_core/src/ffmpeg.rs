@@ -34,6 +34,19 @@ pub fn get_ffmpeg_passes(
     let mut passes = Vec::new();
     let base_args = vec!["-n".to_string()];
 
+    let mut hw_input_args = Vec::new();
+    match hw_accel {
+        HardwareAccelerationMode::Cuda => {
+            hw_input_args.push("-hwaccel".to_string());
+            hw_input_args.push("cuda".to_string());
+        }
+        HardwareAccelerationMode::Amf => {
+            hw_input_args.push("-hwaccel".to_string());
+            hw_input_args.push("d3d11va".to_string());
+        }
+        HardwareAccelerationMode::Off => {}
+    }
+
     // Helper to check custom command
     let custom_cmd_enabled = preset
         .get_setting_value("EnableFFMPEGCustomCommand")

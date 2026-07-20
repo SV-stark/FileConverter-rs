@@ -66,13 +66,43 @@ fn register_shell_extension_dll() -> String {
     }
 }
 
+fn play_completion_sound() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        unsafe extern "system" {
+            fn MessageBeep(uType: u32) -> i32;
+        }
+        let _ = MessageBeep(0x00000040);
+    }
+}
+
+fn print_fcrs_help() {
+    println!("⚡ fcrs - FileConverter-rs CLI Engine (v0.3.5)");
+    println!("Usage:");
+    println!("  fcrs convert -p <PresetName> -i <file1> <file2> ...");
+    println!("  fcrs convert --preset \"To Mp3\" --input-files manifest.txt");
+    println!("  fcrs -settings   (Opens Native GUI Settings Window)");
+    println!();
+    println!("Examples:");
+    println!("  fcrs convert -p \"To Png\" -i image.jpg photo.bmp");
+    println!("  fcrs convert -p \"To Mp3\" -i song.flac track.wav");
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if args
+        .iter()
+        .any(|arg| arg == "--help" || arg == "-h" || arg == "help")
+    {
+        print_fcrs_help();
+        return;
+    }
 
     let run_gui = args.len() < 2
         || args
             .iter()
-            .any(|arg| arg == "-settings" || arg == "/settings");
+            .any(|arg| arg == "-settings" || arg == "/settings" || arg == "--settings");
 
     if run_gui {
         run_settings_native_gui();
@@ -418,6 +448,7 @@ impl eframe::App for ProgressApp {
             if !self.finished {
                 self.finished = true;
                 self.close_time = Some(std::time::Instant::now());
+                play_completion_sound();
             }
 
             if self.auto_close {

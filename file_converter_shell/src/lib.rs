@@ -676,10 +676,10 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
 
         let parent_mii = MENUITEMINFOW {
             cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-            fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_FTYPE,
+            fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_ID | MIIM_FTYPE,
             fType: MFT_STRING,
             fState: 0,
-            wID: 0,
+            wID: cmd_id + presets_count as u32 + 100,
             hSubMenu: h_sub_menu,
             hbmpChecked: std::ptr::null_mut(),
             hbmpUnchecked: std::ptr::null_mut(),
