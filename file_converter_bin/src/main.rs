@@ -475,9 +475,14 @@ fn run_conversion_gui(args: Vec<String>) {
         }
     };
 
+    let total_input_files = input_files.len();
     let mut jobs = Vec::new();
     for (idx, file) in input_files.into_iter().enumerate() {
-        jobs.push(ConversionJob::new(idx + 1, preset.clone(), file));
+        let mut job = ConversionJob::new(idx + 1, preset.clone(), file);
+        if let Err(e) = job.prepare(idx, total_input_files) {
+            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
+        }
+        jobs.push(job);
     }
 
     let max_threads = settings.maximum_number_of_simultaneous_conversions;

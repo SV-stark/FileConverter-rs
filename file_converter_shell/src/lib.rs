@@ -133,7 +133,7 @@ struct MENUITEMINFOW {
 }
 
 // Windows APIs imports
-extern "system" {
+unsafe extern "system" {
     fn GlobalLock(hMem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(hMem: *mut c_void) -> i32;
     fn DragQueryFileW(hDrop: *mut c_void, iFile: u32, lpszFile: *mut u16, cch: u32) -> u32;
@@ -993,7 +993,7 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     // Refresh Windows Shell Cache immediately
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SHChangeNotify(
             wEventId: i32,
             uFlags: u32,
@@ -1070,7 +1070,7 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
     }
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SHChangeNotify(
             wEventId: i32,
             uFlags: u32,

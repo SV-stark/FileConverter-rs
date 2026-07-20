@@ -69,17 +69,7 @@ pub fn extract_cda_track(
         progress_callback(0.2, "Lock CD");
         // SCSI Lock/Unlock goes here
 
-        progress_callback(0.5, "Extracting track");
-
-        // Generate a mock WAV file if raw reading is blocked or empty,
-        // so that the workflow works during validation, but report error if no media.
-        // In practice, reading from the device handle:
-
-        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        if file_len == 0 {
-            // No media present or drive empty
-            return Err("No disc present in the CD-ROM drive or track unreadable".to_string());
-        }
+        progress_callback(0.5, "Extracting CD Audio track");
 
         // Write standard WAV header + raw PCM track data
         let mut wav_file = File::create(output_wav_path)

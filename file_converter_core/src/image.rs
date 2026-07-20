@@ -266,6 +266,7 @@ fn save_image(
         OutputType::Jpg => ImageFormat::Jpeg,
         OutputType::Gif => ImageFormat::Gif,
         OutputType::Webp => ImageFormat::WebP,
+        OutputType::Avif => ImageFormat::Avif,
         OutputType::Ico => ImageFormat::Ico,
         OutputType::Pdf => ImageFormat::Png,
         _ => ImageFormat::Png,
