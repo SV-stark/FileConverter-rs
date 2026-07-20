@@ -1,11 +1,12 @@
 #![allow(clippy::all, warnings)]
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use file_converter_core::scheduler::{ConversionJob, ConversionScheduler};
+use file_converter_core::scheduler::{ConversionJob, ConversionScheduler, JobStatus};
 use file_converter_core::settings::{ConversionPreset, Settings};
 use file_converter_core::types::{InputPostConversionAction, OutputType};
 
@@ -75,7 +76,7 @@ fn main() {
     if run_gui {
         run_settings_native_gui();
     } else {
-        run_cli_conversions(args);
+        run_conversion_gui(args);
     }
 }
 
@@ -233,7 +234,105 @@ fn run_settings_native_gui() {
     );
 }
 
-fn run_cli_conversions(args: Vec<String>) {
+struct ProgressApp {
+    scheduler: Arc<ConversionScheduler>,
+    preset_name: String,
+    auto_close: bool,
+    exit_delay: f32,
+    finished: bool,
+    close_time: Option<std::time::Instant>,
+}
+
+impl eframe::App for ProgressApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+
+        let mut total_prog = 0.0f32;
+        let mut completed_count = 0;
+        let total_count = self.scheduler.jobs.len();
+
+        ui.heading(format!("⚡ Converting via '{}'...", self.preset_name));
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for job in &self.scheduler.jobs {
+                    let p = *job.progress.lock().unwrap();
+                    let s = job.status.lock().unwrap().clone();
+
+                    total_prog += p;
+
+                    let filename = Path::new(&job.input_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| job.input_path.clone());
+
+                    let status_str = match &s {
+                        JobStatus::Queue => "Queued...".to_string(),
+                        JobStatus::Converting(msg) => format!("Converting ({})", msg),
+                        JobStatus::Done => {
+                            completed_count += 1;
+                            "Done".to_string()
+                        }
+                        JobStatus::Failed(err) => {
+                            completed_count += 1;
+                            format!("Failed: {}", err)
+                        }
+                        JobStatus::Canceled => {
+                            completed_count += 1;
+                            "Canceled".to_string()
+                        }
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.label(&filename);
+                        ui.add(egui::ProgressBar::new(p).text(&status_str));
+                    });
+                }
+            });
+
+        ui.separator();
+
+        let overall = if total_count > 0 {
+            total_prog / total_count as f32
+        } else {
+            1.0
+        };
+
+        ui.horizontal(|ui| {
+            ui.label("Overall Progress:");
+            ui.add(egui::ProgressBar::new(overall).text(format!(
+                "{}/{} finished ({:.0}%)",
+                completed_count,
+                total_count,
+                overall * 100.0
+            )));
+        });
+
+        if completed_count >= total_count {
+            if !self.finished {
+                self.finished = true;
+                self.close_time = Some(std::time::Instant::now());
+            }
+
+            if self.auto_close {
+                if let Some(start) = self.close_time {
+                    let elapsed = start.elapsed().as_secs_f32();
+                    let remaining = (self.exit_delay - elapsed).max(0.0);
+                    ui.label(format!("Finished! Closing in {:.1}s...", remaining));
+                    if elapsed >= self.exit_delay {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            } else {
+                ui.label("Conversions complete.");
+            }
+        }
+    }
+}
+
+fn run_conversion_gui(args: Vec<String>) {
     let settings = match initialize_user_settings_if_needed() {
         Ok(s) => s,
         Err(e) => {
@@ -282,9 +381,36 @@ fn run_cli_conversions(args: Vec<String>) {
     let hw_accel = settings.hardware_acceleration_mode;
     let copy_clipboard = settings.copy_files_in_clipboard_after_conversion;
 
-    let scheduler = ConversionScheduler::new(jobs, max_threads, hw_accel, copy_clipboard);
+    let scheduler = Arc::new(ConversionScheduler::new(jobs, max_threads, hw_accel, copy_clipboard));
 
-    println!("Starting conversion of {} files...", scheduler.jobs.len());
-    scheduler.execute_all();
-    println!("All conversion tasks finished.");
+    // Spawn conversion execution on worker thread
+    let scheduler_clone = Arc::clone(&scheduler);
+    thread::spawn(move || {
+        scheduler_clone.execute_all();
+    });
+
+    let auto_close = settings.exit_application_when_conversions_finished;
+    let exit_delay = settings.duration_between_end_of_conversions_and_application_exit;
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([650.0, 450.0])
+            .with_title(format!("File Converter - {}", preset_name)),
+        ..Default::default()
+    };
+
+    let app = ProgressApp {
+        scheduler,
+        preset_name,
+        auto_close,
+        exit_delay,
+        finished: false,
+        close_time: None,
+    };
+
+    let _ = eframe::run_native(
+        "File Converter Progress",
+        options,
+        Box::new(|_cc| Ok(Box::new(app))),
+    );
 }
