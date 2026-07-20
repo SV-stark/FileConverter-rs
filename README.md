@@ -37,6 +37,33 @@ All credit for the original application design, default presets schema (`Setting
 
 ---
 
+## 📖 Usage Guide
+
+### 1. Converting Files from Windows Explorer
+1. Select one or multiple files in **Windows Explorer**.
+2. **Right-click** the selection:
+   - On **Windows 10**: Hover over the **`File Converter`** cascading context menu.
+   - On **Windows 11**: Click **`File Converter`** directly on the main context menu (or expand *"Show more options"*).
+3. Select your desired target format (e.g., *"To Mp3"*, *"To Png"*, *"To Pdf"*).
+4. The **Native Progress Window** will pop up, displaying individual progress bars per file and an overall status indicator.
+5. Once conversion completes, the output files are placed directly alongside the source files (or formatted per your path template settings), and the window automatically closes.
+
+### 2. Batch Operations & Large Selection Handling
+* You can select **hundreds or thousands of files at once**. 
+* If the command-line length exceeds Windows limits (8,000 characters), FileConverter automatically passes file lists via a temporary text manifest file to ensure seamless batch execution.
+
+### 3. Configuring Conversion Presets
+1. Open **FileConverter** from the **Windows Start Menu** or click **`Configure presets...`** at the bottom of the right-click menu.
+2. The **Native Settings Window** opens:
+   - **Preset Manager**: Add, delete, or re-order presets (**`⬆️ Up`** / **`⬇️ Down`**) to customize context menu position.
+   - **Output Path Templates**: Custom path formatting using placeholders like `(path)`, `(filename)`, `(inputext)`, `(outputext)`, or date codes `(d:yyyy-MM-dd)`. Live previews are displayed instantly.
+   - **Hardware Acceleration**: Enable GPU-accelerated video encoding (NVIDIA CUDA or AMD AMF).
+   - **Concurrency Control**: Adjust maximum simultaneous thread conversions (1 to 32 workers).
+   - **Post-Conversion Actions**: Choose to keep original files or move them to the Recycle Bin.
+3. Click **`💾 Save Settings`** to persist changes immediately.
+
+---
+
 ## 🛠️ Architecture & Core Modules
 
 The repository is structured as a modular Cargo workspace containing three distinct sub-crates:
@@ -49,9 +76,9 @@ FileConverter-rs/
 │   │   ├── ffmpeg.rs       # Audio & Video FFMpeg command builder & pass runner
 │   │   ├── office.rs       # Word, Excel, PowerPoint COM automation
 │   │   ├── cda.rs          # Audio CD track extraction via raw sector reading
-│   │   ├── scheduler.rs    # Thread pool job queue & timestamp synchronization
+│   │   ├── scheduler.rs    # Bounded channel worker pool & CDA drive lock
 │   │   ├── settings.rs     # Preset parser & XML serializer
-│   │   ├── path_helpers.rs # Output file template engine ((p)\(f) resolution)
+│   │   ├── path_helpers.rs # LazyLock regex statics & output path template engine
 │   │   └── types.rs        # Enums for OutputType, PostAction, HW Acceleration
 ├── file_converter_shell/   # Windows Shell Extension COM DLL
 │   └── src/

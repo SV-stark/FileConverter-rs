@@ -446,11 +446,34 @@ fn run_conversion_gui(args: Vec<String>) {
 
     let mut preset_name = String::new();
     let mut input_files = Vec::new();
+    let mut temp_list_to_clean: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
-        if (args[i] == "-preset" || args[i] == "/preset") && i + 1 < args.len() {
+        let arg = &args[i];
+        if (arg == "-preset"
+            || arg == "/preset"
+            || arg == "--preset"
+            || arg == "--conversion-preset")
+            && i + 1 < args.len()
+        {
             preset_name = args[i + 1].clone();
+            i += 2;
+        } else if (arg == "--input-files" || arg == "-input-files" || arg == "/input-files")
+            && i + 1 < args.len()
+        {
+            let list_path = PathBuf::from(&args[i + 1]);
+            if list_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&list_path) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            input_files.push(trimmed.to_string());
+                        }
+                    }
+                }
+                temp_list_to_clean = Some(list_path);
+            }
             i += 2;
         } else {
             input_files.push(args[i].clone());
@@ -525,4 +548,8 @@ fn run_conversion_gui(args: Vec<String>) {
         options,
         Box::new(|_cc| Ok(Box::new(app))),
     );
+
+    if let Some(temp_path) = temp_list_to_clean {
+        let _ = std::fs::remove_file(temp_path);
+    }
 }

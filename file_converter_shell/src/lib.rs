@@ -10,7 +10,9 @@ use std::ffi::{c_void, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{LazyLock, RwLock};
+use std::time::SystemTime;
 
 use file_converter_core::settings::Settings;
 use file_converter_core::types::OutputType;
@@ -19,7 +21,6 @@ use file_converter_core::types::OutputType;
 type HRESULT = i32;
 type ULONG = u32;
 type HMENU = *mut c_void;
-type HRESULT_SUCCEEDED = i32; // >= 0
 
 const S_OK: HRESULT = 0;
 const S_FALSE: HRESULT = 1;
@@ -151,9 +152,10 @@ unsafe extern "system" {
     fn GetModuleHandleW(lpModuleName: *const u16) -> *mut c_void;
 }
 
-// static DLL instance handle
-static mut G_DLL_INSTANCE: Option<*mut c_void> = None;
+// Atomic DLL instance handle & active COM object counters
+static G_DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 static G_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
+static G_OBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
@@ -163,7 +165,7 @@ pub unsafe extern "system" fn DllMain(
 ) -> i32 {
     if fdw_reason == 1 {
         // DLL_PROCESS_ATTACH
-        G_DLL_INSTANCE = Some(hinst_dll);
+        G_DLL_INSTANCE.store(hinst_dll as usize, Ordering::Relaxed);
     }
     1
 }
@@ -244,7 +246,6 @@ struct IContextMenuVtbl {
     ) -> HRESULT,
 }
 
-// Dummy/raw interface for IDataObject
 #[repr(C)]
 struct IDataObject {
     lpVtbl: *const IDataObjectVtbl,
@@ -264,7 +265,6 @@ struct IDataObjectVtbl {
         pformatetc: *const FORMATETC,
         pmedium: *mut STGMEDIUM,
     ) -> HRESULT,
-    // other methods omitted...
 }
 
 // COM Struct Implementation
@@ -276,7 +276,6 @@ struct FileConverterShell {
     selected_files: Vec<String>,
 }
 
-// Core structures functions
 static CONTEXT_MENU_VTBL: IContextMenuVtbl = IContextMenuVtbl {
     QueryInterface: FileConverterShell_QueryInterface_ContextMenu,
     AddRef: FileConverterShell_AddRef,
@@ -307,9 +306,8 @@ unsafe extern "system" fn FileConverterShell_QueryInterface_ShellExt(
     riid: *const GUID,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    // ShellExt is secondary interface, compute pointer back to the start of FileConverterShell
-    let this_ptr =
-        (this as usize - std::mem::size_of::<*const IContextMenuVtbl>()) as *mut FileConverterShell;
+    let offset = std::mem::offset_of!(FileConverterShell, shell_ext_vtbl);
+    let this_ptr = (this as usize - offset) as *mut FileConverterShell;
     FileConverterShell_QueryInterface(this_ptr, riid, ppv)
 }
 
@@ -343,12 +341,12 @@ unsafe extern "system" fn FileConverterShell_AddRef(this: *mut c_void) -> ULONG 
 
 unsafe extern "system" fn FileConverterShell_Release(this: *mut c_void) -> ULONG {
     let this = this as *mut FileConverterShell;
-    let count = (*this).ref_count.fetch_sub(1, Ordering::Release) - 1;
+    let count = (*this).ref_count.fetch_sub(1, Ordering::AcqRel) - 1;
     if count == 0 {
-        // Drop the vector manually before freeing memory
         std::ptr::drop_in_place(&mut (*this).selected_files);
-        // Deallocate COM Object memory
-        let _ = Box::from_raw(this);
+        let layout = std::alloc::Layout::new::<FileConverterShell>();
+        std::alloc::dealloc(this as *mut u8, layout);
+        G_OBJECT_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
     count
 }
@@ -359,8 +357,9 @@ unsafe extern "system" fn FileConverterShell_Initialize(
     pDataObj: *mut IDataObject,
     _hkeyProgID: *mut c_void,
 ) -> HRESULT {
-    let this_ptr =
-        (this as usize - std::mem::size_of::<*const IContextMenuVtbl>()) as *mut FileConverterShell;
+    let offset = std::mem::offset_of!(FileConverterShell, shell_ext_vtbl);
+    let this_ptr = (this as usize - offset) as *mut FileConverterShell;
+
     if pDataObj.is_null() {
         return E_FAIL;
     }
@@ -381,7 +380,6 @@ unsafe extern "system" fn FileConverterShell_Initialize(
 
     let hr = ((*(*pDataObj).lpVtbl).GetData)(pDataObj, &fmt, &mut medium);
     if hr >= 0 {
-        // SUCCEEDED
         let hDrop = medium.hGlobal;
         let lock = GlobalLock(hDrop);
         if !lock.is_null() {
@@ -393,7 +391,6 @@ unsafe extern "system" fn FileConverterShell_Initialize(
                 if size > 0 {
                     let mut buf = vec![0u16; (size + 1) as usize];
                     DragQueryFileW(hDrop, i, buf.as_mut_ptr(), size + 1);
-                    // Convert Wide char array to Rust String
                     if let Some(null_pos) = buf.iter().position(|&x| x == 0) {
                         let os_str = OsString::from_wide(&buf[..null_pos]);
                         if let Ok(path_str) = os_str.into_string() {
@@ -413,7 +410,42 @@ unsafe extern "system" fn FileConverterShell_Initialize(
     }
 }
 
-// Compatibility cache
+// In-memory thread-safe cached settings loader to avoid disk I/O on UI thread
+static CACHED_SETTINGS: LazyLock<RwLock<Option<(SystemTime, Settings)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+fn get_cached_settings() -> Settings {
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let user_settings_path = Path::new(&local_app_data)
+        .join("FileConverter")
+        .join("Settings.user.xml");
+
+    let mtime = user_settings_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    if let Ok(guard) = CACHED_SETTINGS.read() {
+        if let Some((cached_mtime, ref settings)) = *guard {
+            if cached_mtime == mtime {
+                return settings.clone();
+            }
+        }
+    }
+
+    let loaded = if user_settings_path.exists() {
+        Settings::load_from_file(&user_settings_path).unwrap_or_else(|_| create_default_settings())
+    } else {
+        create_default_settings()
+    };
+
+    if let Ok(mut guard) = CACHED_SETTINGS.write() {
+        *guard = Some((mtime, loaded.clone()));
+    }
+
+    loaded
+}
+
 fn get_extension_category(ext: &str) -> &'static str {
     match ext {
         "aac" | "aiff" | "ape" | "cda" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
@@ -461,13 +493,13 @@ fn is_compatible(output_type: OutputType, category: &str) -> bool {
     }
 }
 
-// User Presets cached list
 struct PresetMenuInfo {
     name: String,
     id: u32,
 }
 
-static mut G_ACTIVE_PRESETS: Vec<PresetMenuInfo> = Vec::new();
+static G_ACTIVE_PRESETS: LazyLock<RwLock<Vec<PresetMenuInfo>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
 
 unsafe extern "system" fn FileConverterShell_QueryContextMenu(
     this: *mut c_void,
@@ -482,22 +514,9 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
         return S_FALSE;
     }
 
-    // Load presets from user/default settings
-    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    let user_settings_path = Path::new(&local_app_data)
-        .join("FileConverter")
-        .join("Settings.user.xml");
-
-    let mut settings = if user_settings_path.exists() {
-        Settings::load_from_file(user_settings_path).unwrap_or_else(|_| create_default_settings())
-    } else {
-        create_default_settings()
-    };
-
-    // Fallback: merge defaults if loaded user file
+    let mut settings = get_cached_settings();
     settings.merge(create_default_settings());
 
-    // Get distinct categories of selected files
     let categories: Vec<String> = (*this)
         .selected_files
         .iter()
@@ -524,26 +543,25 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
         return S_FALSE;
     }
 
-    // Cache active presets mapping to their IDs
-    G_ACTIVE_PRESETS.clear();
-    let mut cmd_id = idCmdFirst;
+    let mut active_presets = G_ACTIVE_PRESETS.write().unwrap();
+    active_presets.clear();
+
+    let cmd_id = idCmdFirst;
     for (i, p) in compatible_presets.iter().enumerate() {
-        G_ACTIVE_PRESETS.push(PresetMenuInfo {
+        active_presets.push(PresetMenuInfo {
             name: p.name.clone(),
             id: cmd_id + i as u32,
         });
     }
 
-    // ID for configure command is following the presets
-    let configure_cmd_id = cmd_id + G_ACTIVE_PRESETS.len() as u32;
+    let presets_count = active_presets.len();
+    let configure_cmd_id = cmd_id + presets_count as u32;
 
-    // Let's decide cascading vs flat
     let parent_text = "File Converter\0";
     let parent_text_wide: Vec<u16> = parent_text.encode_utf16().collect();
 
-    if G_ACTIVE_PRESETS.len() <= 5 {
-        // Flat style: Insert items directly, separated by divider or directly
-        for (i, info) in G_ACTIVE_PRESETS.iter().enumerate() {
+    if presets_count <= 5 {
+        for (i, info) in active_presets.iter().enumerate() {
             let mut name_wide: Vec<u16> = info.name.encode_utf16().collect();
             name_wide.push(0);
 
@@ -565,16 +583,15 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             InsertMenuItemW(hmenu, indexMenu + i as u32, 1, &mii);
         }
 
-        let count_inserted = G_ACTIVE_PRESETS.len() as i32;
+        let count_inserted = presets_count as i32;
         (count_inserted).into()
     } else {
-        // Cascading sub-menu
         let h_sub_menu = CreatePopupMenu();
         if h_sub_menu.is_null() {
             return E_FAIL;
         }
 
-        for (i, info) in G_ACTIVE_PRESETS.iter().enumerate() {
+        for (i, info) in active_presets.iter().enumerate() {
             let mut name_wide: Vec<u16> = info.name.encode_utf16().collect();
             name_wide.push(0);
 
@@ -596,7 +613,6 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             InsertMenuItemW(h_sub_menu, i as u32, 1, &mii);
         }
 
-        // Add "Separator" + "Configure..." to sub-menu
         let sep_mii = MENUITEMINFOW {
             cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
             fMask: MIIM_FTYPE,
@@ -611,7 +627,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             cch: 0,
             hbmpItem: std::ptr::null_mut(),
         };
-        InsertMenuItemW(h_sub_menu, G_ACTIVE_PRESETS.len() as u32, 1, &sep_mii);
+        InsertMenuItemW(h_sub_menu, presets_count as u32, 1, &sep_mii);
 
         let config_text = "Configure...\0";
         let mut config_text_wide: Vec<u16> = config_text.encode_utf16().collect();
@@ -629,14 +645,8 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             cch: (config_text_wide.len() - 1) as u32,
             hbmpItem: std::ptr::null_mut(),
         };
-        InsertMenuItemW(
-            h_sub_menu,
-            (G_ACTIVE_PRESETS.len() + 1) as u32,
-            1,
-            &config_mii,
-        );
+        InsertMenuItemW(h_sub_menu, (presets_count + 1) as u32, 1, &config_mii);
 
-        // Add cascading parent to context menu
         let parent_mii = MENUITEMINFOW {
             cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
             fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_FTYPE,
@@ -654,8 +664,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
 
         InsertMenuItemW(hmenu, indexMenu, 1, &parent_mii);
 
-        // Return number of commands added: presets count + 1 (configure)
-        let total_commands = G_ACTIVE_PRESETS.len() as i32 + 2; // (presets + sep + configure)
+        let total_commands = presets_count as i32 + 2;
         (total_commands).into()
     }
 }
@@ -669,25 +678,48 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         return E_FAIL;
     }
 
-    // Check if high word is zero, meaning lpVerb is a command ID offset
     let verb_val = (*pici).lpVerb as usize;
     let low_word_verb = verb_val & 0xFFFF;
 
-    let presets_count = G_ACTIVE_PRESETS.len();
+    let active_presets = G_ACTIVE_PRESETS.read().unwrap();
+    let presets_count = active_presets.len();
 
     if low_word_verb < presets_count {
-        let preset_name = &G_ACTIVE_PRESETS[low_word_verb].name;
+        let preset_name = &active_presets[low_word_verb].name;
 
-        // Spawn file_converter_bin.exe -preset "<preset>" "<file1>" "<file2>" ...
         let bin_path = get_bin_path();
         if !bin_path.exists() {
             return E_FAIL;
         }
 
         let mut cmd = Command::new(&bin_path);
-        cmd.arg("-preset").arg(preset_name);
+        cmd.arg("--conversion-preset").arg(preset_name);
+
+        let mut total_len = preset_name.len() + 30;
         for file in &(*this).selected_files {
-            cmd.arg(file);
+            total_len += file.len() + 3;
+        }
+
+        if total_len >= 8000 {
+            let temp_dir = std::env::temp_dir();
+            let pid = std::process::id();
+            let temp_file_path = temp_dir.join(format!("file-converter-input-list-{}.txt", pid));
+
+            if let Ok(mut file) = std::fs::File::create(&temp_file_path) {
+                use std::io::Write;
+                for path in &(*this).selected_files {
+                    let _ = writeln!(file, "{}", path);
+                }
+                cmd.arg("--input-files").arg(&temp_file_path);
+            } else {
+                for file in &(*this).selected_files {
+                    cmd.arg(file);
+                }
+            }
+        } else {
+            for file in &(*this).selected_files {
+                cmd.arg(file);
+            }
         }
 
         if cmd.spawn().is_ok() {
@@ -695,8 +727,8 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         } else {
             E_FAIL
         }
-    } else if low_word_verb == presets_count + 1 {
-        // Spawn file_converter_bin.exe with settings configuration flag (e.g. -settings)
+    } else if low_word_verb == presets_count {
+        // "Configure..." command clicked!
         let bin_path = get_bin_path();
         if bin_path.exists() {
             let _ = Command::new(&bin_path).arg("-settings").spawn();
@@ -720,10 +752,7 @@ unsafe extern "system" fn FileConverterShell_GetCommandString(
     S_OK
 }
 
-// Fallback: Default settings if no file loaded
 fn create_default_settings() -> Settings {
-    // In actual code, we can read default settings from registry or build standard skeletal defaults.
-    // Let's create a minimal Settings structure representing the common presets.
     Settings {
         serialization_version: 4,
         maximum_number_of_simultaneous_conversions: 2,
@@ -737,7 +766,6 @@ fn create_default_settings() -> Settings {
     }
 }
 
-// Path resolve helpers
 fn get_bin_path() -> PathBuf {
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop();
@@ -746,19 +774,17 @@ fn get_bin_path() -> PathBuf {
             return path;
         }
     }
-    // Check next to DLL if active inside regsvr32 or explorer process
-    unsafe {
-        if let Some(dll_hinst) = G_DLL_INSTANCE {
-            let mut buf = vec![0u16; 512];
-            let len = GetModuleFileNameW(dll_hinst, buf.as_mut_ptr(), 512);
-            if len > 0 {
-                let os_str = OsString::from_wide(&buf[..len as usize]);
-                let dll_path = PathBuf::from(os_str);
-                if let Some(parent) = dll_path.parent() {
-                    let path = parent.join("file_converter_bin.exe");
-                    if path.exists() {
-                        return path;
-                    }
+    let dll_hinst = G_DLL_INSTANCE.load(Ordering::Relaxed) as *mut c_void;
+    if !dll_hinst.is_null() {
+        let mut buf = vec![0u16; 512];
+        let len = unsafe { GetModuleFileNameW(dll_hinst, buf.as_mut_ptr(), 512) };
+        if len > 0 {
+            let os_str = OsString::from_wide(&buf[..len as usize]);
+            let dll_path = PathBuf::from(os_str);
+            if let Some(parent) = dll_path.parent() {
+                let path = parent.join("file_converter_bin.exe");
+                if path.exists() {
+                    return path;
                 }
             }
         }
@@ -808,9 +834,10 @@ unsafe extern "system" fn ClassFactory_AddRef(this: *mut c_void) -> ULONG {
 
 unsafe extern "system" fn ClassFactory_Release(this: *mut c_void) -> ULONG {
     let this = this as *mut FileConverterClassFactory;
-    let count = (*this).ref_count.fetch_sub(1, Ordering::Release) - 1;
+    let count = (*this).ref_count.fetch_sub(1, Ordering::AcqRel) - 1;
     if count == 0 {
-        let _ = Box::from_raw(this);
+        let layout = std::alloc::Layout::new::<FileConverterClassFactory>();
+        std::alloc::dealloc(this as *mut u8, layout);
     }
     count
 }
@@ -825,14 +852,24 @@ unsafe extern "system" fn ClassFactory_CreateInstance(
         return -2147221232; // CLASS_E_NOAGGREGATION
     }
 
-    let obj = Box::new(FileConverterShell {
-        context_menu_vtbl: &CONTEXT_MENU_VTBL,
-        shell_ext_vtbl: &SHELL_EXT_VTBL,
-        ref_count: AtomicU32::new(1),
-        selected_files: Vec::new(),
-    });
+    let layout = std::alloc::Layout::new::<FileConverterShell>();
+    let obj_ptr = std::alloc::alloc(layout) as *mut FileConverterShell;
+    if obj_ptr.is_null() {
+        return E_OUTOFMEMORY;
+    }
 
-    let obj_ptr = Box::into_raw(obj);
+    std::ptr::write(
+        obj_ptr,
+        FileConverterShell {
+            context_menu_vtbl: &CONTEXT_MENU_VTBL,
+            shell_ext_vtbl: &SHELL_EXT_VTBL,
+            ref_count: AtomicU32::new(1),
+            selected_files: Vec::new(),
+        },
+    );
+
+    G_OBJECT_COUNT.fetch_add(1, Ordering::Relaxed);
+
     let hr = FileConverterShell_QueryInterface(obj_ptr, riid, ppvObject);
     FileConverterShell_Release(obj_ptr as *mut c_void);
     hr
@@ -863,12 +900,20 @@ pub unsafe extern "system" fn DllGetClassObject(
         return -2147221231; // CLASS_E_CLASSNOTAVAILABLE
     }
 
-    let factory = Box::new(FileConverterClassFactory {
-        vtbl: &CLASS_FACTORY_VTBL,
-        ref_count: AtomicU32::new(1),
-    });
+    let layout = std::alloc::Layout::new::<FileConverterClassFactory>();
+    let factory_ptr = std::alloc::alloc(layout) as *mut FileConverterClassFactory;
+    if factory_ptr.is_null() {
+        return E_OUTOFMEMORY;
+    }
 
-    let factory_ptr = Box::into_raw(factory);
+    std::ptr::write(
+        factory_ptr,
+        FileConverterClassFactory {
+            vtbl: &CLASS_FACTORY_VTBL,
+            ref_count: AtomicU32::new(1),
+        },
+    );
+
     let hr = ClassFactory_QueryInterface(factory_ptr as *mut c_void, riid, ppv);
     ClassFactory_Release(factory_ptr as *mut c_void);
     hr
@@ -876,7 +921,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 
 #[no_mangle]
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if G_LOCK_COUNT.load(Ordering::Relaxed) == 0 {
+    if G_LOCK_COUNT.load(Ordering::Relaxed) == 0 && G_OBJECT_COUNT.load(Ordering::Relaxed) == 0 {
         S_OK
     } else {
         S_FALSE
@@ -890,49 +935,62 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
     use winreg::RegKey;
 
-    let mut hmodule = G_DLL_INSTANCE.unwrap_or(std::ptr::null_mut());
-    if hmodule.is_null() {
+    let hmodule = G_DLL_INSTANCE.load(Ordering::Relaxed) as *mut c_void;
+    let mut module_path = PathBuf::new();
+
+    if !hmodule.is_null() {
+        let mut buf = vec![0u16; 512];
+        let len = GetModuleFileNameW(hmodule, buf.as_mut_ptr(), 512);
+        if len > 0 {
+            let os_str = OsString::from_wide(&buf[..len as usize]);
+            module_path = PathBuf::from(os_str);
+        }
+    }
+
+    if module_path.as_os_str().is_empty() {
         let dll_name: Vec<u16> = "file_converter_shell.dll\0".encode_utf16().collect();
-        hmodule = GetModuleHandleW(dll_name.as_ptr());
-    }
-
-    let mut dll_path_buf = vec![0u16; 512];
-    let len = GetModuleFileNameW(hmodule, dll_path_buf.as_mut_ptr(), 512);
-    if len == 0 {
-        return E_FAIL;
-    }
-    let os_str = OsString::from_wide(&dll_path_buf[..len as usize]);
-    let dll_path = os_str.to_string_lossy().to_string();
-
-    let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
-
-    // Register CLSID in HKCR, HKLM\Software\Classes, and HKCU\Software\Classes
-    let register_clsid_in = |root: &RegKey| {
-        let clsid_key_path = format!("CLSID\\{}", clsid_str);
-        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
-            let _ = key.set_value("", &"File Converter Context Menu Handler");
-            if let Ok((inproc_key, _)) = key.create_subkey("InprocServer32") {
-                let _ = inproc_key.set_value("", &dll_path);
-                let _ = inproc_key.set_value("ThreadingModel", &"Apartment");
+        let h = GetModuleHandleW(dll_name.as_ptr());
+        if !h.is_null() {
+            let mut buf = vec![0u16; 512];
+            let len = GetModuleFileNameW(h, buf.as_mut_ptr(), 512);
+            if len > 0 {
+                let os_str = OsString::from_wide(&buf[..len as usize]);
+                module_path = PathBuf::from(os_str);
             }
         }
-    };
+    }
 
+    let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
     let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
 
-    register_clsid_in(&hkcr);
-    if let Ok(ref root) = hklm_classes {
-        register_clsid_in(root);
-    }
-    if let Ok(ref root) = hkcu_classes {
-        register_clsid_in(root);
+    let clsid_path = format!("CLSID\\{}", clsid_str);
+    let clsid_inproc_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
+
+    let _ = hkcr.create_subkey(&clsid_path);
+    if let Ok((key, _)) = hkcr.create_subkey(&clsid_inproc_path) {
+        let _ = key.set_value("", &module_path.to_string_lossy().to_string());
+        let _ = key.set_value("ThreadingModel", &"Apartment");
     }
 
-    // Register Shell Extension Context Menu Handler across all associations
+    if let Ok(ref root) = hklm_classes {
+        let _ = root.create_subkey(&clsid_path);
+        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
+            let _ = key.set_value("", &module_path.to_string_lossy().to_string());
+            let _ = key.set_value("ThreadingModel", &"Apartment");
+        }
+    }
+    if let Ok(ref root) = hkcu_classes {
+        let _ = root.create_subkey(&clsid_path);
+        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
+            let _ = key.set_value("", &module_path.to_string_lossy().to_string());
+            let _ = key.set_value("ThreadingModel", &"Apartment");
+        }
+    }
+
     let associations = [
         "*",
         "AllFilesystemObjects",
@@ -944,46 +1002,33 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-        let _ = hkcr
-            .create_subkey(&path)
-            .map(|(k, _)| k.set_value("", &clsid_str));
+        if let Ok((key, _)) = hkcr.create_subkey(&path) {
+            let _ = key.set_value("", &clsid_str);
+        }
         if let Ok(ref root) = hklm_classes {
-            let _ = root
-                .create_subkey(&path)
-                .map(|(k, _)| k.set_value("", &clsid_str));
-        }
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root
-                .create_subkey(&path)
-                .map(|(k, _)| k.set_value("", &clsid_str));
-        }
-    }
-
-    // Register Direct Shell Verb for Windows 11 context menu fallback
-    let bin_path = get_bin_path();
-    let bin_str = bin_path.to_string_lossy().to_string();
-
-    for assoc in &associations {
-        let verb_path = format!("{}\\shell\\FileConverter", assoc);
-        let reg_verb = |root: &RegKey| {
-            if let Ok((key, _)) = root.create_subkey(&verb_path) {
-                let _ = key.set_value("", &"File Converter");
-                let _ = key.set_value("Icon", &format!("\"{}\",0", bin_str));
-                if let Ok((cmd_key, _)) = key.create_subkey("command") {
-                    let _ = cmd_key.set_value("", &format!("\"{}\" -settings", bin_str));
-                }
+            if let Ok((key, _)) = root.create_subkey(&path) {
+                let _ = key.set_value("", &clsid_str);
             }
-        };
-        reg_verb(&hkcr);
-        if let Ok(ref root) = hklm_classes {
-            reg_verb(root);
         }
         if let Ok(ref root) = hkcu_classes {
-            reg_verb(root);
+            if let Ok((key, _)) = root.create_subkey(&path) {
+                let _ = key.set_value("", &clsid_str);
+            }
+        }
+
+        let verb_path = format!("{}\\shell\\FileConverter", assoc);
+        let verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
+        let bin_path = get_bin_path();
+        if let Ok((key, _)) = hkcr.create_subkey(&verb_path) {
+            let _ = key.set_value("MUIVerb", &"File Converter");
+            let _ = key.set_value("SubCommands", &"");
+        }
+        if let Ok((key, _)) = hkcr.create_subkey(&verb_cmd_path) {
+            let cmd_str = format!("\"{}\" -settings", bin_path.to_string_lossy());
+            let _ = key.set_value("", &cmd_str);
         }
     }
 
-    // Mark as approved shell extension in registry
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok((key, _)) = hklm
         .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved")
@@ -991,7 +1036,6 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let _ = key.set_value(clsid_str, &"File Converter Context Menu Handler");
     }
 
-    // Refresh Windows Shell Cache immediately
     #[link(name = "shell32")]
     unsafe extern "system" {
         fn SHChangeNotify(
@@ -1085,17 +1129,5 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
         std::ptr::null(),
     );
 
-    S_OK
-}
-
-#[cfg(not(target_os = "windows"))]
-#[no_mangle]
-pub extern "system" fn DllRegisterServer() -> HRESULT {
-    S_OK
-}
-
-#[cfg(not(target_os = "windows"))]
-#[no_mangle]
-pub extern "system" fn DllUnregisterServer() -> HRESULT {
     S_OK
 }
