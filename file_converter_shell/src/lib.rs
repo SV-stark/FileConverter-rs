@@ -706,18 +706,40 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
     }
     let verb_offset = verb_val & 0xFFFF;
 
-    // Use per-instance state populated during QueryContextMenu so we are immune
-    // to concurrent shell objects overwriting the previously-global preset list.
-    let presets_count = (*this).active_presets.len();
+    let mut presets = (*this).active_presets.clone();
+    if presets.is_empty() {
+        let mut settings = get_cached_settings();
+        settings.merge(create_default_settings());
 
-    if presets_count == 0 {
-        // QueryContextMenu was never called on this instance – nothing to do.
-        return E_FAIL;
+        let categories: Vec<String> = (*this)
+            .selected_files
+            .iter()
+            .map(|f| {
+                let ext = Path::new(f)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                get_extension_category(&ext.to_lowercase()).to_string()
+            })
+            .collect();
+
+        presets = settings
+            .conversion_presets
+            .into_iter()
+            .filter(|preset| {
+                categories
+                    .iter()
+                    .all(|cat| is_compatible(preset.output_type, cat))
+            })
+            .map(|p| p.name)
+            .collect();
     }
+
+    let presets_count = presets.len();
 
     if verb_offset < presets_count {
         // A conversion preset was chosen.
-        let preset_name = (&(*this).active_presets)[verb_offset].clone();
+        let preset_name = &presets[verb_offset];
 
         let bin_path = get_bin_path();
         if !bin_path.exists() {
@@ -725,7 +747,7 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         }
 
         let mut cmd = Command::new(&bin_path);
-        cmd.arg("--conversion-preset").arg(&preset_name);
+        cmd.arg("--conversion-preset").arg(preset_name);
 
         let mut total_len = preset_name.len() + 30;
         for file in &(*this).selected_files {
@@ -759,7 +781,7 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         } else {
             E_FAIL
         }
-    } else if (*this).configure_cmd_offset == Some(verb_offset) {
+    } else {
         // "Configure..." item from the submenu was chosen.
         let bin_path = get_bin_path();
         if bin_path.exists() {
@@ -768,8 +790,6 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         } else {
             E_FAIL
         }
-    } else {
-        E_FAIL
     }
 }
 
