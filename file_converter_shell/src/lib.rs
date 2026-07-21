@@ -542,9 +542,17 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
     indexMenu: u32,
     idCmdFirst: u32,
     _idCmdLast: u32,
-    _uFlags: u32,
+    uFlags: u32,
 ) -> HRESULT {
+    const CMF_DEFAULTONLY: u32 = 0x0001;
     let this = this as *mut FileConverterShell;
+
+    // When the shell only wants the default verb (e.g. double-click), we must
+    // not add any items – otherwise the shell may misbehave.
+    if uFlags & CMF_DEFAULTONLY != 0 {
+        return S_FALSE;
+    }
+
     if (*this).selected_files.is_empty() {
         return S_FALSE;
     }
@@ -674,12 +682,16 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
         // Record which verb offset corresponds to "Configure..."
         (*this).configure_cmd_offset = Some(presets_count);
 
+        // The parent submenu item uses the next available ID after "Configure...".
+        // Total IDs consumed: preset[0..N-1] + configure + parent = N+2
+        let parent_cmd_id = configure_cmd_id + 1;
+
         let parent_mii = MENUITEMINFOW {
             cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
             fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_ID | MIIM_FTYPE,
             fType: MFT_STRING,
             fState: 0,
-            wID: cmd_id + presets_count as u32 + 100,
+            wID: parent_cmd_id,
             hSubMenu: h_sub_menu,
             hbmpChecked: std::ptr::null_mut(),
             hbmpUnchecked: std::ptr::null_mut(),
@@ -691,9 +703,8 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
 
         InsertMenuItemW(hmenu, indexMenu, 1, &parent_mii);
 
-        // IDs used: preset[0..N] + configure = N+1 commands total
-        // (separator has no ID so doesn't count)
-        (presets_count as i32 + 1).into()
+        // IDs used: preset[0..N-1] + configure + parent = N+2 total
+        (presets_count as i32 + 2).into()
     }
 }
 
@@ -1031,30 +1042,44 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
 
-    let clsid_path = format!("CLSID\\{}", clsid_str);
+    let clsid_key_path = format!("CLSID\\{}", clsid_str);
     let clsid_inproc_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
 
-    let _ = hkcr.create_subkey(&clsid_path);
+    // 1. Nuke the entire CLSID tree across all hives to remove stale .NET COM
+    //    registration values (Assembly, Class, RuntimeVersion, CodeBase, ProgId,
+    //    Implemented Categories) left by a previous C#/.NET File Converter install.
+    //    These values cause mscoree.dll to intercept COM activation, preventing
+    //    the native Rust DLL from loading.
+    let _ = hkcr.delete_subkey_all(&clsid_key_path);
+    if let Ok(ref root) = hklm_classes {
+        let _ = root.delete_subkey_all(&clsid_key_path);
+    }
+    if let Ok(ref root) = hkcu_classes {
+        let _ = root.delete_subkey_all(&clsid_key_path);
+    }
+
+    // 2. Register CLSID in HKCR and HKLM\Software\Classes (clean, native-only)
+    let mod_path_str = module_path.to_string_lossy().to_string();
+
+    if let Ok((key, _)) = hkcr.create_subkey(&clsid_key_path) {
+        let _ = key.set_value("", &"FileConverter Shell Extension");
+    }
     if let Ok((key, _)) = hkcr.create_subkey(&clsid_inproc_path) {
-        let _ = key.set_value("", &module_path.to_string_lossy().to_string());
+        let _ = key.set_value("", &mod_path_str);
         let _ = key.set_value("ThreadingModel", &"Apartment");
     }
 
     if let Ok(ref root) = hklm_classes {
-        let _ = root.create_subkey(&clsid_path);
-        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
-            let _ = key.set_value("", &module_path.to_string_lossy().to_string());
-            let _ = key.set_value("ThreadingModel", &"Apartment");
+        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
+            let _ = key.set_value("", &"FileConverter Shell Extension");
         }
-    }
-    if let Ok(ref root) = hkcu_classes {
-        let _ = root.create_subkey(&clsid_path);
         if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
-            let _ = key.set_value("", &module_path.to_string_lossy().to_string());
+            let _ = key.set_value("", &mod_path_str);
             let _ = key.set_value("ThreadingModel", &"Apartment");
         }
     }
 
+    // 3. Register Context Menu Handlers across filesystem objects
     let associations = [
         "*",
         "AllFilesystemObjects",
@@ -1066,6 +1091,12 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
+
+        // Remove stale HKCU association if present
+        if let Ok(ref root) = hkcu_classes {
+            let _ = root.delete_subkey_all(&path);
+        }
+
         if let Ok((key, _)) = hkcr.create_subkey(&path) {
             let _ = key.set_value("", &clsid_str);
         }
@@ -1073,23 +1104,6 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
             if let Ok((key, _)) = root.create_subkey(&path) {
                 let _ = key.set_value("", &clsid_str);
             }
-        }
-        if let Ok(ref root) = hkcu_classes {
-            if let Ok((key, _)) = root.create_subkey(&path) {
-                let _ = key.set_value("", &clsid_str);
-            }
-        }
-
-        let verb_path = format!("{}\\shell\\FileConverter", assoc);
-        let verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
-        let bin_path = get_bin_path();
-        if let Ok((key, _)) = hkcr.create_subkey(&verb_path) {
-            let _ = key.set_value("MUIVerb", &"File Converter");
-            let _ = key.set_value("SubCommands", &"");
-        }
-        if let Ok((key, _)) = hkcr.create_subkey(&verb_cmd_path) {
-            let cmd_str = format!("\"{}\" -settings", bin_path.to_string_lossy());
-            let _ = key.set_value("", &cmd_str);
         }
     }
 
