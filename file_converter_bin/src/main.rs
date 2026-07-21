@@ -54,16 +54,47 @@ fn register_shell_extension_dll() -> String {
         return format!("Shell DLL not found at {:?}", dll_path);
     }
 
-    let status = std::process::Command::new("regsvr32.exe")
-        .arg("/s")
-        .arg(&dll_path)
-        .status();
+    #[cfg(target_os = "windows")]
+    unsafe {
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                lpOperation: *const u16,
+                lpFile: *const u16,
+                lpParameters: *const u16,
+                lpDirectory: *const u16,
+                nShowCmd: i32,
+            ) -> *mut std::ffi::c_void;
+        }
 
-    match status {
-        Ok(s) if s.success() => "Shell extension context menu registered successfully!".to_string(),
-        Ok(s) => format!("regsvr32 failed with exit code: {:?}", s.code()),
-        Err(e) => format!("Failed to run regsvr32: {:?}", e),
+        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+        let file: Vec<u16> = "regsvr32.exe\0".encode_utf16().collect();
+        let params: Vec<u16> = format!("/s \"{}\"\0", dll_path.to_string_lossy())
+            .encode_utf16()
+            .collect();
+
+        let res = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            params.as_ptr(),
+            std::ptr::null(),
+            1,
+        );
+
+        if (res as usize) > 32 {
+            "Shell extension context menu registered successfully with administrator privileges!"
+                .to_string()
+        } else {
+            format!(
+                "Registration request failed or was canceled (Code: {}).",
+                res as usize
+            )
+        }
     }
+
+    #[cfg(not(target_os = "windows"))]
+    "Shell extension registration is only supported on Windows.".to_string()
 }
 
 fn play_completion_sound() {
