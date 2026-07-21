@@ -4,13 +4,13 @@
 //! native HEIC/HEIF decoding (`heic`), SIMD-accelerated resizing (`fast_image_resize`),
 //! and multi-core PDF page rendering (`hayro` + `rayon`).
 
+use crate::error::{FileConverterError, Result};
+use crate::settings::ConversionPreset;
+use crate::types::OutputType;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
-
-use crate::settings::ConversionPreset;
-use crate::types::OutputType;
 
 use hayro::hayro_syntax::Pdf;
 use hayro::{RenderCache, RenderSettings, render};
@@ -22,21 +22,21 @@ use heic::{DecoderConfig, PixelLayout};
 use memmap2::Mmap;
 
 /// Returns total page count of a PDF document using memory-mapped parsing.
-pub fn get_pdf_page_count(input_path: &str) -> Result<usize, String> {
-    let file =
-        std::fs::File::open(input_path).map_err(|e| format!("Failed to open PDF file: {:?}", e))?;
+pub fn get_pdf_page_count(input_path: &str) -> Result<usize> {
+    let file = std::fs::File::open(input_path)
+        .map_err(|e| FileConverterError::Image(format!("Failed to open PDF file: {:?}", e)))?;
 
-    let mmap =
-        unsafe { Mmap::map(&file) }.map_err(|e| format!("Failed to memory map PDF: {:?}", e))?;
+    let mmap = unsafe { Mmap::map(&file) }
+        .map_err(|e| FileConverterError::Image(format!("Failed to memory map PDF: {:?}", e)))?;
 
-    let pdf =
-        Pdf::new(Arc::new(mmap)).map_err(|e| format!("Failed to parse PDF document: {:?}", e))?;
+    let pdf = Pdf::new(Arc::new(mmap))
+        .map_err(|e| FileConverterError::Image(format!("Failed to parse PDF document: {:?}", e)))?;
 
     Ok(pdf.pages().len())
 }
 
 /// Retrieves image dimensions (width, height) without full image decoding.
-pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32), String> {
+pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
     let ext = Path::new(input_path)
         .extension()
         .and_then(|s| s.to_str())
@@ -44,26 +44,29 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32), String> {
         .to_lowercase();
 
     let file = std::fs::File::open(input_path)
-        .map_err(|e| format!("Failed to open image file: {:?}", e))?;
+        .map_err(|e| FileConverterError::Image(format!("Failed to open image file: {:?}", e)))?;
 
-    let mmap =
-        unsafe { Mmap::map(&file) }.map_err(|e| format!("Failed to memory map image: {:?}", e))?;
+    let mmap = unsafe { Mmap::map(&file) }
+        .map_err(|e| FileConverterError::Image(format!("Failed to memory map image: {:?}", e)))?;
 
     if ext == "heic" || ext == "heif" {
         let output = DecoderConfig::new()
             .decode(&mmap, PixelLayout::Rgba8)
-            .map_err(|e| format!("Failed to decode HEIC file: {:?}", e))?;
+            .map_err(|e| {
+                FileConverterError::Image(format!("Failed to decode HEIC file: {:?}", e))
+            })?;
         return Ok((output.width, output.height));
     }
 
-    let img = image::load_from_memory(&mmap)
-        .map_err(|e| format!("Failed to load image from memory map: {:?}", e))?;
+    let img = image::load_from_memory(&mmap).map_err(|e| {
+        FileConverterError::Image(format!("Failed to load image from memory map: {:?}", e))
+    })?;
 
     Ok(img.dimensions())
 }
 
 /// Resizes images using CPU SIMD vectors (AVX2/NEON/SSE4.1) via `fast_image_resize`.
-fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage, String> {
+fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage> {
     match img {
         DynamicImage::ImageRgb8(buf) => {
             let src_image = Image::from_vec_u8(
@@ -72,15 +75,21 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 buf.as_raw().clone(),
                 PixelType::U8x3,
             )
-            .map_err(|e| format!("Failed to create SIMD RGB image: {:?}", e))?;
+            .map_err(|e| {
+                FileConverterError::Image(format!("Failed to create SIMD RGB image: {:?}", e))
+            })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8x3);
             let mut resizer = Resizer::new();
             resizer
                 .resize(&src_image, &mut dst_image, None)
-                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+                .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
             let buffer = dst_image.buffer().to_vec();
-            let rgb_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
-                .ok_or_else(|| "Failed to create ImageBuffer from resized RGB data".to_string())?;
+            let rgb_buf =
+                image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
+                    FileConverterError::Image(
+                        "Failed to create ImageBuffer from resized RGB data".to_string(),
+                    )
+                })?;
             Ok(DynamicImage::ImageRgb8(rgb_buf))
         }
         DynamicImage::ImageLuma8(buf) => {
@@ -90,15 +99,21 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 buf.as_raw().clone(),
                 PixelType::U8,
             )
-            .map_err(|e| format!("Failed to create SIMD Luma image: {:?}", e))?;
+            .map_err(|e| {
+                FileConverterError::Image(format!("Failed to create SIMD Luma image: {:?}", e))
+            })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8);
             let mut resizer = Resizer::new();
             resizer
                 .resize(&src_image, &mut dst_image, None)
-                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+                .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
             let buffer = dst_image.buffer().to_vec();
-            let luma_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
-                .ok_or_else(|| "Failed to create ImageBuffer from resized Luma data".to_string())?;
+            let luma_buf =
+                image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
+                    FileConverterError::Image(
+                        "Failed to create ImageBuffer from resized Luma data".to_string(),
+                    )
+                })?;
             Ok(DynamicImage::ImageLuma8(luma_buf))
         }
         _ => {
@@ -109,18 +124,24 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 rgba_img.into_raw(),
                 PixelType::U8x4,
             )
-            .map_err(|e| format!("Failed to create SIMD source image: {:?}", e))?;
+            .map_err(|e| {
+                FileConverterError::Image(format!("Failed to create SIMD source image: {:?}", e))
+            })?;
 
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8x4);
 
             let mut resizer = Resizer::new();
             resizer
                 .resize(&src_image, &mut dst_image, None)
-                .map_err(|e| format!("SIMD resize failed: {:?}", e))?;
+                .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
 
             let buffer = dst_image.buffer().to_vec();
-            let rgba_buf = image::ImageBuffer::from_raw(target_w, target_h, buffer)
-                .ok_or_else(|| "Failed to create ImageBuffer from resized data".to_string())?;
+            let rgba_buf =
+                image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
+                    FileConverterError::Image(
+                        "Failed to create ImageBuffer from resized data".to_string(),
+                    )
+                })?;
 
             Ok(DynamicImage::ImageRgba8(rgba_buf))
         }
@@ -133,7 +154,7 @@ pub fn run_image_conversion(
     input_path: &str,
     output_file_paths: &[String],
     progress_callback: &(dyn Fn(f32, &str) + Sync),
-) -> Result<(), String> {
+) -> Result<()> {
     let ext = Path::new(input_path)
         .extension()
         .and_then(|s| s.to_str())
@@ -143,12 +164,14 @@ pub fn run_image_conversion(
 
     if is_pdf {
         let pdf_file = std::fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open PDF file: {:?}", e))?;
+            .map_err(|e| FileConverterError::Image(format!("Failed to open PDF file: {:?}", e)))?;
 
-        let mmap = unsafe { Mmap::map(&pdf_file) }
-            .map_err(|e| format!("Failed to memory map PDF file: {:?}", e))?;
+        let mmap = unsafe { Mmap::map(&pdf_file) }.map_err(|e| {
+            FileConverterError::Image(format!("Failed to memory map PDF file: {:?}", e))
+        })?;
 
-        let pdf = Pdf::new(Arc::new(mmap)).map_err(|e| format!("Failed to parse PDF: {:?}", e))?;
+        let pdf = Pdf::new(Arc::new(mmap))
+            .map_err(|e| FileConverterError::Image(format!("Failed to parse PDF: {:?}", e)))?;
 
         let page_count = output_file_paths.len();
 
@@ -175,7 +198,7 @@ pub fn run_image_conversion(
         let pages_done = AtomicUsize::new(0);
 
         let pages = pdf.pages();
-        let results: Result<(), String> = (0..page_count)
+        let results: Result<()> = (0..page_count)
             .into_par_iter()
             .map(|index| {
                 if index >= pages.len() {
@@ -186,15 +209,19 @@ pub fn run_image_conversion(
                 progress_callback(done as f32 / page_count as f32, "Rendering PDF page");
 
                 let page = &pages[index];
-                let mut local_cache = RenderCache::default();
-                let pixmap = render(page, &mut local_cache, &interp_settings, &render_settings);
+                let local_cache = RenderCache::default();
+                let pixmap = render(page, &local_cache, &interp_settings, &render_settings);
 
                 let width = pixmap.width() as u32;
                 let height = pixmap.height() as u32;
 
                 let raw_bytes: &[u8] = bytemuck::cast_slice(pixmap.data());
                 let buffer = image::ImageBuffer::from_raw(width, height, raw_bytes.to_vec())
-                    .ok_or_else(|| "Failed to create ImageBuffer from PDF page".to_string())?;
+                    .ok_or_else(|| {
+                        FileConverterError::Image(
+                            "Failed to create ImageBuffer from PDF page".to_string(),
+                        )
+                    })?;
 
                 let img = DynamicImage::ImageRgba8(buffer);
                 let output_file = &output_file_paths[index];
@@ -209,22 +236,29 @@ pub fn run_image_conversion(
     } else {
         progress_callback(0.0, "Loading Image");
 
-        let file = std::fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open image file: {:?}", e))?;
+        let file = std::fs::File::open(input_path).map_err(|e| {
+            FileConverterError::Image(format!("Failed to open image file: {:?}", e))
+        })?;
 
-        let mmap = unsafe { Mmap::map(&file) }
-            .map_err(|e| format!("Failed to memory map input: {:?}", e))?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+            FileConverterError::Image(format!("Failed to memory map input: {:?}", e))
+        })?;
 
         let mut img = if ext == "heic" || ext == "heif" {
             let output = DecoderConfig::new()
                 .decode(&mmap, PixelLayout::Rgba8)
-                .map_err(|e| format!("Failed to decode HEIC: {:?}", e))?;
+                .map_err(|e| {
+                    FileConverterError::Image(format!("Failed to decode HEIC: {:?}", e))
+                })?;
             let buffer = image::ImageBuffer::from_raw(output.width, output.height, output.data)
-                .ok_or_else(|| "Failed to parse HEIC buffer".to_string())?;
+                .ok_or_else(|| {
+                    FileConverterError::Image("Failed to parse HEIC buffer".to_string())
+                })?;
             DynamicImage::ImageRgba8(buffer)
         } else {
-            image::load_from_memory(&mmap)
-                .map_err(|e| format!("Failed to load image from memory map: {:?}", e))?
+            image::load_from_memory(&mmap).map_err(|e| {
+                FileConverterError::Image(format!("Failed to load image from memory map: {:?}", e))
+            })?
         };
 
         progress_callback(0.4, "Processing transforms");
@@ -299,11 +333,7 @@ pub fn run_image_conversion(
     Ok(())
 }
 
-fn save_image(
-    img: &DynamicImage,
-    preset: &ConversionPreset,
-    output_file: &str,
-) -> Result<(), String> {
+fn save_image(img: &DynamicImage, preset: &ConversionPreset, output_file: &str) -> Result<()> {
     let format = match preset.output_type {
         OutputType::Png => ImageFormat::Png,
         OutputType::Jpg => ImageFormat::Jpeg,
@@ -315,11 +345,15 @@ fn save_image(
         _ => ImageFormat::Png,
     };
 
-    let file = std::fs::File::create(output_file)
-        .map_err(|e| format!("Failed to create output file {}: {:?}", output_file, e))?;
+    let file = std::fs::File::create(output_file).map_err(|e| {
+        FileConverterError::Image(format!(
+            "Failed to create output file {}: {:?}",
+            output_file, e
+        ))
+    })?;
     let mut writer = std::io::BufWriter::with_capacity(128 * 1024, file);
     img.write_to(&mut writer, format)
-        .map_err(|e| format!("Failed to save output image: {:?}", e))?;
+        .map_err(|e| FileConverterError::Image(format!("Failed to save output image: {:?}", e)))?;
 
     Ok(())
 }

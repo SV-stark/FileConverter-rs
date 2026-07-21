@@ -1,13 +1,17 @@
+use crate::error::{FileConverterError, Result};
 use crate::ffmpeg;
 use crate::image;
 use crate::office;
 use crate::path_helpers;
 use crate::settings::ConversionPreset;
-use crate::types::{HardwareAccelerationMode, InputPostConversionAction, OutputType};
+use crate::types::{
+    HardwareAccelerationMode, InputPostConversionAction, OutputType, get_extension_category,
+    is_output_type_compatible_with_category,
+};
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobStatus {
@@ -24,7 +28,7 @@ pub struct ConversionJob {
     pub preset: ConversionPreset,
     pub input_path: String,
     pub output_file_paths: Vec<String>,
-    pub progress: Arc<Mutex<f32>>,
+    pub progress: Arc<AtomicU32>,
     pub status: Arc<Mutex<JobStatus>>,
 }
 
@@ -48,11 +52,9 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
     if ext == "docx" || ext == "odt" || ext == "doc" {
         return JobEngine::Word;
     }
-
     if ext == "xlsx" || ext == "ods" || ext == "xls" {
         return JobEngine::Excel;
     }
-
     if ext == "pptx" || ext == "odp" || ext == "ppt" {
         return JobEngine::PowerPoint;
     }
@@ -77,55 +79,6 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
     JobEngine::Ffmpeg
 }
 
-// Replicate C# Helpers.GetExtensionCategory mapping
-fn get_extension_category(ext: &str) -> &'static str {
-    match ext {
-        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg" | "opus"
-        | "wav" | "wma" => "Audio",
-        "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
-        | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
-        "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"
-        | "jpg" | "jpeg" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff" | "svg"
-        | "xcf" | "webp" => "Image",
-        "gif" => "Animated Image",
-        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx" => {
-            "Document"
-        }
-        _ => "Misc",
-    }
-}
-
-// Replicate compatibility check
-fn is_output_type_compatible_with_category(output_type: OutputType, category: &str) -> bool {
-    if category == "Misc" {
-        return true;
-    }
-    match output_type {
-        OutputType::Aac
-        | OutputType::Flac
-        | OutputType::Mp3
-        | OutputType::Ogg
-        | OutputType::Wav => category == "Audio" || category == "Video",
-        OutputType::Avi
-        | OutputType::Mkv
-        | OutputType::Mp4
-        | OutputType::Ogv
-        | OutputType::Webm => category == "Video" || category == "Animated Image",
-        OutputType::Avif
-        | OutputType::Ico
-        | OutputType::Jpg
-        | OutputType::Png
-        | OutputType::Webp => {
-            category == "Image" || category == "Document" || category == "Animated Image"
-        }
-        OutputType::Gif => {
-            category == "Image" || category == "Video" || category == "Animated Image"
-        }
-        OutputType::Pdf => category == "Image" || category == "Document",
-        OutputType::None => false,
-    }
-}
-
 impl ConversionJob {
     pub fn new(id: usize, preset: ConversionPreset, input_path: String) -> Self {
         ConversionJob {
@@ -133,12 +86,20 @@ impl ConversionJob {
             preset,
             input_path,
             output_file_paths: Vec::new(),
-            progress: Arc::new(Mutex::new(0.0)),
+            progress: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             status: Arc::new(Mutex::new(JobStatus::Queue)),
         }
     }
 
-    pub fn prepare(&mut self, list_index: usize, total_count: usize) -> Result<(), String> {
+    pub fn get_progress(&self) -> f32 {
+        f32::from_bits(self.progress.load(Ordering::Relaxed))
+    }
+
+    pub fn set_progress(&self, val: f32) {
+        self.progress.store(val.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn prepare(&mut self, list_index: usize, total_count: usize) -> Result<()> {
         let ext = Path::new(&self.input_path)
             .extension()
             .and_then(|s| s.to_str())
@@ -146,7 +107,9 @@ impl ConversionJob {
         let category = get_extension_category(&ext.to_lowercase());
 
         if !is_output_type_compatible_with_category(self.preset.output_type, category) {
-            return Err("Input file type is incompatible with output file type".to_string());
+            return Err(FileConverterError::Invalid(
+                "Input file type is incompatible with output file type".to_string(),
+            ));
         }
 
         // Determine output files count
@@ -173,12 +136,16 @@ impl ConversionJob {
             );
 
             if !path_helpers::is_path_valid(&generated) {
-                return Err("Generated output path is invalid".to_string());
+                return Err(FileConverterError::Invalid(
+                    "Generated output path is invalid".to_string(),
+                ));
             }
 
             // Create folders if needed
             if !path_helpers::create_folders(&generated) {
-                return Err("Failed to create output directory folders".to_string());
+                return Err(FileConverterError::Invalid(
+                    "Failed to create output directory folders".to_string(),
+                ));
             }
 
             // Generate unique path to avoid collisions
@@ -210,8 +177,7 @@ impl ConversionJob {
         let status_clone = self.status.clone();
 
         let progress_cb = move |percent: f32, msg: &str| {
-            let mut p = progress_clone.lock().unwrap();
-            *p = percent;
+            progress_clone.store(percent.to_bits(), Ordering::Relaxed);
             let mut s = status_clone.lock().unwrap();
             if let JobStatus::Converting(_) = *s {
                 *s = JobStatus::Converting(msg.to_string());
@@ -232,8 +198,7 @@ impl ConversionJob {
         match result {
             Ok(_) => {
                 *status = JobStatus::Done;
-                let mut p = self.progress.lock().unwrap();
-                *p = 1.0;
+                self.progress.store(1.0f32.to_bits(), Ordering::Relaxed);
 
                 // Copy timestamp from input file to output files
                 self.sync_file_timestamps();
@@ -242,7 +207,7 @@ impl ConversionJob {
                 let _ = self.apply_post_conversion_action();
             }
             Err(e) => {
-                *status = JobStatus::Failed(e);
+                *status = JobStatus::Failed(e.to_string());
                 // Delete output files on failure
                 for path in &self.output_file_paths {
                     let _ = std::fs::remove_file(path);
@@ -255,7 +220,7 @@ impl ConversionJob {
         &self,
         progress_cb: &(dyn Fn(f32, &str) + Sync),
         hw_accel: HardwareAccelerationMode,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let engine = determine_job_engine(&self.preset, &self.input_path);
 
         match engine {
@@ -280,7 +245,7 @@ impl ConversionJob {
                 image::run_image_conversion(
                     &png_preset,
                     &self.input_path,
-                    &[temp_png_str.clone()],
+                    std::slice::from_ref(&temp_png_str),
                     &|percent, _| {
                         progress_cb(percent * 0.5, "Resizing");
                     },
@@ -332,7 +297,7 @@ impl ConversionJob {
                     image::run_image_conversion(
                         &png_preset,
                         &self.input_path,
-                        &[temp_png_str.clone()],
+                        std::slice::from_ref(&temp_png_str),
                         &|percent, _| {
                             progress_cb(percent * 0.3, "Pre-processing");
                         },
@@ -385,12 +350,36 @@ impl ConversionJob {
                 }
                 Ok(())
             }
-            JobEngine::Image => image::run_image_conversion(
-                &self.preset,
-                &self.input_path,
-                &self.output_file_paths,
-                progress_cb,
-            ),
+            JobEngine::Image => {
+                if self.preset.output_type == OutputType::Pdf
+                    && self.input_path.to_lowercase().ends_with(".pdf")
+                {
+                    progress_cb(0.1, "Optimizing PDF");
+                    let dpi = self
+                        .preset
+                        .get_setting_value("PdfTargetDpi")
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(150);
+                    let options = crate::pdf_compress::PdfCompressOptions {
+                        target_dpi: dpi,
+                        jpeg_quality: 75,
+                    };
+                    let res = crate::pdf_compress::compress_pdf(
+                        &self.input_path,
+                        &self.output_file_paths[0],
+                        &options,
+                    );
+                    progress_cb(1.0, "Complete");
+                    res
+                } else {
+                    image::run_image_conversion(
+                        &self.preset,
+                        &self.input_path,
+                        &self.output_file_paths,
+                        progress_cb,
+                    )
+                }
+            }
             JobEngine::Word => office::run_office_conversion(
                 &self.preset,
                 "winword.exe",
@@ -464,13 +453,17 @@ impl ConversionJob {
         }
     }
 
-    fn apply_post_conversion_action(&self) -> Result<(), String> {
+    fn apply_post_conversion_action(&self) -> Result<()> {
         match self.preset.input_post_conversion_action {
             InputPostConversionAction::None => Ok(()),
             InputPostConversionAction::MoveInArchiveFolder => {
                 let input_path = Path::new(&self.input_path);
-                let parent = input_path.parent().ok_or("No parent folder found")?;
-                let file_name = input_path.file_name().ok_or("No file name found")?;
+                let parent = input_path.parent().ok_or_else(|| {
+                    FileConverterError::Invalid("No parent folder found".to_string())
+                })?;
+                let file_name = input_path
+                    .file_name()
+                    .ok_or_else(|| FileConverterError::Invalid("No file name found".to_string()))?;
 
                 // Folder name: default is "Archive" or from preset settings
                 let archive_folder_name = self
@@ -480,49 +473,41 @@ impl ConversionJob {
                 let archive_dir = parent.join(archive_folder_name);
 
                 if !archive_dir.exists() {
-                    std::fs::create_dir_all(&archive_dir).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(&archive_dir)?;
                 }
 
                 let target_path =
                     path_helpers::generate_unique_path(archive_dir.join(file_name), &[]);
-                std::fs::rename(input_path, target_path)
-                    .map_err(|e| format!("Failed to move file to archive: {:?}", e))?;
+                std::fs::rename(input_path, target_path).map_err(FileConverterError::Io)?;
                 Ok(())
             }
             InputPostConversionAction::Delete => {
-                std::fs::remove_file(&self.input_path)
-                    .map_err(|e| format!("Failed to delete input file: {:?}", e))?;
+                trash::delete(&self.input_path).map_err(|e| {
+                    FileConverterError::Io(std::io::Error::other(format!(
+                        "Failed to move file to Recycle Bin: {:?}",
+                        e
+                    )))
+                })?;
                 Ok(())
             }
         }
     }
 }
 
-fn preset_uses_ffmpeg(preset: &ConversionPreset) -> bool {
-    match preset.output_type {
-        OutputType::Aac
-        | OutputType::Avi
-        | OutputType::Flac
-        | OutputType::Mp3
-        | OutputType::Mkv
-        | OutputType::Mp4
-        | OutputType::Ogg
-        | OutputType::Ogv
-        | OutputType::Wav
-        | OutputType::Webm => true,
-        _ => false,
-    }
-}
-
 #[cfg(target_os = "windows")]
-pub fn copy_files_to_clipboard(paths: &[String]) -> Result<(), String> {
+pub fn copy_files_to_clipboard(paths: &[String]) -> Result<()> {
     use clipboard_win::raw::set_file_list;
-    set_file_list(paths).map_err(|e| format!("Failed to copy to clipboard: {:?}", e))?;
+    set_file_list(paths).map_err(|e| {
+        FileConverterError::Io(std::io::Error::other(format!(
+            "Failed to copy to clipboard: {:?}",
+            e
+        )))
+    })?;
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn copy_files_to_clipboard(_paths: &[String]) -> Result<(), String> {
+pub fn copy_files_to_clipboard(_paths: &[String]) -> Result<()> {
     Ok(())
 }
 

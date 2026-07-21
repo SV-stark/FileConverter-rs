@@ -1,12 +1,12 @@
+use crate::error::{FileConverterError, Result};
+use crate::path_helpers;
+use crate::settings::ConversionPreset;
+use crate::types::{EncodingMode, HardwareAccelerationMode, OutputType, VideoEncodingSpeed};
 use regex::Regex;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-
-use crate::path_helpers;
-use crate::settings::ConversionPreset;
-use crate::types::{EncodingMode, HardwareAccelerationMode, OutputType, VideoEncodingSpeed};
 
 pub struct FfmpegPass {
     pub name: String,
@@ -30,7 +30,7 @@ pub fn get_ffmpeg_passes(
     input_path: &str,
     output_path: &str,
     hw_accel: HardwareAccelerationMode,
-) -> Result<Vec<FfmpegPass>, String> {
+) -> Result<Vec<FfmpegPass>> {
     let mut passes = Vec::new();
     let base_args = vec!["-n".to_string()];
 
@@ -613,10 +613,10 @@ pub fn get_ffmpeg_passes(
             });
         }
         _ => {
-            return Err(format!(
+            return Err(FileConverterError::Ffmpeg(format!(
                 "FFMpeg engine does not support output type {:?}",
                 preset.output_type
-            ));
+            )));
         }
     }
 
@@ -721,7 +721,7 @@ fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
     q.to_string()
 }
 
-fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32, String> {
+fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     match bitrate {
         245 => Ok(0),
         225 => Ok(1),
@@ -733,11 +733,14 @@ fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32, String> {
         100 => Ok(7),
         85 => Ok(8),
         65 => Ok(9),
-        _ => Err(format!("Unknown MP3 VBR bitrate: {}", bitrate)),
+        _ => Err(FileConverterError::Ffmpeg(format!(
+            "Unknown MP3 VBR bitrate: {}",
+            bitrate
+        ))),
     }
 }
 
-fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32, String> {
+fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     match bitrate {
         500 => Ok(10),
         320 => Ok(9),
@@ -752,7 +755,10 @@ fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32, String> {
         64 => Ok(0),
         48 => Ok(-1),
         32 => Ok(-2),
-        _ => Err(format!("Unknown Ogg VBR bitrate: {}", bitrate)),
+        _ => Err(FileConverterError::Ffmpeg(format!(
+            "Unknown Ogg VBR bitrate: {}",
+            bitrate
+        ))),
     }
 }
 
@@ -799,7 +805,7 @@ pub fn run_ffmpeg_pass(
     input_path: &str,
     output_path: &str,
     progress_callback: &dyn Fn(f32, &str),
-) -> Result<(), String> {
+) -> Result<()> {
     let ffmpeg_path = get_ffmpeg_path();
 
     let mut child = Command::new(&ffmpeg_path)
@@ -807,13 +813,16 @@ pub fn run_ffmpeg_pass(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start FFMpeg process: {:?}", e))?;
+        .map_err(|e| {
+            FileConverterError::Ffmpeg(format!("Failed to start FFMpeg process: {:?}", e))
+        })?;
 
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("Failed to open stderr pipe of FFMpeg")?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        FileConverterError::Ffmpeg("Failed to open stderr pipe of FFMpeg".to_string())
+    })?;
     let reader = BufReader::new(stderr);
+    let start_time = std::time::Instant::now();
+    let max_duration = Duration::from_secs(3600); // 1 hour maximum execution per pass
 
     let duration_re = Regex::new(
         r"Duration:\s*(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})",
@@ -824,36 +833,42 @@ pub fn run_ffmpeg_pass(
     let mut total_duration = Duration::ZERO;
 
     for line_res in reader.lines() {
+        if start_time.elapsed() > max_duration {
+            let _ = child.kill();
+            return Err(FileConverterError::Timeout(
+                "FFMpeg process timed out (exceeded 1 hour)".to_string(),
+            ));
+        }
+
         let line = match line_res {
             Ok(l) => l,
             Err(_) => break,
         };
 
         // Parse duration to know the total length
-        if total_duration.is_zero() {
-            if let Some(caps) = duration_re.captures(&line) {
-                let h: u64 = caps["h"].parse().unwrap_or(0);
-                let m: u64 = caps["m"].parse().unwrap_or(0);
-                let s: u64 = caps["s"].parse().unwrap_or(0);
-                let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-                total_duration =
-                    Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
-            }
+        if total_duration.is_zero()
+            && let Some(caps) = duration_re.captures(&line)
+        {
+            let h: u64 = caps["h"].parse().unwrap_or(0);
+            let m: u64 = caps["m"].parse().unwrap_or(0);
+            let s: u64 = caps["s"].parse().unwrap_or(0);
+            let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
+            total_duration = Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
         }
 
         // Parse time to compute progress percent
-        if !total_duration.is_zero() {
-            if let Some(caps) = progress_re.captures(&line) {
-                let h: u64 = caps["h"].parse().unwrap_or(0);
-                let m: u64 = caps["m"].parse().unwrap_or(0);
-                let s: u64 = caps["s"].parse().unwrap_or(0);
-                let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-                let current_time =
-                    Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
+        if !total_duration.is_zero()
+            && let Some(caps) = progress_re.captures(&line)
+        {
+            let h: u64 = caps["h"].parse().unwrap_or(0);
+            let m: u64 = caps["m"].parse().unwrap_or(0);
+            let s: u64 = caps["s"].parse().unwrap_or(0);
+            let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
+            let current_time =
+                Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
 
-                let percent = (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
-                progress_callback(percent.min(1.0).max(0.0), &pass.name);
-            }
+            let percent = (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
+            progress_callback(percent.clamp(0.0, 1.0), &pass.name);
         }
 
         // Check for error lines excluding filenames to avoid false errors
@@ -869,19 +884,22 @@ pub fn run_ffmpeg_pass(
                 // Ignore initial TS file frame errors
             } else {
                 let _ = child.kill();
-                return Err(format!("FFMpeg reported error: {}", line));
+                return Err(FileConverterError::Ffmpeg(format!(
+                    "FFMpeg reported error: {}",
+                    line
+                )));
             }
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for FFMpeg process: {:?}", e))?;
+    let status = child.wait().map_err(|e| {
+        FileConverterError::Ffmpeg(format!("Failed to wait for FFMpeg process: {:?}", e))
+    })?;
     if !status.success() {
-        return Err(format!(
+        return Err(FileConverterError::Ffmpeg(format!(
             "FFMpeg process exited with failure code: {:?}",
             status.code()
-        ));
+        )));
     }
 
     Ok(())

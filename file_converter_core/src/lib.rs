@@ -1,8 +1,10 @@
-#![allow(clippy::all, warnings)]
+pub mod error;
 pub mod ffmpeg;
+pub mod ffmpeg_download;
 pub mod image;
 pub mod office;
 pub mod path_helpers;
+pub mod pdf_compress;
 pub mod scheduler;
 pub mod settings;
 pub mod types;
@@ -13,7 +15,6 @@ mod tests {
     use super::scheduler::*;
     use super::settings::*;
     use super::types::*;
-    use std::path::PathBuf;
 
     const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
 
@@ -190,5 +191,12 @@ mod tests {
 
         let scheduler = ConversionScheduler::new(jobs, 2, HardwareAccelerationMode::Off, false);
         assert_eq!(scheduler.jobs.len(), 2);
+    }
+
+    #[test]
+    fn test_pdf_compress_options() {
+        let opts = super::pdf_compress::PdfCompressOptions::default();
+        assert_eq!(opts.target_dpi, 150);
+        assert_eq!(opts.jpeg_quality, 75);
     }
 }

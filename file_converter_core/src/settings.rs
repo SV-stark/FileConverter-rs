@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use crate::error::Result;
 use crate::types::{HardwareAccelerationMode, InputPostConversionAction, OutputType};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -72,7 +73,7 @@ pub struct PresetSetting {
 impl Settings {
     pub const CURRENT_VERSION: i32 = 4;
 
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = File::open(path)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -82,7 +83,7 @@ impl Settings {
         Ok(settings)
     }
 
-    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let xml_str = to_string_with_root("Settings", self)?;
         // Add XML header
         let mut file = File::create(path)?;
@@ -148,18 +149,18 @@ impl ConversionPreset {
     }
 
     pub fn migrate(&mut self, old_version: i32) {
-        if old_version <= 2 {
-            if let Some(speed) = self.get_setting_value("VideoEncodingSpeed") {
-                let mapped = match speed {
-                    "Ultra Fast" => Some("UltraFast"),
-                    "Super Fast" => Some("SuperFast"),
-                    "Very Fast" => Some("VeryFast"),
-                    "Very Slow" => Some("VerySlow"),
-                    _ => None,
-                };
-                if let Some(m) = mapped {
-                    self.set_setting_value("VideoEncodingSpeed", m);
-                }
+        if old_version <= 2
+            && let Some(speed) = self.get_setting_value("VideoEncodingSpeed")
+        {
+            let mapped = match speed {
+                "Ultra Fast" => "UltraFast",
+                "Super Fast" => "SuperFast",
+                "Very Fast" => "VeryFast",
+                "Very Slow" => "VerySlow",
+                _ => "",
+            };
+            if !mapped.is_empty() {
+                self.set_setting_value("VideoEncodingSpeed", mapped);
             }
         }
 

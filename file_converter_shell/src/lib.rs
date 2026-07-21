@@ -1,13 +1,16 @@
 #![allow(
     non_snake_case,
     non_camel_case_types,
+    unsafe_op_in_unsafe_fn,
     clippy::missing_safety_doc,
-    clippy::all,
-    warnings
+    clippy::collapsible_if,
+    clippy::upper_case_acronyms,
+    clippy::let_and_return,
+    clippy::useless_conversion
 )]
 
-use std::ffi::{c_void, OsString};
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::ffi::{OsString, c_void};
+use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -15,7 +18,9 @@ use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
 
 use file_converter_core::settings::{ConversionPreset, Settings};
-use file_converter_core::types::OutputType;
+use file_converter_core::types::{
+    OutputType, get_extension_category, is_output_type_compatible_with_category,
+};
 
 // Standard Win32 Types and Constants
 type HRESULT = i32;
@@ -43,7 +48,7 @@ const MFT_SEPARATOR: u32 = 2048;
 // GUID struct representation
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct GUID {
+pub struct GUID {
     data1: u32,
     data2: u16,
     data3: u16,
@@ -204,7 +209,7 @@ static G_DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 static G_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
 static G_OBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(
     hinst_dll: *mut c_void,
     fdw_reason: u32,
@@ -218,6 +223,7 @@ pub unsafe extern "system" fn DllMain(
 }
 
 // Interface VTables
+#[allow(dead_code)]
 #[repr(C)]
 struct IUnknownVtbl {
     QueryInterface: unsafe extern "system" fn(
@@ -512,53 +518,6 @@ fn get_cached_settings() -> Settings {
     loaded
 }
 
-fn get_extension_category(ext: &str) -> &'static str {
-    match ext {
-        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg" | "opus"
-        | "wav" | "wma" => "Audio",
-        "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
-        | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
-        "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"
-        | "jpg" | "jpeg" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff" | "svg"
-        | "xcf" | "webp" => "Image",
-        "gif" => "Animated Image",
-        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx" => {
-            "Document"
-        }
-        _ => "Misc",
-    }
-}
-
-fn is_compatible(output_type: OutputType, category: &str) -> bool {
-    if category == "Misc" {
-        return true;
-    }
-    match output_type {
-        OutputType::Aac
-        | OutputType::Flac
-        | OutputType::Mp3
-        | OutputType::Ogg
-        | OutputType::Wav => category == "Audio" || category == "Video",
-        OutputType::Avi
-        | OutputType::Mkv
-        | OutputType::Mp4
-        | OutputType::Ogv
-        | OutputType::Webm => category == "Video" || category == "Animated Image",
-        OutputType::Avif
-        | OutputType::Ico
-        | OutputType::Jpg
-        | OutputType::Png
-        | OutputType::Webp => {
-            category == "Image" || category == "Document" || category == "Animated Image"
-        }
-        OutputType::Gif => {
-            category == "Image" || category == "Video" || category == "Animated Image"
-        }
-        OutputType::Pdf => category == "Image" || category == "Document",
-        OutputType::None => false,
-    }
-}
-
 fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) -> bool {
     let ext = Path::new(file_path)
         .extension()
@@ -580,7 +539,7 @@ fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) ->
     }
 
     let cat = get_extension_category(&ext);
-    is_compatible(preset.output_type, cat)
+    is_output_type_compatible_with_category(preset.output_type, cat)
 }
 
 unsafe extern "system" fn FileConverterShell_QueryContextMenu(
@@ -782,18 +741,6 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
         let mut settings = get_cached_settings();
         settings.merge(create_default_settings());
 
-        let categories: Vec<String> = (*this)
-            .selected_files
-            .iter()
-            .map(|f| {
-                let ext = Path::new(f)
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                get_extension_category(&ext.to_lowercase()).to_string()
-            })
-            .collect();
-
         presets = settings
             .conversion_presets
             .into_iter()
@@ -848,11 +795,7 @@ unsafe extern "system" fn FileConverterShell_InvokeCommand(
             }
         }
 
-        if cmd.spawn().is_ok() {
-            S_OK
-        } else {
-            E_FAIL
-        }
+        if cmd.spawn().is_ok() { S_OK } else { E_FAIL }
     } else {
         // "Configure..." item from the submenu was chosen.
         let bin_path = get_bin_path();
@@ -901,6 +844,8 @@ fn get_bin_path() -> PathBuf {
     let dll_hinst = G_DLL_INSTANCE.load(Ordering::Relaxed) as *mut c_void;
     if !dll_hinst.is_null() {
         let mut buf = vec![0u16; 512];
+        // SAFETY: dll_hinst is a valid Win32 HINSTANCE loaded during DllMain process attach,
+        // and buf is pre-allocated with a 512 u16 capacity.
         let len = unsafe { GetModuleFileNameW(dll_hinst, buf.as_mut_ptr(), 512) };
         if len > 0 {
             let os_str = OsString::from_wide(&buf[..len as usize]);
@@ -1011,7 +956,7 @@ unsafe extern "system" fn ClassFactory_LockServer(_this: *mut c_void, fLock: i32
 }
 
 // COM DLL Export Server entry points
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
     riid: *const GUID,
@@ -1045,7 +990,7 @@ pub unsafe extern "system" fn DllGetClassObject(
     hr
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     if G_LOCK_COUNT.load(Ordering::Relaxed) == 0 && G_OBJECT_COUNT.load(Ordering::Relaxed) == 0 {
         S_OK
@@ -1056,10 +1001,10 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 
 // Regsvr32 entries
 #[cfg(target_os = "windows")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
     use winreg::RegKey;
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
 
     let hmodule = G_DLL_INSTANCE.load(Ordering::Relaxed) as *mut c_void;
     let mut module_path = PathBuf::new();
@@ -1165,30 +1110,20 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let _ = key.set_value(clsid_str, &"File Converter Context Menu Handler");
     }
 
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn SHChangeNotify(
-            wEventId: i32,
-            uFlags: u32,
-            dwItem1: *const c_void,
-            dwItem2: *const c_void,
-        );
+    use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+    // SAFETY: Notifying Shell of file association updates with null item pointers.
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
-    SHChangeNotify(
-        0x08000000, /* SHCNE_ASSOCCHANGED */
-        0x0000,     /* SHCNF_IDLIST */
-        std::ptr::null(),
-        std::ptr::null(),
-    );
 
     S_OK
 }
 
 #[cfg(target_os = "windows")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
     use winreg::RegKey;
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
 
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
@@ -1242,21 +1177,11 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
         let _ = key.delete_value(clsid_str);
     }
 
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn SHChangeNotify(
-            wEventId: i32,
-            uFlags: u32,
-            dwItem1: *const c_void,
-            dwItem2: *const c_void,
-        );
+    use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+    // SAFETY: Notifying Shell of file association updates with null item pointers.
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
-    SHChangeNotify(
-        0x08000000, /* SHCNE_ASSOCCHANGED */
-        0x0000,     /* SHCNF_IDLIST */
-        std::ptr::null(),
-        std::ptr::null(),
-    );
 
     S_OK
 }

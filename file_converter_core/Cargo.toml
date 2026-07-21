@@ -1,12 +1,14 @@
 [package]
 name = "file_converter_core"
-version = "0.5.3"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
+thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 quick-xml = { version = "0.36", features = ["serialize"] }
 regex = "1.10"
+trash = "5.1"
 filetime = "0.2"
 chrono = "0.4"
 image = { version = "0.25.10", features = ["avif"] }
@@ -16,8 +18,13 @@ hayro-interpret = "0.7.0"
 bytemuck = "1.25.2"
 rayon = "1.12.0"
 memmap2 = "0.9.11"
+lopdf = "0.35"
+ureq = "2.9"
+zip = "2.1"
+which = "7.0"
 fast_image_resize = { version = "6.0.0", features = ["image"] }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.0"
 winreg = "0.52"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com"] }

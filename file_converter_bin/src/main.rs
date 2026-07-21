@@ -1,4 +1,4 @@
-#![allow(clippy::all, warnings)]
+#![allow(clippy::collapsible_if)]
 #![windows_subsystem = "windows"]
 use std::env;
 use std::path::{Path, PathBuf};
@@ -97,6 +97,57 @@ fn register_shell_extension_dll() -> String {
     "Shell extension registration is only supported on Windows.".to_string()
 }
 
+fn unregister_shell_extension_dll() -> String {
+    let mut exe_dir = env::current_exe().unwrap_or_default();
+    exe_dir.pop();
+    let dll_path = exe_dir.join("file_converter_shell.dll");
+
+    if !dll_path.exists() {
+        return format!("Shell DLL not found at {:?}", dll_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut std::ffi::c_void,
+                lpOperation: *const u16,
+                lpFile: *const u16,
+                lpParameters: *const u16,
+                lpDirectory: *const u16,
+                nShowCmd: i32,
+            ) -> *mut std::ffi::c_void;
+        }
+
+        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+        let file: Vec<u16> = "regsvr32.exe\0".encode_utf16().collect();
+        let params: Vec<u16> = format!("/u /s \"{}\"\0", dll_path.to_string_lossy())
+            .encode_utf16()
+            .collect();
+
+        let res = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            params.as_ptr(),
+            std::ptr::null(),
+            1,
+        );
+
+        if (res as usize) > 32 {
+            "Shell extension context menu unregistered successfully!".to_string()
+        } else {
+            format!(
+                "Unregistration request failed or was canceled (Code: {}).",
+                res as usize
+            )
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    "Shell extension unregistration is only supported on Windows.".to_string()
+}
+
 fn play_completion_sound() {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -184,61 +235,184 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
         _ => "📁 Misc",
     }
 }
+use clap::{Parser, Subcommand};
 
-fn print_fcrs_help() {
-    println!("⚡ fcrs - FileConverter-rs CLI Engine (v0.5.2)");
-    println!("Usage:");
-    println!("  fcrs convert -p <PresetName> -i <file1> <file2> ...");
-    println!("  fcrs list-presets");
-    println!("  fcrs -settings   (Opens Native GUI Settings Dashboard)");
-    println!();
-    println!("Examples:");
-    println!("  fcrs convert -p \"To Png\" image.jpg photo.bmp");
-    println!("  fcrs convert -p \"To Mp3\" song.flac track.wav");
+#[derive(Parser, Debug)]
+#[command(name = "file_converter_bin")]
+#[command(
+    author = "File Converter Team",
+    version = "0.4.0",
+    about = "File Converter CLI & Explorer Context Menu Utility",
+    long_about = None
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Preset name to use when converting files
+    #[arg(short, long)]
+    preset: Option<String>,
+
+    /// Path to temporary file containing list of input paths
+    #[arg(long)]
+    input_files: Option<PathBuf>,
+
+    /// Open settings manager GUI
+    #[arg(long, default_value_t = false)]
+    settings: bool,
+
+    /// Input file paths to convert
+    #[arg(value_name = "FILES")]
+    files: Vec<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Convert input files using a specified preset
+    Convert {
+        /// Conversion preset name (e.g. "To PNG", "To MP3")
+        #[arg(short, long)]
+        preset: String,
+
+        /// Run headlessly without displaying the progress GUI window
+        #[arg(long, default_value_t = false)]
+        headless: bool,
+
+        /// Input file paths to convert
+        #[arg(required = true, value_name = "FILES")]
+        files: Vec<String>,
+    },
+    /// List all available conversion presets from settings
+    ListPresets,
+    /// Register shell context menu extension COM DLL
+    Register,
+    /// Unregister shell context menu extension DLL
+    Unregister,
+    /// Open the settings GUI configuration window
+    Gui,
+}
+
+fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
+    let settings = match initialize_user_settings_if_needed() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error initializing settings: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let preset = match settings
+        .conversion_presets
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case(preset_name))
+    {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!("Preset '{}' not found in settings.", preset_name);
+            std::process::exit(1);
+        }
+    };
+
+    let total_input_files = input_files.len();
+    let mut jobs = Vec::new();
+    for (idx, file) in input_files.into_iter().enumerate() {
+        let mut job = ConversionJob::new(idx + 1, preset.clone(), file);
+        if let Err(e) = job.prepare(idx, total_input_files) {
+            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
+        }
+        jobs.push(job);
+    }
+
+    let scheduler = ConversionScheduler::new(
+        jobs,
+        settings.maximum_number_of_simultaneous_conversions,
+        settings.hardware_acceleration_mode,
+        settings.copy_files_in_clipboard_after_conversion,
+    );
+
+    println!(
+        "Starting headless conversion of {} file(s) using preset '{}'...",
+        scheduler.jobs.len(),
+        preset_name
+    );
+    scheduler.execute_all();
+
+    let mut failed = 0;
+    for job in &scheduler.jobs {
+        let status = job.status.lock().unwrap();
+        match &*status {
+            JobStatus::Done => println!("[OK] {}", job.input_path),
+            JobStatus::Failed(e) => {
+                eprintln!("[FAILED] {}: {}", job.input_path, e);
+                failed += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if failed > 0 {
+        std::process::exit(1);
+    }
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let raw_args: Vec<String> = env::args().collect();
 
-    if args
-        .iter()
-        .any(|arg| arg == "--help" || arg == "-h" || arg == "help")
-    {
-        print_fcrs_help();
-        return;
-    }
+    // Check if invoked via standard clap CLI
+    let cli = Cli::parse();
 
-    if args.iter().any(|arg| arg == "list-presets") {
-        if let Ok(settings) = initialize_user_settings_if_needed() {
-            println!(
-                "Available Conversion Presets (Total: {}):",
-                settings.conversion_presets.len()
-            );
-            for preset in &settings.conversion_presets {
+    #[allow(clippy::collapsible_match)]
+    match cli.command {
+        Some(Commands::ListPresets) => {
+            if let Ok(settings) = initialize_user_settings_if_needed() {
                 println!(
-                    "  • [{}] -> {:?} (Inputs: {})",
-                    preset.name,
-                    preset.output_type,
-                    if preset.input_types.is_empty() {
-                        "all".to_string()
-                    } else {
-                        preset.input_types.join(", ")
-                    }
+                    "Available Conversion Presets (Total: {}):",
+                    settings.conversion_presets.len()
                 );
+                for preset in &settings.conversion_presets {
+                    println!(
+                        "  • [{}] -> {:?} (Inputs: {})",
+                        preset.name,
+                        preset.output_type,
+                        if preset.input_types.is_empty() {
+                            "all".to_string()
+                        } else {
+                            preset.input_types.join(", ")
+                        }
+                    );
+                }
+            }
+            return;
+        }
+        Some(Commands::Register) => {
+            println!("{}", register_shell_extension_dll());
+            return;
+        }
+        Some(Commands::Unregister) => {
+            println!("{}", unregister_shell_extension_dll());
+            return;
+        }
+        Some(Commands::Gui) => {
+            run_settings_native_gui();
+            return;
+        }
+        Some(Commands::Convert {
+            preset,
+            headless,
+            files,
+        }) => {
+            if headless {
+                run_headless_conversion(&preset, files);
+                return;
             }
         }
-        return;
+        None => {}
     }
 
-    let run_gui = args.len() < 2
-        || args
-            .iter()
-            .any(|arg| arg == "-settings" || arg == "/settings" || arg == "--settings");
-
-    if run_gui {
+    if cli.settings || raw_args.len() < 2 {
         run_settings_native_gui();
     } else {
-        run_conversion_gui(args);
+        run_conversion_gui(raw_args);
     }
 }
 
@@ -735,7 +909,7 @@ impl eframe::App for ProgressApp {
             .max_height(280.0)
             .show(ui, |ui| {
                 for job in &self.scheduler.jobs {
-                    let p = *job.progress.lock().unwrap();
+                    let p = job.get_progress();
                     let s = job.status.lock().unwrap().clone();
 
                     total_prog += p;

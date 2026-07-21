@@ -48,12 +48,11 @@ pub fn generate_unique_path<P: AsRef<Path>>(path: P, blacklist: &[String]) -> Pa
 }
 
 pub fn create_folders<P: AsRef<Path>>(file_path: P) -> bool {
-    if let Some(parent) = file_path.as_ref().parent() {
-        if !parent.exists() {
-            if fs::create_dir_all(parent).is_err() {
-                return false;
-            }
-        }
+    if let Some(parent) = file_path.as_ref().parent()
+        && !parent.exists()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return false;
     }
     true
 }
@@ -66,10 +65,9 @@ fn get_shell_folder(name: &str) -> Option<String> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     if let Ok(key) =
         hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders")
+        && let Ok(val) = key.get_value::<String, _>(name)
     {
-        if let Ok(val) = key.get_value::<String, _>(name) {
-            return Some(val);
-        }
+        return Some(val);
     }
     None
 }
@@ -168,7 +166,7 @@ pub fn generate_file_path_from_template(
 
     // Split directory folders
     let folders: Vec<&str> = parent_directory
-        .split(|c| c == '/' || c == '\\')
+        .split(['/', '\\'])
         .filter(|s| !s.is_empty())
         .collect();
 
@@ -202,9 +200,8 @@ pub fn generate_file_path_from_template(
 
     // Directory nesting placeholders (d0), (d1), etc.
     let folder_len = folders.len();
-    for i in 0..folder_len {
+    for (i, &val) in folders.iter().enumerate().take(folder_len) {
         let d_index = folder_len - i - 1;
-        let val = folders[i];
         output_path = output_path.replace(&format!("(d{})", d_index), val);
         output_path = output_path.replace(&format!("(D{})", d_index), &val.to_uppercase());
     }

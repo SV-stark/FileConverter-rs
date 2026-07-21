@@ -1,3 +1,4 @@
+use crate::error::{FileConverterError, Result};
 use crate::image;
 use crate::settings::ConversionPreset;
 use std::path::Path;
@@ -13,16 +14,16 @@ pub fn is_office_app_available(app_name: &str) -> bool {
         app_name
     );
 
-    if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&subkey) {
-        if hkcu.get_value::<String, _>("").is_ok() {
-            return true;
-        }
+    if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&subkey)
+        && hkcu.get_value::<String, _>("").is_ok()
+    {
+        return true;
     }
 
-    if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(&subkey) {
-        if hklm.get_value::<String, _>("").is_ok() {
-            return true;
-        }
+    if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(&subkey)
+        && hklm.get_value::<String, _>("").is_ok()
+    {
+        return true;
     }
 
     false
@@ -33,7 +34,7 @@ pub fn is_office_app_available(_app_name: &str) -> bool {
     false
 }
 
-pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> Result<(), String> {
+pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> Result<()> {
     let script = match app.to_lowercase().as_str() {
         "word" | "winword.exe" => {
             format!(
@@ -70,28 +71,32 @@ pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> 
                 output_path.replace('\'', "''")
             )
         }
-        _ => return Err(format!("Unsupported office application: {}", app)),
+        _ => {
+            return Err(FileConverterError::Office(format!(
+                "Unsupported office application: {}",
+                app
+            )));
+        }
     };
 
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
-        .map_err(|e| format!("Failed to execute powershell: {:?}", e))?;
+        .map_err(|e| {
+            FileConverterError::Office(format!("Failed to execute powershell: {:?}", e))
+        })?;
 
     if !output.status.success() {
-        return Err(format!(
+        return Err(FileConverterError::Office(format!(
             "Office conversion script failed: {}",
             String::from_utf8_lossy(&output.stderr)
-        ));
+        )));
     }
 
     Ok(())
 }
 
-pub fn convert_office_batch_to_pdf(
-    app: &str,
-    input_output_pairs: &[(&str, &str)],
-) -> Result<(), String> {
+pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)]) -> Result<()> {
     if input_output_pairs.is_empty() {
         return Ok(());
     }
@@ -157,19 +162,26 @@ pub fn convert_office_batch_to_pdf(
                 pair_code
             )
         }
-        _ => return Err(format!("Unsupported office application: {}", app)),
+        _ => {
+            return Err(FileConverterError::Office(format!(
+                "Unsupported office application: {}",
+                app
+            )));
+        }
     };
 
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
-        .map_err(|e| format!("Failed to execute powershell: {:?}", e))?;
+        .map_err(|e| {
+            FileConverterError::Office(format!("Failed to execute powershell: {:?}", e))
+        })?;
 
     if !output.status.success() {
-        return Err(format!(
+        return Err(FileConverterError::Office(format!(
             "Office conversion script failed: {}",
             String::from_utf8_lossy(&output.stderr)
-        ));
+        )));
     }
 
     Ok(())
@@ -181,11 +193,13 @@ pub fn run_office_conversion(
     input_path: &str,
     output_file_paths: &[String],
     progress_callback: &(dyn Fn(f32, &str) + Sync),
-) -> Result<(), String> {
+) -> Result<()> {
     progress_callback(0.0, "Read document");
 
     if output_file_paths.is_empty() {
-        return Err("No output file paths specified".to_string());
+        return Err(FileConverterError::Invalid(
+            "No output file paths specified".to_string(),
+        ));
     }
 
     let is_pdf_output = preset.output_type == crate::types::OutputType::Pdf;
