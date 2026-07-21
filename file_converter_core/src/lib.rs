@@ -120,8 +120,6 @@ mod tests {
         assert!(is_path_valid("\\\\Server\\Share\\file.txt"));
     }
 
-
-
     #[test]
     fn test_unique_path_generator() {
         let temp_dir = std::env::temp_dir();

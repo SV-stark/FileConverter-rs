@@ -152,6 +152,53 @@ unsafe extern "system" {
     fn GetModuleHandleW(lpModuleName: *const u16) -> *mut c_void;
 }
 
+#[cfg(target_os = "windows")]
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn CreateBitmap(
+        nWidth: i32,
+        nHeight: i32,
+        nPlanes: u32,
+        nBitCount: u32,
+        lpBits: *const c_void,
+    ) -> *mut c_void;
+}
+
+const MIIM_BITMAP: u32 = 0x00000080;
+
+unsafe fn create_category_icon(output_type: OutputType) -> *mut c_void {
+    let color: u32 = match output_type {
+        OutputType::Aac
+        | OutputType::Flac
+        | OutputType::Mp3
+        | OutputType::Ogg
+        | OutputType::Wav => 0x00D09000,
+        OutputType::Avi
+        | OutputType::Mkv
+        | OutputType::Mp4
+        | OutputType::Ogv
+        | OutputType::Webm => 0x003030E0,
+        OutputType::Avif
+        | OutputType::Ico
+        | OutputType::Jpg
+        | OutputType::Png
+        | OutputType::Webp
+        | OutputType::Gif => 0x0040A040,
+        OutputType::Pdf => 0x001080E0,
+        _ => 0x00808080,
+    };
+
+    let mut pixels = [color; 16 * 16];
+    for y in 0..16 {
+        for x in 0..16 {
+            if x == 0 || x == 15 || y == 0 || y == 15 {
+                pixels[y * 16 + x] = 0x00303030;
+            }
+        }
+    }
+    CreateBitmap(16, 16, 1, 32, pixels.as_ptr() as *const c_void)
+}
+
 // Atomic DLL instance handle & active COM object counters
 static G_DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 static G_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -467,8 +514,8 @@ fn get_cached_settings() -> Settings {
 
 fn get_extension_category(ext: &str) -> &'static str {
     match ext {
-        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
-        | "opus" | "wav" | "wma" => "Audio",
+        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg" | "opus"
+        | "wav" | "wma" => "Audio",
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
         "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"
@@ -597,9 +644,11 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
             name_wide.push(0);
 
+            let icon_bmp = create_category_icon(preset.output_type);
+
             let mii = MENUITEMINFOW {
                 cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
+                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
                 fType: MFT_STRING,
                 fState: 0,
                 wID: cmd_id + i as u32,
@@ -609,7 +658,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
                 dwItemData: 0,
                 dwTypeData: name_wide.as_ptr() as *mut u16,
                 cch: (name_wide.len() - 1) as u32,
-                hbmpItem: std::ptr::null_mut(),
+                hbmpItem: icon_bmp,
             };
 
             InsertMenuItemW(hmenu, indexMenu + i as u32, 1, &mii);
@@ -627,9 +676,11 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
             let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
             name_wide.push(0);
 
+            let icon_bmp = create_category_icon(preset.output_type);
+
             let mii = MENUITEMINFOW {
                 cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
+                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
                 fType: MFT_STRING,
                 fState: 0,
                 wID: cmd_id + i as u32,
@@ -639,7 +690,7 @@ unsafe extern "system" fn FileConverterShell_QueryContextMenu(
                 dwItemData: 0,
                 dwTypeData: name_wide.as_ptr() as *mut u16,
                 cch: (name_wide.len() - 1) as u32,
-                hbmpItem: std::ptr::null_mut(),
+                hbmpItem: icon_bmp,
             };
 
             InsertMenuItemW(h_sub_menu, i as u32, 1, &mii);

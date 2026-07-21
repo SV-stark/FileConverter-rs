@@ -80,8 +80,8 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
 // Replicate C# Helpers.GetExtensionCategory mapping
 fn get_extension_category(ext: &str) -> &'static str {
     match ext {
-        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
-        | "opus" | "wav" | "wma" => "Audio",
+        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg" | "opus"
+        | "wav" | "wma" => "Audio",
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
         "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"

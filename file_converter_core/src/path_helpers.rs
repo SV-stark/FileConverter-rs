@@ -11,8 +11,6 @@ static RE_VALID_PATH: LazyLock<Regex> = LazyLock::new(|| {
 static RE_DATE_FMT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(d:(?P<format>[^)]*)\)").unwrap());
 
-
-
 pub fn is_path_drive_letter_valid(path: &str) -> bool {
     RE_DRIVE_LETTER.is_match(path)
 }
