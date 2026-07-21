@@ -472,33 +472,7 @@
         <Settings Key="FFMPEGCustomCommand" Value="" />
         <OutputFileNameTemplate>(p:m)DVD Extraction\(f)</OutputFileNameTemplate>
     </ConversionPreset>
-    <ConversionPreset Name="Extract CDA to Flac" OutputType="Flac" IsDefaultSettings="true">
-        <InputTypes>cda</InputTypes>
-        <InputPostConversionAction>None</InputPostConversionAction>
-        <Settings Key="AudioChannelCount" Value="0" />
-        <Settings Key="EnableFFMPEGCustomCommand" Value="False" />
-        <Settings Key="FFMPEGCustomCommand" Value="" />
-        <OutputFileNameTemplate>(p:m)CDA Extraction\(f)</OutputFileNameTemplate>
-    </ConversionPreset>
-    <ConversionPreset Name="Extract CDA to Ogg" OutputType="Ogg" IsDefaultSettings="true">
-        <InputTypes>cda</InputTypes>
-        <InputPostConversionAction>None</InputPostConversionAction>
-        <Settings Key="AudioBitrate" Value="192" />
-        <Settings Key="AudioChannelCount" Value="0" />
-        <Settings Key="EnableFFMPEGCustomCommand" Value="False" />
-        <Settings Key="FFMPEGCustomCommand" Value="" />
-        <OutputFileNameTemplate>(p:m)CDA Extraction\(f)</OutputFileNameTemplate>
-    </ConversionPreset>
-    <ConversionPreset Name="Extract CDA to Mp3" OutputType="Mp3" IsDefaultSettings="true">
-        <InputTypes>cda</InputTypes>
-        <InputPostConversionAction>None</InputPostConversionAction>
-        <Settings Key="AudioEncodingMode" Value="Mp3VBR" />
-        <Settings Key="AudioBitrate" Value="225" />
-        <Settings Key="AudioChannelCount" Value="0" />
-        <Settings Key="EnableFFMPEGCustomCommand" Value="False" />
-        <Settings Key="FFMPEGCustomCommand" Value="" />
-        <OutputFileNameTemplate>(p:m)CDA Extraction\(f)</OutputFileNameTemplate>
-    </ConversionPreset>
+
     <ConversionPreset Name="To Png" OutputType="Png" IsDefaultSettings="true">
         <InputTypes>xcf</InputTypes>
         <InputTypes>arw</InputTypes>

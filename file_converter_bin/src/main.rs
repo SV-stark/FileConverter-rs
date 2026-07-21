@@ -417,6 +417,10 @@ impl eframe::App for FileConverterApp {
     }
 }
 
+fn load_app_icon() -> Option<egui::IconData> {
+    eframe::icon_data::from_png_bytes(include_bytes!("../../icon.png")).ok()
+}
+
 fn run_settings_native_gui() {
     println!("Launching File Converter Native GUI Settings Window...");
 
@@ -429,10 +433,16 @@ fn run_settings_native_gui() {
     };
     let (_, user_xml_path) = get_settings_paths();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([880.0, 620.0])
+        .with_title("File Converter Native Settings");
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([880.0, 620.0])
-            .with_title("File Converter Native Settings"),
+        viewport,
         ..Default::default()
     };
 
@@ -642,10 +652,16 @@ fn run_conversion_gui(args: Vec<String>) {
     let auto_close = settings.exit_application_when_conversions_finished;
     let exit_delay = settings.duration_between_end_of_conversions_and_application_exit;
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([650.0, 450.0])
+        .with_title(format!("File Converter - {}", preset_name));
+
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([650.0, 450.0])
-            .with_title(format!("File Converter - {}", preset_name)),
+        viewport,
         ..Default::default()
     };
 

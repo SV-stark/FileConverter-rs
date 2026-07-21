@@ -1,4 +1,3 @@
-use crate::cda;
 use crate::ffmpeg;
 use crate::image;
 use crate::office;
@@ -27,11 +26,9 @@ pub struct ConversionJob {
     pub output_file_paths: Vec<String>,
     pub progress: Arc<Mutex<f32>>,
     pub status: Arc<Mutex<JobStatus>>,
-    pub is_cda: bool,
 }
 
 pub enum JobEngine {
-    Cda,
     Word,
     Excel,
     PowerPoint,
@@ -47,10 +44,6 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-
-    if ext == "cda" {
-        return JobEngine::Cda;
-    }
 
     if ext == "docx" || ext == "odt" || ext == "doc" {
         return JobEngine::Word;
@@ -87,7 +80,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
 // Replicate C# Helpers.GetExtensionCategory mapping
 fn get_extension_category(ext: &str) -> &'static str {
     match ext {
-        "aac" | "aiff" | "ape" | "cda" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
+        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
         | "opus" | "wav" | "wma" => "Audio",
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
@@ -135,13 +128,6 @@ fn is_output_type_compatible_with_category(output_type: OutputType, category: &s
 
 impl ConversionJob {
     pub fn new(id: usize, preset: ConversionPreset, input_path: String) -> Self {
-        let is_cda = Path::new(&input_path)
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase()
-            == "cda";
-
         ConversionJob {
             id,
             preset,
@@ -149,7 +135,6 @@ impl ConversionJob {
             output_file_paths: Vec::new(),
             progress: Arc::new(Mutex::new(0.0)),
             status: Arc::new(Mutex::new(JobStatus::Queue)),
-            is_cda,
         }
     }
 
@@ -274,59 +259,6 @@ impl ConversionJob {
         let engine = determine_job_engine(&self.preset, &self.input_path);
 
         match engine {
-            JobEngine::Cda => {
-                let track = path_helpers::get_cda_track_number(&self.input_path)
-                    .ok_or_else(|| "Failed to parse track number from CDA file name".to_string())?;
-                let drive_str = path_helpers::get_path_drive_letter(&self.input_path)
-                    .ok_or_else(|| "Failed to retrieve drive letter".to_string())?;
-                let drive_char = drive_str.chars().next().unwrap();
-
-                let temp_dir = std::env::temp_dir();
-                let temp_wav = path_helpers::generate_unique_path(
-                    temp_dir.join(format!("Track{}_temp.wav", track)),
-                    &[],
-                );
-                let temp_wav_str = temp_wav.to_string_lossy().to_string();
-
-                // 1. Extract CDA to temp WAV
-                cda::extract_cda_track(drive_char, track, &temp_wav_str, progress_cb)?;
-
-                // 2. Compress temp WAV to final output
-                // Create a sub-preset for WAV conversion
-                let sub_preset = self.preset.clone();
-                // Ensure we don't recursive CDA loop
-                let conversion_res = if preset_uses_ffmpeg(&sub_preset) {
-                    let passes = ffmpeg::get_ffmpeg_passes(
-                        &sub_preset,
-                        &temp_wav_str,
-                        &self.output_file_paths[0],
-                        hw_accel,
-                    )?;
-                    let total_passes = passes.len();
-                    for (i, pass) in passes.iter().enumerate() {
-                        ffmpeg::run_ffmpeg_pass(
-                            pass,
-                            &temp_wav_str,
-                            &self.output_file_paths[0],
-                            &|percent, name| {
-                                let overall = (i as f32 + percent) / total_passes as f32;
-                                progress_cb(overall, name);
-                            },
-                        )?;
-                    }
-                    Ok(())
-                } else {
-                    image::run_image_conversion(
-                        &sub_preset,
-                        &temp_wav_str,
-                        &self.output_file_paths,
-                        progress_cb,
-                    )
-                };
-
-                let _ = std::fs::remove_file(temp_wav);
-                conversion_res
-            }
             JobEngine::Ico => {
                 let temp_dir = std::env::temp_dir();
                 let file_name = Path::new(&self.input_path)
@@ -638,12 +570,9 @@ impl ConversionScheduler {
         }
         drop(tx); // Close queue so workers terminate when finished
 
-        let cda_mutex = Arc::new(Mutex::new(()));
-
         let mut handles = Vec::new();
         for _ in 0..max_concurrency {
             let rx = rx.clone();
-            let cda_mutex = cda_mutex.clone();
             let hw_accel = self.hw_accel;
 
             let handle = thread::spawn(move || {
@@ -651,12 +580,7 @@ impl ConversionScheduler {
                     let lock = rx.lock().unwrap();
                     lock.recv()
                 } {
-                    if job.is_cda {
-                        let _cda_guard = cda_mutex.lock().unwrap();
-                        job.run(hw_accel);
-                    } else {
-                        job.run(hw_accel);
-                    }
+                    job.run(hw_accel);
                 }
             });
             handles.push(handle);

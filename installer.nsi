@@ -12,6 +12,9 @@ InstallDirRegKey HKLM "Software\${APP_NAME}" "InstallDir"
 Name "${APP_NAME}"
 OutFile "FileConverter_Setup.exe"
 
+!define MUI_ICON "icon.ico"
+!define MUI_UNICON "icon.ico"
+
 !include "MUI2.nsh"
 
 !define MUI_ABORTWARNING
@@ -31,10 +34,12 @@ Section "Install"
     SetRegView 64
     SetOutPath "$INSTDIR"
     
-    ; Copy build outputs
+    ; Copy build outputs and logo assets
     File "target\release\file_converter_bin.exe"
     File "target\release\file_converter_shell.dll"
     File "Settings.default.xml"
+    File "icon.ico"
+    File "icon.png"
     
     ; Register shell extension DLL
     RegDLL "$INSTDIR\file_converter_shell.dll"
@@ -48,6 +53,7 @@ Section "Install"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "Publisher" "${APP_PUBLISHER}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "URLInfoAbout" "${APP_WEBSITE}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayVersion" "${APP_VERSION}"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "DisplayIcon" "$INSTDIR\icon.ico"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoModify" 1
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "NoRepair" 1
 

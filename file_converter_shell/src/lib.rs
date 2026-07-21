@@ -467,7 +467,7 @@ fn get_cached_settings() -> Settings {
 
 fn get_extension_category(ext: &str) -> &'static str {
     match ext {
-        "aac" | "aiff" | "ape" | "cda" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
+        "aac" | "aiff" | "ape" | "flac" | "mp3" | "m4a" | "m4b" | "oga" | "ogg"
         | "opus" | "wav" | "wma" => "Audio",
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",

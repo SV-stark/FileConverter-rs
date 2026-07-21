@@ -1,5 +1,4 @@
 #![allow(clippy::all, warnings)]
-pub mod cda;
 pub mod ffmpeg;
 pub mod image;
 pub mod office;
@@ -121,12 +120,7 @@ mod tests {
         assert!(is_path_valid("\\\\Server\\Share\\file.txt"));
     }
 
-    #[test]
-    fn test_cda_track_parsing() {
-        assert_eq!(get_cda_track_number("D:\\Track01.cda"), Some(1));
-        assert_eq!(get_cda_track_number("E:\\Track12.cda"), Some(12));
-        assert_eq!(get_cda_track_number("C:\\NotTrack.txt"), None);
-    }
+
 
     #[test]
     fn test_unique_path_generator() {

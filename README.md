@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" width="128" height="128" alt="File Converter Logo" />
+</p>
+
 # FileConverter-rs
 
 [![Release](https://img.shields.io/github/v/release/SV-stark/FileConverter-rs?color=blue&style=flat-square)](https://github.com/SV-stark/FileConverter-rs/releases)
@@ -33,7 +37,6 @@ All credit for the original application design, default presets schema (`Setting
 | **PDF Page Rasterization** | Ghostscript / ImageMagick | **Pure-Rust** `hayro` engine rendering pages in parallel with `rayon` across all CPU cores |
 | **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper supporting Hardware Acceleration (CUDA/AMF) |
 | **Office Conversion** | Word / Excel / PowerPoint COM Interop | Background PowerShell COM automation with intermediate PDF fallback |
-| **CD Audio Extraction** | Native Win32 Drive IOCTLs | Safe Rust Raw Drive Sector Reader (`cda.rs`) |
 
 ---
 
@@ -75,8 +78,7 @@ FileConverter-rs/
 │   │   ├── image.rs        # Pure-Rust Image & PDF engine (replaces ImageMagick)
 │   │   ├── ffmpeg.rs       # Audio & Video FFMpeg command builder & pass runner
 │   │   ├── office.rs       # Word, Excel, PowerPoint COM automation
-│   │   ├── cda.rs          # Audio CD track extraction via raw sector reading
-│   │   ├── scheduler.rs    # Bounded channel worker pool & CDA drive lock
+│   │   ├── scheduler.rs    # Bounded channel worker pool
 │   │   ├── settings.rs     # Preset parser & XML serializer
 │   │   ├── path_helpers.rs # LazyLock regex statics & output path template engine
 │   │   └── types.rs        # Enums for OutputType, PostAction, HW Acceleration
