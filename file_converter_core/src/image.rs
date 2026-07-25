@@ -67,6 +67,12 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
 
 /// Resizes images using CPU SIMD vectors (AVX2/NEON/SSE4.1) via `fast_image_resize`.
 fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage> {
+    let mut resizer = Resizer::new();
+    let resize_options = fast_image_resize::ResizeOptions {
+        algorithm: fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
+        ..Default::default()
+    };
+
     match img {
         DynamicImage::ImageRgb8(buf) => {
             let src_image = Image::from_vec_u8(
@@ -79,9 +85,8 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 FileConverterError::Image(format!("Failed to create SIMD RGB image: {:?}", e))
             })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8x3);
-            let mut resizer = Resizer::new();
             resizer
-                .resize(&src_image, &mut dst_image, None)
+                .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
             let buffer = dst_image.buffer().to_vec();
             let rgb_buf =
@@ -103,9 +108,8 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 FileConverterError::Image(format!("Failed to create SIMD Luma image: {:?}", e))
             })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8);
-            let mut resizer = Resizer::new();
             resizer
-                .resize(&src_image, &mut dst_image, None)
+                .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
             let buffer = dst_image.buffer().to_vec();
             let luma_buf =
@@ -130,9 +134,8 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
 
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8x4);
 
-            let mut resizer = Resizer::new();
             resizer
-                .resize(&src_image, &mut dst_image, None)
+                .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
 
             let buffer = dst_image.buffer().to_vec();
@@ -334,17 +337,6 @@ pub fn run_image_conversion(
 }
 
 fn save_image(img: &DynamicImage, preset: &ConversionPreset, output_file: &str) -> Result<()> {
-    let format = match preset.output_type {
-        OutputType::Png => ImageFormat::Png,
-        OutputType::Jpg => ImageFormat::Jpeg,
-        OutputType::Gif => ImageFormat::Gif,
-        OutputType::Webp => ImageFormat::WebP,
-        OutputType::Avif => ImageFormat::Avif,
-        OutputType::Ico => ImageFormat::Ico,
-        OutputType::Pdf => ImageFormat::Png,
-        _ => ImageFormat::Png,
-    };
-
     let file = std::fs::File::create(output_file).map_err(|e| {
         FileConverterError::Image(format!(
             "Failed to create output file {}: {:?}",
@@ -352,8 +344,72 @@ fn save_image(img: &DynamicImage, preset: &ConversionPreset, output_file: &str) 
         ))
     })?;
     let mut writer = std::io::BufWriter::with_capacity(128 * 1024, file);
-    img.write_to(&mut writer, format)
-        .map_err(|e| FileConverterError::Image(format!("Failed to save output image: {:?}", e)))?;
 
+    match preset.output_type {
+        OutputType::Jpg => {
+            let quality = preset
+                .get_setting_value("JpegQuality")
+                .and_then(|v| v.parse::<u8>().ok())
+                .unwrap_or(85);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality);
+            img.write_with_encoder(encoder).map_err(|e| {
+                FileConverterError::Image(format!("Failed to save JPEG image: {:?}", e))
+            })?;
+        }
+        OutputType::Png => {
+            let encoder = image::codecs::png::PngEncoder::new(&mut writer);
+            img.write_with_encoder(encoder).map_err(|e| {
+                FileConverterError::Image(format!("Failed to save PNG image: {:?}", e))
+            })?;
+        }
+        OutputType::Webp => {
+            let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut writer);
+            img.write_with_encoder(encoder).map_err(|e| {
+                FileConverterError::Image(format!("Failed to save WebP image: {:?}", e))
+            })?;
+        }
+        OutputType::Avif => {
+            let encoder = image::codecs::avif::AvifEncoder::new(&mut writer);
+            img.write_with_encoder(encoder).map_err(|e| {
+                FileConverterError::Image(format!("Failed to save AVIF image: {:?}", e))
+            })?;
+        }
+        _ => {
+            let format = match preset.output_type {
+                OutputType::Gif => ImageFormat::Gif,
+                OutputType::Ico => ImageFormat::Ico,
+                _ => ImageFormat::Png,
+            };
+            img.write_to(&mut writer, format).map_err(|e| {
+                FileConverterError::Image(format!("Failed to save output image: {:?}", e))
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Losslessly compresses a PNG image using `oxipng`.
+pub fn run_oxipng_compression<F>(
+    input_file: &str,
+    output_file: &str,
+    progress_callback: F,
+) -> Result<()>
+where
+    F: Fn(f32, &str),
+{
+    progress_callback(0.1, "Reading PNG file");
+    let options = oxipng::Options::default();
+    let in_file = oxipng::InFile::Path(std::path::PathBuf::from(input_file));
+    let out_file = oxipng::OutFile::Path {
+        path: Some(std::path::PathBuf::from(output_file)),
+        preserve_attrs: false,
+    };
+
+    progress_callback(0.4, "Optimizing PNG losslessly via OxiPNG");
+    oxipng::optimize(&in_file, &out_file, &options)
+        .map_err(|e| FileConverterError::Image(format!("Oxipng compression failed: {:?}", e)))?;
+
+    progress_callback(1.0, "Done");
     Ok(())
 }

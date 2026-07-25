@@ -1,3 +1,4 @@
+pub mod doc_convert;
 pub mod error;
 pub mod ffmpeg;
 pub mod ffmpeg_download;
@@ -198,5 +199,33 @@ mod tests {
         let opts = super::pdf_compress::PdfCompressOptions::default();
         assert_eq!(opts.target_dpi, 150);
         assert_eq!(opts.jpeg_quality, 75);
+    }
+
+    #[test]
+    fn test_document_extensions_and_markdown_conversion() {
+        assert_eq!(get_extension_category("epub"), "Document");
+        assert_eq!(get_extension_category("md"), "Document");
+        assert_eq!(get_extension_category("typ"), "Document");
+
+        let temp_dir = std::env::temp_dir();
+        let md_path = temp_dir.join("test_doc.md");
+        let html_out = temp_dir.join("test_doc.html");
+
+        std::fs::write(&md_path, "# Title\n\nThis is **Markdown** text.").unwrap();
+        let res = super::doc_convert::run_markdown_conversion(
+            md_path.to_str().unwrap(),
+            html_out.to_str().unwrap(),
+            OutputType::Pdf,
+            &|_p, _m| {},
+        );
+        assert!(res.is_ok());
+        assert!(html_out.exists());
+
+        let html_content = std::fs::read_to_string(&html_out).unwrap();
+        assert!(html_content.contains("Title"));
+        assert!(html_content.contains("<strong>Markdown</strong>"));
+
+        let _ = std::fs::remove_file(md_path);
+        let _ = std::fs::remove_file(html_out);
     }
 }

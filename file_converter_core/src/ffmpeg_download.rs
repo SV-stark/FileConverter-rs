@@ -1,7 +1,6 @@
 use crate::error::{FileConverterError, Result};
 use std::env;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub fn get_ffmpeg_binary_path() -> PathBuf {
@@ -39,20 +38,22 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     // Download URL for static ffmpeg zip release
     let download_url = "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-essentials_build.zip";
 
+    let temp_zip_path = parent.join("ffmpeg_temp.zip");
     let response = ureq::get(download_url)
         .call()
         .map_err(|e| FileConverterError::Ffmpeg(format!("Failed to download FFmpeg: {:?}", e)))?;
 
-    let mut zip_bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut zip_bytes)
-        .map_err(FileConverterError::Io)?;
+    {
+        let mut out = fs::File::create(&temp_zip_path)?;
+        let mut reader = response.into_reader();
+        std::io::copy(&mut reader, &mut out)?;
+    }
 
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
+    let zip_file = fs::File::open(&temp_zip_path)?;
+    let mut archive = zip::ZipArchive::new(zip_file)
         .map_err(|e| FileConverterError::Invalid(format!("Failed to parse FFmpeg zip: {:?}", e)))?;
 
+    let mut found = false;
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
@@ -61,11 +62,18 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
         if file.name().ends_with("ffmpeg.exe") {
             let mut out_file = fs::File::create(&target_path)?;
             std::io::copy(&mut file, &mut out_file)?;
-            return Ok(target_path);
+            found = true;
+            break;
         }
     }
 
-    Err(FileConverterError::Ffmpeg(
-        "ffmpeg.exe not found in downloaded release package".to_string(),
-    ))
+    let _ = fs::remove_file(&temp_zip_path);
+
+    if found {
+        Ok(target_path)
+    } else {
+        Err(FileConverterError::Ffmpeg(
+            "ffmpeg.exe not found in downloaded release package".to_string(),
+        ))
+    }
 }

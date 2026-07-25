@@ -105,9 +105,8 @@ pub fn get_extension_category(ext: &str) -> &'static str {
         | "jpg" | "jpeg" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff" | "svg"
         | "xcf" | "webp" => "Image",
         "gif" => "Animated Image",
-        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx" => {
-            "Document"
-        }
+        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx"
+        | "epub" | "md" | "markdown" | "typ" | "txt" | "html" | "htm" => "Document",
         _ => "Misc",
     }
 }

@@ -2086,6 +2086,28 @@
         <Settings Key="FFMPEGCustomCommand" Value="-filter:a &quot;rubberband=pitch=1.059463094352953&quot;" />
         <OutputFileNameTemplate>(p)(f) (+1st)</OutputFileNameTemplate>
     </ConversionPreset>
+    <ConversionPreset Name="To Pdf (from Markdown/Typst/EPUB)" OutputType="Pdf" IsDefaultSettings="true">
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>epub</InputTypes>
+        <InputTypes>typ</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+    <ConversionPreset Name="To Text (from EPUB/Markdown)" OutputType="Pdf" IsDefaultSettings="true">
+        <InputTypes>epub</InputTypes>
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>typ</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+    <ConversionPreset Name="Compress Png (lossless)" OutputType="Png" IsDefaultSettings="true">
+        <InputTypes>png</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <Settings Key="OxipngLossless" Value="True" />
+        <OutputFileNameTemplate>(p)(f) (compressed)</OutputFileNameTemplate>
+    </ConversionPreset>
     <CheckUpgradeAtStartup>true</CheckUpgradeAtStartup>
     <CopyFilesInClipboardAfterConversion>false</CopyFilesInClipboardAfterConversion>
 </Settings>

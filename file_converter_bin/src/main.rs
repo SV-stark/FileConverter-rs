@@ -892,129 +892,210 @@ struct ProgressApp {
     exit_delay: f32,
     finished: bool,
     close_time: Option<std::time::Instant>,
+    start_time: std::time::Instant,
 }
 
 impl eframe::App for ProgressApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
 
+        let elapsed_secs = self.start_time.elapsed().as_secs();
+        let elapsed_str = format!("{:02}:{:02}s", elapsed_secs / 60, elapsed_secs % 60);
+
         let mut total_prog = 0.0f32;
         let mut completed_count = 0;
+        let mut failed_count = 0;
         let total_count = self.scheduler.jobs.len();
 
-        ui.heading(format!("⚡ Converting via '{}'...", self.preset_name));
-        ui.separator();
-
-        egui::ScrollArea::vertical()
-            .max_height(280.0)
-            .show(ui, |ui| {
-                for job in &self.scheduler.jobs {
-                    let p = job.get_progress();
-                    let s = job.status.lock().unwrap().clone();
-
-                    total_prog += p;
-
-                    let filename = Path::new(&job.input_path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| job.input_path.clone());
-
-                    let status_str = match &s {
-                        JobStatus::Queue => "Queued...".to_string(),
-                        JobStatus::Converting(msg) => format!("Converting ({})", msg),
-                        JobStatus::Done => {
-                            completed_count += 1;
-                            "Done".to_string()
+        // Top Header Banner
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading(format!("⚡ Converting via '{}'", self.preset_name));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if completed_count < total_count && ui.button("🛑 Cancel All").clicked() {
+                        for job in &self.scheduler.jobs {
+                            job.cancel();
                         }
-                        JobStatus::Failed(err) => {
-                            completed_count += 1;
-                            format!("Failed: {}", err)
-                        }
-                        JobStatus::Canceled => {
-                            completed_count += 1;
-                            "Canceled".to_string()
-                        }
-                    };
-
-                    ui.horizontal(|ui| {
-                        ui.label(&filename);
-                        ui.add(egui::ProgressBar::new(p).text(&status_str));
-                    });
-                }
+                    }
+                    ui.label(egui::RichText::new(format!("⏱️ {}", elapsed_str)).strong());
+                });
             });
+        });
 
-        ui.separator();
+        ui.add_space(4.0);
 
+        // Job List Scroll Area
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(270.0)
+                .show(ui, |ui| {
+                    for job in &self.scheduler.jobs {
+                        let p = job.get_progress();
+                        let s = job.status.lock().unwrap().clone();
+
+                        total_prog += p;
+
+                        let filename = Path::new(&job.input_path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| job.input_path.clone());
+
+                        let (icon, status_str, is_active) = match &s {
+                            JobStatus::Queue => ("💤", "Queued...".to_string(), true),
+                            JobStatus::Converting(msg) => {
+                                ("⏳", format!("Converting ({})", msg), true)
+                            }
+                            JobStatus::Done => {
+                                completed_count += 1;
+                                ("✅", "Done".to_string(), false)
+                            }
+                            JobStatus::Failed(err) => {
+                                completed_count += 1;
+                                failed_count += 1;
+                                ("❌", format!("Error: {}", err), false)
+                            }
+                            JobStatus::Canceled => {
+                                completed_count += 1;
+                                ("🛑", "Canceled".to_string(), false)
+                            }
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.label(icon);
+                            ui.add_sized(
+                                [190.0, 18.0],
+                                egui::Label::new(egui::RichText::new(&filename).strong())
+                                    .truncate(),
+                            );
+
+                            ui.add(
+                                egui::ProgressBar::new(p)
+                                    .text(&status_str)
+                                    .animate(is_active),
+                            );
+
+                            if is_active
+                                && ui
+                                    .small_button("🚫")
+                                    .on_hover_text("Cancel this conversion job")
+                                    .clicked()
+                            {
+                                job.cancel();
+                            }
+                        });
+                        ui.add_space(2.0);
+                    }
+                });
+        });
+
+        ui.add_space(4.0);
+
+        // Bottom Summary & Actions
         let overall = if total_count > 0 {
             total_prog / total_count as f32
         } else {
             1.0
         };
 
-        ui.horizontal(|ui| {
-            ui.label("Overall Progress:");
-            ui.add(egui::ProgressBar::new(overall).text(format!(
-                "{}/{} finished ({:.0}%)",
-                completed_count,
-                total_count,
-                overall * 100.0
-            )));
-        });
-
-        if completed_count >= total_count {
-            if !self.finished {
-                self.finished = true;
-                self.close_time = Some(std::time::Instant::now());
-                play_completion_sound();
-
-                // Log all jobs to History
-                for job in &self.scheduler.jobs {
-                    let out_str = job.output_file_paths.join("; ");
-                    let status_str = match &*job.status.lock().unwrap() {
-                        JobStatus::Done => "Done".to_string(),
-                        JobStatus::Failed(e) => format!("Failed ({})", e),
-                        JobStatus::Canceled => "Canceled".to_string(),
-                        _ => "Finished".to_string(),
-                    };
-                    add_history_record(&self.preset_name, &job.input_path, &out_str, &status_str);
-                }
-            }
-
-            ui.separator();
+        egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("📁 Open Output Folder").clicked() {
-                    if let Some(first_job) = self.scheduler.jobs.first() {
-                        if let Some(first_out) = first_job.output_file_paths.first() {
-                            let parent = Path::new(first_out)
-                                .parent()
-                                .unwrap_or_else(|| Path::new("."));
-                            let _ = std::process::Command::new("explorer").arg(parent).spawn();
-                        }
-                    }
-                }
-
-                if ui.button("📋 Copy Output Paths").clicked() {
-                    let mut all_paths = Vec::new();
-                    for job in &self.scheduler.jobs {
-                        all_paths.extend(job.output_file_paths.clone());
-                    }
-                    ui.ctx().copy_text(all_paths.join("\n"));
-                }
+                ui.label(egui::RichText::new("Overall Progress:").strong());
+                ui.add(egui::ProgressBar::new(overall).text(format!(
+                    "{}/{} finished ({:.0}%)",
+                    completed_count,
+                    total_count,
+                    overall * 100.0
+                )));
             });
 
-            if self.auto_close {
-                if let Some(start) = self.close_time {
-                    let elapsed = start.elapsed().as_secs_f32();
-                    let remaining = (self.exit_delay - elapsed).max(0.0);
-                    ui.label(format!("Finished! Closing in {:.1}s...", remaining));
-                    if elapsed >= self.exit_delay {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            if completed_count >= total_count {
+                if !self.finished {
+                    self.finished = true;
+                    self.close_time = Some(std::time::Instant::now());
+                    play_completion_sound();
+
+                    for job in &self.scheduler.jobs {
+                        let out_str = job.output_file_paths.join("; ");
+                        let status_str = match &*job.status.lock().unwrap() {
+                            JobStatus::Done => "Done".to_string(),
+                            JobStatus::Failed(e) => format!("Failed ({})", e),
+                            JobStatus::Canceled => "Canceled".to_string(),
+                            _ => "Finished".to_string(),
+                        };
+                        add_history_record(
+                            &self.preset_name,
+                            &job.input_path,
+                            &out_str,
+                            &status_str,
+                        );
                     }
                 }
-            } else {
-                ui.label("Conversions complete.");
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("📁 Open Output Folder").clicked() {
+                        if let Some(first_job) = self.scheduler.jobs.first() {
+                            if let Some(first_out) = first_job.output_file_paths.first() {
+                                let parent = Path::new(first_out)
+                                    .parent()
+                                    .unwrap_or_else(|| Path::new("."));
+                                let _ = std::process::Command::new("explorer").arg(parent).spawn();
+                            }
+                        }
+                    }
+
+                    if ui.button("📋 Copy Output Paths").clicked() {
+                        let mut all_paths = Vec::new();
+                        for job in &self.scheduler.jobs {
+                            all_paths.extend(job.output_file_paths.clone());
+                        }
+                        ui.ctx().copy_text(all_paths.join("\n"));
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("❌ Close Window").clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+
+                if self.auto_close {
+                    if let Some(start) = self.close_time {
+                        let elapsed = start.elapsed().as_secs_f32();
+                        let remaining = (self.exit_delay - elapsed).max(0.0);
+                        if failed_count == 0 {
+                            ui.label(format!(
+                                "✨ All conversions finished! Closing window in {:.1}s...",
+                                remaining
+                            ));
+                        } else {
+                            ui.label(format!(
+                                "⚠️ Conversions complete with {} error(s). Closing in {:.1}s...",
+                                failed_count, remaining
+                            ));
+                        }
+                        if elapsed >= self.exit_delay {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
+                } else {
+                    if failed_count == 0 {
+                        ui.label(
+                            egui::RichText::new("✨ All conversions completed successfully!")
+                                .color(egui::Color32::GREEN),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "⚠️ Completed with {} error(s).",
+                                failed_count
+                            ))
+                            .color(egui::Color32::RED),
+                        );
+                    }
+                }
             }
-        }
+        });
     }
 }
 
@@ -1111,7 +1192,7 @@ fn run_conversion_gui(args: Vec<String>) {
     let exit_delay = settings.duration_between_end_of_conversions_and_application_exit;
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([650.0, 450.0])
+        .with_inner_size([660.0, 480.0])
         .with_title(format!("File Converter - {}", preset_name));
 
     if let Some(icon) = load_app_icon() {
@@ -1130,6 +1211,7 @@ fn run_conversion_gui(args: Vec<String>) {
         exit_delay,
         finished: false,
         close_time: None,
+        start_time: std::time::Instant::now(),
     };
 
     let _ = eframe::run_native(

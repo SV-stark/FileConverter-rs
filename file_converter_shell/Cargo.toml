@@ -11,4 +11,5 @@ file_converter_core = { path = "../file_converter_core" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_LibraryLoader"] }
+windows-core = "=0.58.0"
+windows = { version = "=0.58.0", features = ["implement", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Graphics_Gdi"] }

@@ -20,12 +20,18 @@ impl Default for PdfCompressOptions {
     }
 }
 
+use memmap2::Mmap;
+
 pub fn compress_pdf<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
     options: &PdfCompressOptions,
 ) -> Result<()> {
-    let mut doc = Document::load(input_path.as_ref()).map_err(|e| {
+    let file = std::fs::File::open(input_path.as_ref()).map_err(FileConverterError::Io)?;
+
+    let mmap = unsafe { Mmap::map(&file) }.map_err(FileConverterError::Io)?;
+
+    let mut doc = Document::load_mem(&mmap).map_err(|e| {
         FileConverterError::Invalid(format!("Failed to load PDF document: {:?}", e))
     })?;
 

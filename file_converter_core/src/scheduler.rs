@@ -1,3 +1,4 @@
+use crate::doc_convert;
 use crate::error::{FileConverterError, Result};
 use crate::ffmpeg;
 use crate::image;
@@ -36,6 +37,10 @@ pub enum JobEngine {
     Word,
     Excel,
     PowerPoint,
+    Epub,
+    Markdown,
+    Typst,
+    Oxipng,
     Ico,
     Gif,
     Image,
@@ -57,6 +62,23 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
     }
     if ext == "pptx" || ext == "odp" || ext == "ppt" {
         return JobEngine::PowerPoint;
+    }
+
+    if ext == "epub" {
+        return JobEngine::Epub;
+    }
+    if ext == "md" || ext == "markdown" {
+        return JobEngine::Markdown;
+    }
+    if ext == "typ" {
+        return JobEngine::Typst;
+    }
+
+    if preset.output_type == OutputType::Png
+        && (preset.get_setting_value("OxipngLossless").is_some()
+            || preset.name.to_lowercase().contains("compress"))
+    {
+        return JobEngine::Oxipng;
     }
 
     if preset.output_type == OutputType::Ico {
@@ -224,6 +246,29 @@ impl ConversionJob {
         let engine = determine_job_engine(&self.preset, &self.input_path);
 
         match engine {
+            JobEngine::Epub => doc_convert::run_epub_conversion(
+                &self.input_path,
+                &self.output_file_paths[0],
+                self.preset.output_type,
+                progress_cb,
+            ),
+            JobEngine::Markdown => doc_convert::run_markdown_conversion(
+                &self.input_path,
+                &self.output_file_paths[0],
+                self.preset.output_type,
+                progress_cb,
+            ),
+            JobEngine::Typst => doc_convert::run_typst_conversion(
+                &self.input_path,
+                &self.output_file_paths[0],
+                self.preset.output_type,
+                progress_cb,
+            ),
+            JobEngine::Oxipng => image::run_oxipng_compression(
+                &self.input_path,
+                &self.output_file_paths[0],
+                progress_cb,
+            ),
             JobEngine::Ico => {
                 let temp_dir = std::env::temp_dir();
                 let file_name = Path::new(&self.input_path)
