@@ -228,4 +228,45 @@ mod tests {
         let _ = std::fs::remove_file(md_path);
         let _ = std::fs::remove_file(html_out);
     }
+
+    #[test]
+    fn test_svg_resvg_rendering() {
+        let temp_dir = std::env::temp_dir();
+        let svg_path = temp_dir.join("test_resvg.svg");
+        let png_path = temp_dir.join("test_resvg.png");
+
+        let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+            <rect width="100" height="100" fill="red" />
+        </svg>"#;
+
+        std::fs::write(&svg_path, svg_content).unwrap();
+
+        let dims = super::image::get_image_dimensions(svg_path.to_str().unwrap());
+        assert!(dims.is_ok());
+        let (w, h) = dims.unwrap();
+        assert_eq!(w, 100);
+        assert_eq!(h, 100);
+
+        let preset = ConversionPreset {
+            name: "To Png".to_string(),
+            output_type: OutputType::Png,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["svg".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+
+        let res = super::image::run_image_conversion(
+            &preset,
+            svg_path.to_str().unwrap(),
+            &[png_path.to_str().unwrap().to_string()],
+            &|_p, _m| {},
+        );
+        assert!(res.is_ok());
+        assert!(png_path.exists());
+
+        let _ = std::fs::remove_file(svg_path);
+        let _ = std::fs::remove_file(png_path);
+    }
 }

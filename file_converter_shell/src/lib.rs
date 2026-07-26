@@ -480,7 +480,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             } else {
                 Err(E_FAIL.into())
             }
-        } else {
+        } else if verb_offset == presets_count {
             let bin_path = get_bin_path();
             if bin_path.exists() {
                 let _ = Command::new(&bin_path).arg("-settings").spawn();
@@ -488,6 +488,8 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             } else {
                 Err(E_FAIL.into())
             }
+        } else {
+            Ok(())
         }
     }
 
@@ -557,13 +559,27 @@ fn create_default_settings() -> Settings {
 }
 
 fn get_bin_path() -> PathBuf {
-    if let Ok(mut exe_path) = std::env::current_exe() {
-        exe_path.pop();
-        let path = exe_path.join("file_converter_bin.exe");
-        if path.exists() {
-            return path;
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Software\\FileConverter") {
+        if let Ok(app_path) = hkcu.get_value::<String, _>("AppPath") {
+            let path = PathBuf::from(&app_path);
+            if path.exists() {
+                return path;
+            }
         }
     }
+
+    if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey("Software\\FileConverter") {
+        if let Ok(app_path) = hklm.get_value::<String, _>("AppPath") {
+            let path = PathBuf::from(&app_path);
+            if path.exists() {
+                return path;
+            }
+        }
+    }
+
     let dll_hinst = G_DLL_INSTANCE.load(Ordering::Relaxed);
     if dll_hinst != 0 {
         let mut buf = vec![0u16; 512];
@@ -577,6 +593,14 @@ fn get_bin_path() -> PathBuf {
                     return path;
                 }
             }
+        }
+    }
+
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.pop();
+        let path = exe_path.join("file_converter_bin.exe");
+        if path.exists() {
+            return path;
         }
     }
 
@@ -669,12 +693,33 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         }
     }
 
+    let mod_path_str = module_path.to_string_lossy().to_string();
+
+    if !mod_path_str.is_empty() {
+        if let Some(parent) = module_path.parent() {
+            let bin_exe = parent.join("file_converter_bin.exe");
+            let bin_path_str = bin_exe.to_string_lossy().to_string();
+
+            if let Ok((hkcu, _)) =
+                RegKey::predef(HKEY_CURRENT_USER).create_subkey("Software\\FileConverter")
+            {
+                let _ = hkcu.set_value("AppPath", &bin_path_str);
+            }
+            if let Ok((hklm, _)) =
+                RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey("Software\\FileConverter")
+            {
+                let _ = hklm.set_value("AppPath", &bin_path_str);
+            }
+        }
+    }
+
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
     let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+        .create_subkey("Software\\Classes")
+        .map(|(k, _)| k);
 
     let clsid_key_path = format!("CLSID\\{}", clsid_str);
     let clsid_inproc_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
@@ -687,7 +732,15 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let _ = root.delete_subkey_all(&clsid_key_path);
     }
 
-    let mod_path_str = module_path.to_string_lossy().to_string();
+    if let Ok(ref root) = hkcu_classes {
+        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
+            let _ = key.set_value("", &"FileConverter Shell Extension");
+        }
+        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
+            let _ = key.set_value("", &mod_path_str);
+            let _ = key.set_value("ThreadingModel", &"Apartment");
+        }
+    }
 
     if let Ok((key, _)) = hkcr.create_subkey(&clsid_key_path) {
         let _ = key.set_value("", &"FileConverter Shell Extension");
@@ -696,7 +749,6 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let _ = key.set_value("", &mod_path_str);
         let _ = key.set_value("ThreadingModel", &"Apartment");
     }
-
     if let Ok(ref root) = hklm_classes {
         if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
             let _ = key.set_value("", &"FileConverter Shell Extension");
@@ -721,6 +773,9 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
         if let Ok(ref root) = hkcu_classes {
             let _ = root.delete_subkey_all(&path);
+            if let Ok((key, _)) = root.create_subkey(&path) {
+                let _ = key.set_value("", &clsid_str);
+            }
         }
 
         if let Ok((key, _)) = hkcr.create_subkey(&path) {
@@ -733,6 +788,12 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         }
 
         let prop_path = format!("{}\\shellex\\PropertySheetHandlers\\FileConverter", assoc);
+        if let Ok(ref root) = hkcu_classes {
+            let _ = root.delete_subkey_all(&prop_path);
+            if let Ok((key, _)) = root.create_subkey(&prop_path) {
+                let _ = key.set_value("", &clsid_str);
+            }
+        }
         if let Ok((key, _)) = hkcr.create_subkey(&prop_path) {
             let _ = key.set_value("", &clsid_str);
         }
@@ -740,6 +801,32 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
             if let Ok((key, _)) = root.create_subkey(&prop_path) {
                 let _ = key.set_value("", &clsid_str);
             }
+        }
+
+        let bin_exe = if let Some(parent) = module_path.parent() {
+            parent.join("file_converter_bin.exe")
+        } else {
+            PathBuf::from("file_converter_bin.exe")
+        };
+        let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
+        let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
+        let cmd_str = format!("\"{}\" -settings", bin_exe.to_string_lossy());
+
+        if let Ok(ref root) = hkcu_classes {
+            if let Ok((key, _)) = root.create_subkey(&shell_verb_path) {
+                let _ = key.set_value("", &"File Converter");
+                let _ = key.set_value("MUIVerb", &"File Converter");
+            }
+            if let Ok((key, _)) = root.create_subkey(&shell_verb_cmd_path) {
+                let _ = key.set_value("", &cmd_str);
+            }
+        }
+        if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_path) {
+            let _ = key.set_value("", &"File Converter");
+            let _ = key.set_value("MUIVerb", &"File Converter");
+        }
+        if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_cmd_path) {
+            let _ = key.set_value("", &cmd_str);
         }
     }
 

@@ -49,6 +49,17 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| FileConverterError::Image(format!("Failed to memory map image: {:?}", e)))?;
 
+    if ext == "svg" {
+        let mut fontdb = resvg::usvg::fontdb::Database::new();
+        fontdb.load_system_fonts();
+        let mut opt = resvg::usvg::Options::default();
+        opt.fontdb = Arc::new(fontdb);
+        let tree = resvg::usvg::Tree::from_data(&mmap, &opt)
+            .map_err(|e| FileConverterError::Image(format!("Failed to parse SVG: {:?}", e)))?;
+        let size = tree.size().to_int_size();
+        return Ok((size.width(), size.height()));
+    }
+
     if ext == "heic" || ext == "heif" {
         let output = DecoderConfig::new()
             .decode(&mmap, PixelLayout::Rgba8)
@@ -69,7 +80,9 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
 fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<DynamicImage> {
     let mut resizer = Resizer::new();
     let resize_options = fast_image_resize::ResizeOptions {
-        algorithm: fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::Lanczos3),
+        algorithm: fast_image_resize::ResizeAlg::Convolution(
+            fast_image_resize::FilterType::Lanczos3,
+        ),
         ..Default::default()
     };
 
@@ -247,7 +260,47 @@ pub fn run_image_conversion(
             FileConverterError::Image(format!("Failed to memory map input: {:?}", e))
         })?;
 
-        let mut img = if ext == "heic" || ext == "heif" {
+        let mut img = if ext == "svg" {
+            let mut fontdb = resvg::usvg::fontdb::Database::new();
+            fontdb.load_system_fonts();
+            let mut opt = resvg::usvg::Options::default();
+            opt.fontdb = Arc::new(fontdb);
+
+            let tree = resvg::usvg::Tree::from_data(&mmap, &opt)
+                .map_err(|e| FileConverterError::Image(format!("Failed to parse SVG: {:?}", e)))?;
+
+            let size = tree.size().to_int_size();
+            let orig_w = size.width().max(1);
+            let orig_h = size.height().max(1);
+
+            let scale_factor = preset
+                .get_setting_value("ImageScale")
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(1.0);
+
+            let target_w = ((orig_w as f32 * scale_factor).round() as u32).max(1);
+            let target_h = ((orig_h as f32 * scale_factor).round() as u32).max(1);
+
+            let mut pixmap =
+                resvg::tiny_skia::Pixmap::new(target_w, target_h).ok_or_else(|| {
+                    FileConverterError::Image("Failed to create SVG pixmap canvas".to_string())
+                })?;
+
+            let sx = target_w as f32 / orig_w as f32;
+            let sy = target_h as f32 / orig_h as f32;
+            let transform = resvg::tiny_skia::Transform::from_scale(sx, sy);
+
+            resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+            let buffer = image::ImageBuffer::from_raw(target_w, target_h, pixmap.data().to_vec())
+                .ok_or_else(|| {
+                FileConverterError::Image(
+                    "Failed to create ImageBuffer from SVG pixmap".to_string(),
+                )
+            })?;
+
+            DynamicImage::ImageRgba8(buffer)
+        } else if ext == "heic" || ext == "heif" {
             let output = DecoderConfig::new()
                 .decode(&mmap, PixelLayout::Rgba8)
                 .map_err(|e| {

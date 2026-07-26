@@ -26,6 +26,7 @@ fast_image_resize = { version = "6.0.0", features = ["image"] }
 epub = "2.1"
 pulldown-cmark = "0.12"
 oxipng = "9.0"
+resvg = "0.45"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.0"
