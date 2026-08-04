@@ -53,6 +53,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
+    let category = get_extension_category(&ext);
 
     if ext == "docx" || ext == "odt" || ext == "doc" {
         return JobEngine::Word;
@@ -72,6 +73,10 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
     }
     if ext == "typ" {
         return JobEngine::Typst;
+    }
+
+    if category == "Audio" || category == "Video" {
+        return JobEngine::Ffmpeg;
     }
 
     if preset.output_type == OutputType::Png

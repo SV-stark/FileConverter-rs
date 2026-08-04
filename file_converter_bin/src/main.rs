@@ -241,7 +241,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.4.0",
+    version = "0.5.0",
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
@@ -250,7 +250,7 @@ struct Cli {
     command: Option<Commands>,
 
     /// Preset name to use when converting files
-    #[arg(short, long)]
+    #[arg(short, long, alias = "conversion-preset")]
     preset: Option<String>,
 
     /// Path to temporary file containing list of input paths
@@ -258,7 +258,7 @@ struct Cli {
     input_files: Option<PathBuf>,
 
     /// Open settings manager GUI
-    #[arg(long, default_value_t = false)]
+    #[arg(long, short = 's', alias = "setting")]
     settings: bool,
 
     /// Input file paths to convert
@@ -359,57 +359,68 @@ fn main() {
     let raw_args: Vec<String> = env::args().collect();
 
     // Check if invoked via standard clap CLI
-    let cli = Cli::parse();
-
-    #[allow(clippy::collapsible_match)]
-    match cli.command {
-        Some(Commands::ListPresets) => {
-            if let Ok(settings) = initialize_user_settings_if_needed() {
-                println!(
-                    "Available Conversion Presets (Total: {}):",
-                    settings.conversion_presets.len()
-                );
-                for preset in &settings.conversion_presets {
+    if let Ok(cli) = Cli::try_parse() {
+        #[allow(clippy::collapsible_match)]
+        match cli.command {
+            Some(Commands::ListPresets) => {
+                if let Ok(settings) = initialize_user_settings_if_needed() {
                     println!(
-                        "  • [{}] -> {:?} (Inputs: {})",
-                        preset.name,
-                        preset.output_type,
-                        if preset.input_types.is_empty() {
-                            "all".to_string()
-                        } else {
-                            preset.input_types.join(", ")
-                        }
+                        "Available Conversion Presets (Total: {}):",
+                        settings.conversion_presets.len()
                     );
+                    for preset in &settings.conversion_presets {
+                        println!(
+                            "  • [{}] -> {:?} (Inputs: {})",
+                            preset.name,
+                            preset.output_type,
+                            if preset.input_types.is_empty() {
+                                "all".to_string()
+                            } else {
+                                preset.input_types.join(", ")
+                            }
+                        );
+                    }
+                }
+                return;
+            }
+            Some(Commands::Register) => {
+                println!("{}", register_shell_extension_dll());
+                return;
+            }
+            Some(Commands::Unregister) => {
+                println!("{}", unregister_shell_extension_dll());
+                return;
+            }
+            Some(Commands::Gui) => {
+                run_settings_native_gui();
+                return;
+            }
+            Some(Commands::Convert {
+                preset,
+                headless,
+                files,
+            }) => {
+                if headless {
+                    run_headless_conversion(&preset, files);
+                    return;
                 }
             }
-            return;
+            None => {}
         }
-        Some(Commands::Register) => {
-            println!("{}", register_shell_extension_dll());
-            return;
-        }
-        Some(Commands::Unregister) => {
-            println!("{}", unregister_shell_extension_dll());
-            return;
-        }
-        Some(Commands::Gui) => {
+
+        if cli.settings {
             run_settings_native_gui();
             return;
         }
-        Some(Commands::Convert {
-            preset,
-            headless,
-            files,
-        }) => {
-            if headless {
-                run_headless_conversion(&preset, files);
-                return;
-            }
-        }
-        None => {}
     }
 
-    if cli.settings || raw_args.len() < 2 {
+    let is_settings_arg = raw_args.iter().skip(1).any(|a| {
+        a.eq_ignore_ascii_case("-settings")
+            || a.eq_ignore_ascii_case("--settings")
+            || a.eq_ignore_ascii_case("/settings")
+    });
+
+    if is_settings_arg || raw_args.len() < 2 {
         run_settings_native_gui();
     } else {
         run_conversion_gui(raw_args);
