@@ -830,7 +830,7 @@ fn run_conversion_gui(args: Vec<String>) {
 
     let window_close_cb = window.as_weak();
     window.on_close_window(move || {
-        if let Some(_) = window_close_cb.upgrade() {
+        if window_close_cb.upgrade().is_some() {
             slint::quit_event_loop().unwrap();
         }
     });

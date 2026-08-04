@@ -52,8 +52,10 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
     if ext == "svg" {
         let mut fontdb = resvg::usvg::fontdb::Database::new();
         fontdb.load_system_fonts();
-        let mut opt = resvg::usvg::Options::default();
-        opt.fontdb = Arc::new(fontdb);
+        let opt = resvg::usvg::Options {
+            fontdb: Arc::new(fontdb),
+            ..Default::default()
+        };
         let tree = resvg::usvg::Tree::from_data(&mmap, &opt)
             .map_err(|e| FileConverterError::Image(format!("Failed to parse SVG: {:?}", e)))?;
         let size = tree.size().to_int_size();
@@ -263,8 +265,10 @@ pub fn run_image_conversion(
         let mut img = if ext == "svg" {
             let mut fontdb = resvg::usvg::fontdb::Database::new();
             fontdb.load_system_fonts();
-            let mut opt = resvg::usvg::Options::default();
-            opt.fontdb = Arc::new(fontdb);
+            let opt = resvg::usvg::Options {
+                fontdb: Arc::new(fontdb),
+                ..Default::default()
+            };
 
             let tree = resvg::usvg::Tree::from_data(&mmap, &opt)
                 .map_err(|e| FileConverterError::Image(format!("Failed to parse SVG: {:?}", e)))?;
