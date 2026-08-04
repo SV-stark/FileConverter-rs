@@ -245,7 +245,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.5.0",
+    version = "0.7.0",
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
