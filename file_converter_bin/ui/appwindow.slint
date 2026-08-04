@@ -1,0 +1,576 @@
+import { Button, LineEdit, ComboBox, ScrollView, ProgressIndicator, CheckBox } from "std-widgets.slint";
+
+export struct PresetData {
+    name: string,
+    category: string,
+    output_type: string,
+    input_types: string,
+    output_file_name_template: string,
+    input_post_conversion_action: string,
+}
+
+export struct HistoryItemData {
+    timestamp: string,
+    preset_name: string,
+    input_path: string,
+    output_path: string,
+    status: string,
+}
+
+export struct JobProgressData {
+    id: int,
+    input_file_name: string,
+    input_path: string,
+    output_path: string,
+    progress: float,
+    status_text: string,
+    is_done: bool,
+    is_failed: bool,
+}
+
+export component SettingsWindow inherits Window {
+    title: "⚡ File Converter Settings";
+    preferred-width: 900px;
+    preferred-height: 650px;
+    background: #f8f9fa;
+
+    in-out property <int> active_tab: 0; // 0: Settings, 1: History
+    in-out property <[PresetData]> presets: [];
+    in-out property <int> selected_preset_index: 0;
+    in-out property <string> search_query: "";
+    in-out property <string> status_msg: "Ready";
+    in-out property <string> preview_path: "C:\\Output\\Sample.ext";
+    in-out property <[HistoryItemData]> history_items: [];
+
+    // Form editing properties for selected preset
+    in-out property <string> edit_name: "";
+    in-out property <string> edit_output_type: "";
+    in-out property <string> edit_input_types: "";
+    in-out property <string> edit_template: "";
+    in-out property <string> edit_post_action: "";
+
+    callback save_settings();
+    callback register_shell();
+    callback duplicate_preset(int);
+    callback select_preset(int);
+    callback preset_field_changed();
+    callback drop_files();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        // Top Navigation Header
+        Rectangle {
+            height: 52px;
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e5e7eb;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+
+                    Text {
+                        text: "⚡ File Converter";
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: #111827;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { width: 1px; background: #e5e7eb; height: 24px; }
+
+                    Button {
+                        text: "⚙️ Settings";
+                        primary: root.active_tab == 0;
+                        clicked => { root.active_tab = 0; }
+                    }
+
+                    Button {
+                        text: "📜 History";
+                        primary: root.active_tab == 1;
+                        clicked => { root.active_tab = 1; }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Button {
+                        text: "⚙️ Register Shell Extension";
+                        clicked => { root.register_shell(); }
+                    }
+
+                    Button {
+                        text: "💾 Save Settings";
+                        primary: true;
+                        clicked => { root.save_settings(); }
+                    }
+                }
+            }
+        }
+
+        // Status Feedback Banner
+        if root.status_msg != "" : Rectangle {
+            height: 32px;
+            background: #e0f2fe;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #bae6fd;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                Text {
+                    text: root.status_msg;
+                    font-size: 13px;
+                    color: #0369a1;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Main Tab Content Area
+        if root.active_tab == 0 : HorizontalLayout {
+            spacing: 16px;
+
+            // Left Pane: Presets List & Search
+            Rectangle {
+                width: 280px;
+                background: #ffffff;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #e5e7eb;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    LineEdit {
+                        placeholder-text: "🔍 Search presets...";
+                        text <=> root.search_query;
+                    }
+
+                    Text {
+                        text: "Conversion Presets (" + root.presets.length + ")";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: #6b7280;
+                    }
+
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 4px;
+                            for preset[index] in root.presets : Rectangle {
+                                height: 44px;
+                                background: index == root.selected_preset_index ? #eff6ff : #ffffff;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: index == root.selected_preset_index ? #3b82f6 : #f3f4f6;
+
+                                TouchArea {
+                                    clicked => {
+                                        root.selected_preset_index = index;
+                                        root.select_preset(index);
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: space-between;
+
+                                    Text {
+                                        text: preset.name;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        color: #1f2937;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle {
+                                        background: #f3f4f6;
+                                        border-radius: 4px;
+                                        height: 22px;
+
+                                        HorizontalLayout {
+                                            padding-left: 6px;
+                                            padding-right: 6px;
+                                            Text {
+                                                text: preset.category;
+                                                font-size: 11px;
+                                                color: #4b5563;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        text: "📋 Duplicate Preset";
+                        clicked => { root.duplicate_preset(root.selected_preset_index); }
+                    }
+                }
+            }
+
+            // Right Pane: Preset Configuration Editor
+            Rectangle {
+                background: #ffffff;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #e5e7eb;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 14px;
+
+                    Text {
+                        text: "⚙️ Preset Settings Configuration";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: #111827;
+                    }
+
+                    Rectangle { height: 1px; background: #f3f4f6; }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Preset Name:"; width: 140px; font-weight: 600; vertical-alignment: center; }
+                        LineEdit {
+                            text <=> root.edit_name;
+                            edited => { root.preset_field_changed(); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Output Format:"; width: 140px; font-weight: 600; vertical-alignment: center; }
+                        LineEdit {
+                            text <=> root.edit_output_type;
+                            edited => { root.preset_field_changed(); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Input Extensions:"; width: 140px; font-weight: 600; vertical-alignment: center; }
+                        LineEdit {
+                            placeholder-text: "e.g. wav, flac, mp3 (or empty for all)";
+                            text <=> root.edit_input_types;
+                            edited => { root.preset_field_changed(); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Path Template:"; width: 140px; font-weight: 600; vertical-alignment: center; }
+                        LineEdit {
+                            placeholder-text: "(p)\\(f)";
+                            text <=> root.edit_template;
+                            edited => { root.preset_field_changed(); }
+                        }
+                    }
+
+                    // Live Path Preview Box
+                    Rectangle {
+                        background: #f8fafc;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #e2e8f0;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 4px;
+                            Text {
+                                text: "✨ Live Output Path Transformation Preview:";
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: #475569;
+                            }
+                            Text {
+                                text: root.preview_path;
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: #2563eb;
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Post Conversion:"; width: 140px; font-weight: 600; vertical-alignment: center; }
+                        LineEdit {
+                            text <=> root.edit_post_action;
+                            edited => { root.preset_field_changed(); }
+                        }
+                    }
+
+                    // Interactive Dropzone Box
+                    Rectangle {
+                        background: #f0fdf4;
+                        border-radius: 8px;
+                        border-width: 2px;
+                        border-color: #86efac;
+                        height: 90px;
+
+                        TouchArea {
+                            clicked => { root.drop_files(); }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            Text {
+                                text: "📂 Drag & Drop Dropzone";
+                                font-size: 16px;
+                                font-weight: 700;
+                                color: #166534;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Drop or click here to convert files using " + root.edit_name;
+                                font-size: 13px;
+                                color: #15803d;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // History Tab Content Area
+        if root.active_tab == 1 : Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e5e7eb;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: "📜 Recent Conversion History Log";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: #111827;
+                }
+
+                ScrollView {
+                    VerticalLayout {
+                        spacing: 6px;
+                        for item in root.history_items : Rectangle {
+                            height: 48px;
+                            background: #f9fafb;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #e5e7eb;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                alignment: space-between;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: item.preset_name + " • " + item.timestamp;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: #374151;
+                                    }
+                                    Text {
+                                        text: item.input_path;
+                                        font-size: 11px;
+                                        color: #6b7280;
+                                    }
+                                }
+
+                                Text {
+                                    text: item.status;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                    color: item.status == "Done" ? #16a34a : #dc2626;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component ProgressWindow inherits Window {
+    title: "⚡ File Converter Progress";
+    preferred-width: 660px;
+    preferred-height: 480px;
+    background: #f8f9fa;
+
+    in-out property <string> preset_name: "";
+    in-out property <float> overall_progress: 0.0;
+    in-out property <string> overall_status_text: "Converting files...";
+    in-out property <[JobProgressData]> jobs: [];
+    in-out property <bool> is_finished: false;
+
+    callback open_output_folder();
+    callback copy_output_paths();
+    callback cancel_job(int);
+    callback close_window();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        // Top Header
+        Rectangle {
+            height: 60px;
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e5e7eb;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "⚡ Converting via: " + root.preset_name;
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: #111827;
+                    }
+                    Text {
+                        text: root.overall_status_text;
+                        font-size: 13px;
+                        color: #4b5563;
+                    }
+                }
+
+                Text {
+                    text: Math.round(root.overall_progress * 100) + "%";
+                    font-size: 22px;
+                    font-weight: 800;
+                    color: #2563eb;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Overall Progress Indicator
+        ProgressIndicator {
+            progress: root.overall_progress;
+        }
+
+        // Jobs Scroll View List
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e5e7eb;
+
+            ScrollView {
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+
+                    for job in root.jobs : Rectangle {
+                        height: 56px;
+                        background: #f9fafb;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #e5e7eb;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: job.input_file_name;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        color: #1f2937;
+                                    }
+                                    Text {
+                                        text: job.status_text;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: job.is_done ? #16a34a : (job.is_failed ? #dc2626 : #2563eb);
+                                    }
+                                }
+
+                                ProgressIndicator {
+                                    progress: job.progress;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Bottom Actions
+        Rectangle {
+            height: 48px;
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e5e7eb;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Button {
+                        text: "📁 Open Output Folder";
+                        clicked => { root.open_output_folder(); }
+                    }
+
+                    Button {
+                        text: "📋 Copy Output Paths";
+                        clicked => { root.copy_output_paths(); }
+                    }
+                }
+
+                Button {
+                    text: "❌ Close Window";
+                    primary: root.is_finished;
+                    clicked => { root.close_window(); }
+                }
+            }
+        }
+    }
+}

@@ -1,15 +1,18 @@
 #![allow(clippy::collapsible_if)]
 #![windows_subsystem = "windows"]
+
 use std::env;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use eframe::egui;
 use file_converter_core::scheduler::{ConversionJob, ConversionScheduler, JobStatus};
-use file_converter_core::settings::{ConversionPreset, Settings};
-use file_converter_core::types::{HardwareAccelerationMode, InputPostConversionAction, OutputType};
+use file_converter_core::settings::Settings;
+use file_converter_core::types::{HardwareAccelerationMode, OutputType};
+
+slint::include_modules!();
 
 fn get_settings_paths() -> (PathBuf, PathBuf) {
     let mut exe_dir = env::current_exe().unwrap_or_default();
@@ -235,6 +238,7 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
         _ => "📁 Misc",
     }
 }
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -427,687 +431,169 @@ fn main() {
     }
 }
 
-#[derive(PartialEq, Eq)]
-enum AppTab {
-    Settings,
-    History,
-}
+fn populate_slint_presets(window: &SettingsWindow, settings: &Settings, selected_idx: usize) {
+    let slint_presets: Vec<PresetData> = settings
+        .conversion_presets
+        .iter()
+        .map(|p| PresetData {
+            name: p.name.as_str().into(),
+            category: get_category_badge(p.output_type).into(),
+            output_type: format!("{:?}", p.output_type).into(),
+            input_types: p.input_types.join(", ").into(),
+            output_file_name_template: p.output_file_name_template.as_str().into(),
+            input_post_conversion_action: format!("{:?}", p.input_post_conversion_action).into(),
+        })
+        .collect();
 
-struct FileConverterApp {
-    settings: Settings,
-    user_xml_path: PathBuf,
-    selected_preset_index: usize,
-    status_msg: String,
-    dark_mode: bool,
-    preset_search_query: String,
-    active_tab: AppTab,
-    history: Vec<HistoryRecord>,
-}
+    window.set_presets(Rc::new(slint::VecModel::from(slint_presets)).into());
+    window.set_selected_preset_index(selected_idx as i32);
 
-impl eframe::App for FileConverterApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Handle Drag & Drop Files
-        let dropped_files = ui.ctx().input(|i| i.raw.dropped_files.clone());
-        if !dropped_files.is_empty() {
-            let file_paths: Vec<String> = dropped_files
-                .iter()
-                .filter_map(|f| f.path.as_ref().map(|p| p.to_string_lossy().to_string()))
-                .collect();
-            if !file_paths.is_empty()
-                && self.selected_preset_index < self.settings.conversion_presets.len()
-            {
-                let preset_name = self.settings.conversion_presets[self.selected_preset_index]
-                    .name
-                    .clone();
-                let mut cmd_args = vec![
-                    "fcrs".to_string(),
-                    "--conversion-preset".to_string(),
-                    preset_name,
-                ];
-                cmd_args.extend(file_paths);
-                thread::spawn(move || {
-                    run_conversion_gui(cmd_args);
-                });
-            }
-        }
+    if let Some(preset) = settings.conversion_presets.get(selected_idx) {
+        window.set_edit_name(preset.name.as_str().into());
+        window.set_edit_output_type(format!("{:?}", preset.output_type).into());
+        window.set_edit_input_types(preset.input_types.join(", ").into());
+        window.set_edit_template(preset.output_file_name_template.as_str().into());
+        window.set_edit_post_action(format!("{:?}", preset.input_post_conversion_action).into());
 
-        // Top Header Frame
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("⚡ File Converter Settings");
-
-                ui.separator();
-                if ui
-                    .selectable_label(self.active_tab == AppTab::Settings, "⚙️ Settings")
-                    .clicked()
-                {
-                    self.active_tab = AppTab::Settings;
-                }
-                if ui
-                    .selectable_label(
-                        self.active_tab == AppTab::History,
-                        format!("📜 History ({})", self.history.len()),
-                    )
-                    .clicked()
-                {
-                    self.history = load_history();
-                    self.active_tab = AppTab::History;
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("💾 Save Settings").clicked() {
-                        match self.settings.save_to_file(&self.user_xml_path) {
-                            Ok(_) => self.status_msg = "Settings saved successfully!".to_string(),
-                            Err(e) => self.status_msg = format!("Failed to save: {:?}", e),
-                        }
-                    }
-                    if ui.button("⚙️ Register Shell Extension").clicked() {
-                        self.status_msg = register_shell_extension_dll();
-                    }
-                    if ui.selectable_label(self.dark_mode, "🌙 Dark").clicked() {
-                        self.dark_mode = true;
-                        ui.ctx().set_visuals(egui::Visuals::dark());
-                    }
-                    if ui.selectable_label(!self.dark_mode, "☀️ Light").clicked() {
-                        self.dark_mode = false;
-                        ui.ctx().set_visuals(egui::Visuals::light());
-                    }
-                });
-            });
-
-            if self.active_tab == AppTab::Settings {
-                ui.separator();
-
-                // Drag and Drop Zone
-                egui::Frame::group(ui.style())
-                    .fill(if self.dark_mode {
-                        egui::Color32::from_rgb(30, 35, 45)
-                    } else {
-                        egui::Color32::from_rgb(240, 245, 250)
-                    })
-                    .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "📂 Drag & Drop Files Here to Convert Directly",
-                                )
-                                .strong(),
-                            );
-                            ui.add_space(4.0);
-                        });
-                    });
-
-                ui.horizontal(|ui| {
-                    ui.label("Max Concurrency:");
-                    ui.add(
-                        egui::DragValue::new(
-                            &mut self.settings.maximum_number_of_simultaneous_conversions,
-                        )
-                        .range(1..=32),
-                    );
-
-                    ui.separator();
-                    ui.checkbox(
-                        &mut self.settings.copy_files_in_clipboard_after_conversion,
-                        "Copy output files to Clipboard",
-                    );
-
-                    ui.separator();
-                    ui.label("Hardware Acceleration:");
-                    egui::ComboBox::from_id_salt("hw_accel")
-                        .selected_text(format!("{:?}", self.settings.hardware_acceleration_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.settings.hardware_acceleration_mode,
-                                HardwareAccelerationMode::Off,
-                                "Off (CPU)",
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.hardware_acceleration_mode,
-                                HardwareAccelerationMode::Cuda,
-                                "NVIDIA (CUDA)",
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.hardware_acceleration_mode,
-                                HardwareAccelerationMode::Amf,
-                                "AMD (AMF)",
-                            );
-                        });
-                });
-            }
-        });
-
-        ui.add_space(6.0);
-
-        if self.active_tab == AppTab::History {
-            // Render Conversion History Log Tab
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("📜 Recent Conversions History Log");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("🗑️ Clear History").clicked() {
-                            self.history.clear();
-                            save_history(&self.history);
-                        }
-                    });
-                });
-                ui.separator();
-
-                if self.history.is_empty() {
-                    ui.label("No recent conversions logged yet.");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(420.0)
-                        .show(ui, |ui| {
-                            egui::Grid::new("history_grid")
-                                .striped(true)
-                                .num_columns(5)
-                                .spacing([12.0, 6.0])
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new("Timestamp").strong());
-                                    ui.label(egui::RichText::new("Preset").strong());
-                                    ui.label(egui::RichText::new("Input Path").strong());
-                                    ui.label(egui::RichText::new("Output Path").strong());
-                                    ui.label(egui::RichText::new("Status").strong());
-                                    ui.end_row();
-
-                                    for item in &self.history {
-                                        ui.label(&item.timestamp);
-                                        ui.label(&item.preset_name);
-                                        ui.label(&item.input_path);
-                                        ui.label(&item.output_path);
-                                        ui.label(&item.status);
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                }
-            });
-        } else {
-            // Main 2-column Layout (Preset List on Left, Active Preset Config on Right)
-            ui.columns(2, |columns| {
-                // Left Panel: Preset List & Actions
-                columns[0].group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.heading("Presets List");
-                    });
-                    ui.separator();
-
-                    ui.horizontal(|ui| {
-                        ui.label("🔍");
-                        ui.text_edit_singleline(&mut self.preset_search_query);
-                        if !self.preset_search_query.is_empty() && ui.button("✖").clicked() {
-                            self.preset_search_query.clear();
-                        }
-                    });
-                    ui.separator();
-
-                    egui::ScrollArea::vertical()
-                        .max_height(320.0)
-                        .show(ui, |ui| {
-                            let len = self.settings.conversion_presets.len();
-                            let q = self.preset_search_query.to_lowercase();
-                            for i in 0..len {
-                                let preset = &self.settings.conversion_presets[i];
-                                let name = preset.name.clone();
-                                let badge = get_category_badge(preset.output_type);
-
-                                if !q.is_empty()
-                                    && !name.to_lowercase().contains(&q)
-                                    && !badge.to_lowercase().contains(&q)
-                                {
-                                    continue;
-                                }
-
-                                let is_selected = i == self.selected_preset_index;
-                                let label_text = format!(
-                                    "{} {}",
-                                    badge,
-                                    if name.is_empty() {
-                                        "Unnamed Preset"
-                                    } else {
-                                        &name
-                                    }
-                                );
-
-                                if ui.selectable_label(is_selected, label_text).clicked() {
-                                    self.selected_preset_index = i;
-                                }
-                            }
-                        });
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("➕ Add").clicked() {
-                            let new_preset = ConversionPreset {
-                                name: "New Preset".to_string(),
-                                output_type: OutputType::Png,
-                                output_file_name_template: "(p)\\(f)".to_string(),
-                                is_default_settings: false,
-                                input_types: vec![],
-                                input_post_conversion_action: InputPostConversionAction::None,
-                                settings: vec![],
-                            };
-                            self.settings.conversion_presets.push(new_preset);
-                            self.selected_preset_index = self.settings.conversion_presets.len() - 1;
-                        }
-
-                        if self.selected_preset_index < self.settings.conversion_presets.len() {
-                            if ui.button("📋 Duplicate").clicked() {
-                                let mut cloned = self.settings.conversion_presets
-                                    [self.selected_preset_index]
-                                    .clone();
-                                cloned.name = format!("{} (Copy)", cloned.name);
-                                self.settings.conversion_presets.push(cloned);
-                                self.selected_preset_index =
-                                    self.settings.conversion_presets.len() - 1;
-                                self.status_msg = "Preset duplicated.".to_string();
-                            }
-
-                            if ui.button("🗑️ Delete").clicked() {
-                                self.settings
-                                    .conversion_presets
-                                    .remove(self.selected_preset_index);
-                                if self.selected_preset_index > 0 {
-                                    self.selected_preset_index -= 1;
-                                }
-                            }
-                            if self.selected_preset_index > 0 {
-                                if ui.button("⬆️ Up").clicked() {
-                                    self.settings.conversion_presets.swap(
-                                        self.selected_preset_index,
-                                        self.selected_preset_index - 1,
-                                    );
-                                    self.selected_preset_index -= 1;
-                                }
-                            }
-                            if self.selected_preset_index + 1
-                                < self.settings.conversion_presets.len()
-                            {
-                                if ui.button("⬇️ Down").clicked() {
-                                    self.settings.conversion_presets.swap(
-                                        self.selected_preset_index,
-                                        self.selected_preset_index + 1,
-                                    );
-                                    self.selected_preset_index += 1;
-                                }
-                            }
-                        }
-                    });
-                });
-
-                // Right Panel: Selected Preset Details & Form Fields
-                columns[1].group(|ui| {
-                    if self.selected_preset_index < self.settings.conversion_presets.len() {
-                        let preset =
-                            &mut self.settings.conversion_presets[self.selected_preset_index];
-
-                        let badge = get_category_badge(preset.output_type);
-                        ui.heading(format!("{} Edit: {}", badge, preset.name));
-                        ui.separator();
-
-                        egui::Grid::new("preset_fields_grid")
-                            .num_columns(2)
-                            .spacing([12.0, 8.0])
-                            .show(ui, |ui| {
-                                ui.label("Preset Name:");
-                                ui.text_edit_singleline(&mut preset.name);
-                                ui.end_row();
-
-                                ui.label("Output Format:");
-                                ui.label(format!("{:?}", preset.output_type));
-                                ui.end_row();
-
-                                ui.label("Path Template:");
-                                ui.text_edit_singleline(&mut preset.output_file_name_template);
-                                ui.end_row();
-                            });
-
-                        ui.separator();
-
-                        // Real-time Path Template Preview Box
-                        let ext_str = preset.output_type.extension();
-                        let sample_input = "C:\\SampleMedia\\MyDocument.flac";
-                        let live_preview =
-                            file_converter_core::path_helpers::generate_file_path_from_template(
-                                sample_input,
-                                ext_str,
-                                &preset.output_file_name_template,
-                                1,
-                                1,
-                            );
-
-                        egui::Frame::group(ui.style())
-                            .fill(if self.dark_mode {
-                                egui::Color32::from_rgb(25, 30, 40)
-                            } else {
-                                egui::Color32::from_rgb(245, 248, 252)
-                            })
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("✨ Live Output Path Template Preview")
-                                        .strong(),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("Input Sample:  {}", sample_input))
-                                        .weak(),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("Output Result: {}", live_preview))
-                                        .strong()
-                                        .color(if self.dark_mode {
-                                            egui::Color32::from_rgb(100, 200, 255)
-                                        } else {
-                                            egui::Color32::from_rgb(0, 100, 200)
-                                        }),
-                                );
-                            });
-
-                        ui.separator();
-
-                        // Post-Conversion Action Selector
-                        ui.horizontal(|ui| {
-                            ui.label("Post-Conversion Action:");
-                            egui::ComboBox::from_id_salt("post_action")
-                                .selected_text(format!("{:?}", preset.input_post_conversion_action))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut preset.input_post_conversion_action,
-                                        InputPostConversionAction::None,
-                                        "None (Keep Original)",
-                                    );
-                                    ui.selectable_value(
-                                        &mut preset.input_post_conversion_action,
-                                        InputPostConversionAction::Delete,
-                                        "Delete Original File",
-                                    );
-                                });
-                        });
-
-                        ui.separator();
-
-                        ui.label("Input File Extensions (comma separated):");
-                        let mut input_str = preset.input_types.join(", ");
-                        if ui.text_edit_singleline(&mut input_str).changed() {
-                            preset.input_types = input_str
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
-                    } else {
-                        ui.label("Select a preset on the left panel to configure its options.");
-                    }
-                });
-            });
-        }
-
-        ui.add_space(5.0);
-        ui.separator();
-        ui.label(&self.status_msg);
+        let preview = file_converter_core::path_helpers::generate_file_path_from_template(
+            "C:\\Music\\Album\\sample_track.flac",
+            preset.output_type.extension(),
+            &preset.output_file_name_template,
+            1,
+            1,
+        );
+        window.set_preview_path(preview.into());
     }
 }
 
-fn load_app_icon() -> Option<egui::IconData> {
-    eframe::icon_data::from_png_bytes(include_bytes!("../../icon.png")).ok()
+fn populate_slint_history(window: &SettingsWindow) {
+    let history = load_history();
+    let slint_history: Vec<HistoryItemData> = history
+        .into_iter()
+        .map(|h| HistoryItemData {
+            timestamp: h.timestamp.into(),
+            preset_name: h.preset_name.into(),
+            input_path: h.input_path.into(),
+            output_path: h.output_path.into(),
+            status: h.status.into(),
+        })
+        .collect();
+
+    window.set_history_items(Rc::new(slint::VecModel::from(slint_history)).into());
 }
 
 fn run_settings_native_gui() {
-    println!("Launching File Converter Native GUI Settings Window...");
+    println!("Launching File Converter Slint Fluent GUI Settings Window...");
 
-    let settings = match initialize_user_settings_if_needed() {
-        Ok(s) => s,
+    let window = match SettingsWindow::new() {
+        Ok(w) => w,
         Err(e) => {
-            eprintln!("Error initializing settings: {}", e);
+            eprintln!("Failed to initialize Slint SettingsWindow: {}", e);
             return;
         }
     };
+
+    let settings = initialize_user_settings_if_needed().unwrap_or_else(|_| Settings {
+        serialization_version: 4,
+        maximum_number_of_simultaneous_conversions: 4,
+        exit_application_when_conversions_finished: true,
+        duration_between_end_of_conversions_and_application_exit: 2.0,
+        check_upgrade_at_startup: false,
+        application_language_name: "en".to_string(),
+        copy_files_in_clipboard_after_conversion: true,
+        hardware_acceleration_mode: HardwareAccelerationMode::Off,
+        conversion_presets: vec![],
+    });
     let (_, user_xml_path) = get_settings_paths();
 
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([880.0, 620.0])
-        .with_title("File Converter Native Settings");
+    let settings_state = Rc::new(std::cell::RefCell::new(settings));
+    let user_xml_path_rc = Rc::new(user_xml_path);
 
-    if let Some(icon) = load_app_icon() {
-        viewport = viewport.with_icon(icon);
-    }
+    // Initial Population
+    populate_slint_presets(&window, &settings_state.borrow(), 0);
+    populate_slint_history(&window);
 
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
-    };
-
-    let app = FileConverterApp {
-        settings,
-        user_xml_path,
-        selected_preset_index: 0,
-        status_msg: "Ready".to_string(),
-        dark_mode: true,
-        preset_search_query: String::new(),
-        active_tab: AppTab::Settings,
-        history: load_history(),
-    };
-
-    let _ = eframe::run_native(
-        "File Converter Settings",
-        options,
-        Box::new(|_cc| Ok(Box::new(app))),
-    );
-}
-
-struct ProgressApp {
-    scheduler: Arc<ConversionScheduler>,
-    preset_name: String,
-    auto_close: bool,
-    exit_delay: f32,
-    finished: bool,
-    close_time: Option<std::time::Instant>,
-    start_time: std::time::Instant,
-}
-
-impl eframe::App for ProgressApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
-
-        let elapsed_secs = self.start_time.elapsed().as_secs();
-        let elapsed_str = format!("{:02}:{:02}s", elapsed_secs / 60, elapsed_secs % 60);
-
-        let mut total_prog = 0.0f32;
-        let mut completed_count = 0;
-        let mut failed_count = 0;
-        let total_count = self.scheduler.jobs.len();
-
-        // Top Header Banner
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(format!("⚡ Converting via '{}'", self.preset_name));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if completed_count < total_count && ui.button("🛑 Cancel All").clicked() {
-                        for job in &self.scheduler.jobs {
-                            job.cancel();
-                        }
-                    }
-                    ui.label(egui::RichText::new(format!("⏱️ {}", elapsed_str)).strong());
-                });
-            });
-        });
-
-        ui.add_space(4.0);
-
-        // Job List Scroll Area
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(270.0)
-                .show(ui, |ui| {
-                    for job in &self.scheduler.jobs {
-                        let p = job.get_progress();
-                        let s = job.status.lock().unwrap().clone();
-
-                        total_prog += p;
-
-                        let filename = Path::new(&job.input_path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| job.input_path.clone());
-
-                        let (icon, status_str, is_active) = match &s {
-                            JobStatus::Queue => ("💤", "Queued...".to_string(), true),
-                            JobStatus::Converting(msg) => {
-                                ("⏳", format!("Converting ({})", msg), true)
-                            }
-                            JobStatus::Done => {
-                                completed_count += 1;
-                                ("✅", "Done".to_string(), false)
-                            }
-                            JobStatus::Failed(err) => {
-                                completed_count += 1;
-                                failed_count += 1;
-                                ("❌", format!("Error: {}", err), false)
-                            }
-                            JobStatus::Canceled => {
-                                completed_count += 1;
-                                ("🛑", "Canceled".to_string(), false)
-                            }
-                        };
-
-                        ui.horizontal(|ui| {
-                            ui.label(icon);
-                            ui.add_sized(
-                                [190.0, 18.0],
-                                egui::Label::new(egui::RichText::new(&filename).strong())
-                                    .truncate(),
-                            );
-
-                            ui.add(
-                                egui::ProgressBar::new(p)
-                                    .text(&status_str)
-                                    .animate(is_active),
-                            );
-
-                            if is_active
-                                && ui
-                                    .small_button("🚫")
-                                    .on_hover_text("Cancel this conversion job")
-                                    .clicked()
-                            {
-                                job.cancel();
-                            }
-                        });
-                        ui.add_space(2.0);
-                    }
-                });
-        });
-
-        ui.add_space(4.0);
-
-        // Bottom Summary & Actions
-        let overall = if total_count > 0 {
-            total_prog / total_count as f32
-        } else {
-            1.0
-        };
-
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Overall Progress:").strong());
-                ui.add(egui::ProgressBar::new(overall).text(format!(
-                    "{}/{} finished ({:.0}%)",
-                    completed_count,
-                    total_count,
-                    overall * 100.0
-                )));
-            });
-
-            if completed_count >= total_count {
-                if !self.finished {
-                    self.finished = true;
-                    self.close_time = Some(std::time::Instant::now());
-                    play_completion_sound();
-
-                    for job in &self.scheduler.jobs {
-                        let out_str = job.output_file_paths.join("; ");
-                        let status_str = match &*job.status.lock().unwrap() {
-                            JobStatus::Done => "Done".to_string(),
-                            JobStatus::Failed(e) => format!("Failed ({})", e),
-                            JobStatus::Canceled => "Canceled".to_string(),
-                            _ => "Finished".to_string(),
-                        };
-                        add_history_record(
-                            &self.preset_name,
-                            &job.input_path,
-                            &out_str,
-                            &status_str,
-                        );
-                    }
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("📁 Open Output Folder").clicked() {
-                        if let Some(first_job) = self.scheduler.jobs.first() {
-                            if let Some(first_out) = first_job.output_file_paths.first() {
-                                let parent = Path::new(first_out)
-                                    .parent()
-                                    .unwrap_or_else(|| Path::new("."));
-                                let _ = std::process::Command::new("explorer").arg(parent).spawn();
-                            }
-                        }
-                    }
-
-                    if ui.button("📋 Copy Output Paths").clicked() {
-                        let mut all_paths = Vec::new();
-                        for job in &self.scheduler.jobs {
-                            all_paths.extend(job.output_file_paths.clone());
-                        }
-                        ui.ctx().copy_text(all_paths.join("\n"));
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("❌ Close Window").clicked() {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
-                });
-
-                if self.auto_close {
-                    if let Some(start) = self.close_time {
-                        let elapsed = start.elapsed().as_secs_f32();
-                        let remaining = (self.exit_delay - elapsed).max(0.0);
-                        if failed_count == 0 {
-                            ui.label(format!(
-                                "✨ All conversions finished! Closing window in {:.1}s...",
-                                remaining
-                            ));
-                        } else {
-                            ui.label(format!(
-                                "⚠️ Conversions complete with {} error(s). Closing in {:.1}s...",
-                                failed_count, remaining
-                            ));
-                        }
-                        if elapsed >= self.exit_delay {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    }
-                } else {
-                    if failed_count == 0 {
-                        ui.label(
-                            egui::RichText::new("✨ All conversions completed successfully!")
-                                .color(egui::Color32::GREEN),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "⚠️ Completed with {} error(s).",
-                                failed_count
-                            ))
-                            .color(egui::Color32::RED),
-                        );
-                    }
-                }
+    // Callback: Save Settings
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    let xml_path_clone = user_xml_path_rc.clone();
+    window.on_save_settings(move || {
+        if let Some(w) = window_weak.upgrade() {
+            let s = settings_clone.borrow();
+            match s.save_to_file(&*xml_path_clone) {
+                Ok(_) => w.set_status_msg("Settings saved successfully!".into()),
+                Err(e) => w.set_status_msg(format!("Failed to save: {:?}", e).into()),
             }
-        });
-    }
+        }
+    });
+
+    // Callback: Register Shell
+    let window_weak = window.as_weak();
+    window.on_register_shell(move || {
+        if let Some(w) = window_weak.upgrade() {
+            let msg = register_shell_extension_dll();
+            w.set_status_msg(msg.into());
+        }
+    });
+
+    // Callback: Select Preset
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_select_preset(move |index| {
+        if let Some(w) = window_weak.upgrade() {
+            let idx = index as usize;
+            populate_slint_presets(&w, &settings_clone.borrow(), idx);
+        }
+    });
+
+    // Callback: Duplicate Preset
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_duplicate_preset(move |index| {
+        if let Some(w) = window_weak.upgrade() {
+            let mut s = settings_clone.borrow_mut();
+            let idx = index as usize;
+            if idx < s.conversion_presets.len() {
+                let mut cloned = s.conversion_presets[idx].clone();
+                cloned.name = format!("{} (Copy)", cloned.name);
+                s.conversion_presets.push(cloned);
+                let new_idx = s.conversion_presets.len() - 1;
+                populate_slint_presets(&w, &s, new_idx);
+                w.set_status_msg("Preset duplicated.".into());
+            }
+        }
+    });
+
+    // Callback: Preset Field Edited
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_preset_field_changed(move || {
+        if let Some(w) = window_weak.upgrade() {
+            let mut s = settings_clone.borrow_mut();
+            let idx = w.get_selected_preset_index() as usize;
+            if let Some(preset) = s.conversion_presets.get_mut(idx) {
+                preset.name = w.get_edit_name().to_string();
+                preset.output_file_name_template = w.get_edit_template().to_string();
+                preset.input_types = w
+                    .get_edit_input_types()
+                    .split(',')
+                    .map(|str| str.trim().to_string())
+                    .filter(|str| !str.is_empty())
+                    .collect();
+
+                let preview = file_converter_core::path_helpers::generate_file_path_from_template(
+                    "C:\\Music\\Album\\sample_track.flac",
+                    preset.output_type.extension(),
+                    &preset.output_file_name_template,
+                    1,
+                    1,
+                );
+                w.set_preview_path(preview.into());
+            }
+        }
+    });
+
+    let _ = window.run();
 }
 
 fn run_conversion_gui(args: Vec<String>) {
@@ -1129,7 +615,8 @@ fn run_conversion_gui(args: Vec<String>) {
         if (arg == "-preset"
             || arg == "/preset"
             || arg == "--preset"
-            || arg == "--conversion-preset")
+            || arg == "--conversion-preset"
+            || arg == "-conversion-preset")
             && i + 1 < args.len()
         {
             preset_name = args[i + 1].clone();
@@ -1150,6 +637,8 @@ fn run_conversion_gui(args: Vec<String>) {
                 temp_list_to_clean = Some(list_path);
             }
             i += 2;
+        } else if arg == "-settings" || arg == "--settings" || arg == "/settings" {
+            i += 1;
         } else {
             input_files.push(args[i].clone());
             i += 1;
@@ -1199,37 +688,154 @@ fn run_conversion_gui(args: Vec<String>) {
         scheduler_clone.execute_all();
     });
 
+    let window = match ProgressWindow::new() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to initialize ProgressWindow: {}", e);
+            return;
+        }
+    };
+
+    window.set_preset_name(preset_name.as_str().into());
+    window.set_overall_progress(0.0);
+
+    let scheduler_rc = scheduler.clone();
     let auto_close = settings.exit_application_when_conversions_finished;
     let exit_delay = settings.duration_between_end_of_conversions_and_application_exit;
+    let _start_time = Instant::now();
+    let finished_flag = Rc::new(std::cell::Cell::new(false));
+    let close_time_flag = Rc::new(std::cell::RefCell::new(None::<Instant>));
 
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([660.0, 480.0])
-        .with_title(format!("File Converter - {}", preset_name));
+    let preset_name_clone = preset_name.clone();
 
-    if let Some(icon) = load_app_icon() {
-        viewport = viewport.with_icon(icon);
-    }
+    // Slint Timer for Live UI Progress Updates (100ms interval)
+    let timer = slint::Timer::default();
+    let window_weak = window.as_weak();
+    let scheduler_timer = scheduler_rc.clone();
+    let finished_flag_timer = finished_flag.clone();
+    let close_time_timer = close_time_flag.clone();
 
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
-    };
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            if let Some(w) = window_weak.upgrade() {
+                let mut total_prog = 0.0f32;
+                let mut completed_count = 0;
+                let mut _failed_count = 0;
+                let total_count = scheduler_timer.jobs.len();
 
-    let app = ProgressApp {
-        scheduler,
-        preset_name,
-        auto_close,
-        exit_delay,
-        finished: false,
-        close_time: None,
-        start_time: std::time::Instant::now(),
-    };
+                let mut job_models = Vec::new();
 
-    let _ = eframe::run_native(
-        "File Converter Progress",
-        options,
-        Box::new(|_cc| Ok(Box::new(app))),
+                for job in &scheduler_timer.jobs {
+                    let p = job.get_progress();
+                    total_prog += p;
+
+                    let s = job.status.lock().unwrap().clone();
+                    let filename = Path::new(&job.input_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| job.input_path.clone());
+
+                    let (status_text, is_done, is_failed) = match &s {
+                        JobStatus::Queue => ("Queued...".to_string(), false, false),
+                        JobStatus::Converting(msg) => {
+                            (format!("Converting ({})", msg), false, false)
+                        }
+                        JobStatus::Done => {
+                            completed_count += 1;
+                            ("Done".to_string(), true, false)
+                        }
+                        JobStatus::Failed(err) => {
+                            completed_count += 1;
+                            _failed_count += 1;
+                            (format!("Error: {}", err), false, true)
+                        }
+                        JobStatus::Canceled => {
+                            completed_count += 1;
+                            ("Canceled".to_string(), false, true)
+                        }
+                    };
+
+                    job_models.push(JobProgressData {
+                        id: job.id as i32,
+                        input_file_name: filename.into(),
+                        input_path: job.input_path.as_str().into(),
+                        output_path: job.output_file_paths.join("; ").into(),
+                        progress: p,
+                        status_text: status_text.into(),
+                        is_done,
+                        is_failed,
+                    });
+                }
+
+                let overall = if total_count > 0 {
+                    total_prog / total_count as f32
+                } else {
+                    1.0
+                };
+
+                w.set_overall_progress(overall);
+                w.set_jobs(Rc::new(slint::VecModel::from(job_models)).into());
+
+                if completed_count >= total_count {
+                    if !finished_flag_timer.get() {
+                        finished_flag_timer.set(true);
+                        *close_time_timer.borrow_mut() = Some(Instant::now());
+                        play_completion_sound();
+
+                        for job in &scheduler_timer.jobs {
+                            let out_str = job.output_file_paths.join("; ");
+                            let status_str = match &*job.status.lock().unwrap() {
+                                JobStatus::Done => "Done".to_string(),
+                                JobStatus::Failed(e) => format!("Failed ({})", e),
+                                JobStatus::Canceled => "Canceled".to_string(),
+                                _ => "Finished".to_string(),
+                            };
+                            add_history_record(
+                                &preset_name_clone,
+                                &job.input_path,
+                                &out_str,
+                                &status_str,
+                            );
+                        }
+                    }
+
+                    w.set_is_finished(true);
+                    if auto_close {
+                        if let Some(start) = *close_time_timer.borrow() {
+                            let elapsed = start.elapsed().as_secs_f32();
+                            if elapsed >= exit_delay {
+                                slint::quit_event_loop().unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        },
     );
+
+    // Callbacks
+    let scheduler_folder = scheduler_rc.clone();
+    window.on_open_output_folder(move || {
+        if let Some(first_job) = scheduler_folder.jobs.first() {
+            if let Some(first_out) = first_job.output_file_paths.first() {
+                let parent = Path::new(first_out)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."));
+                let _ = std::process::Command::new("explorer").arg(parent).spawn();
+            }
+        }
+    });
+
+    let window_close_cb = window.as_weak();
+    window.on_close_window(move || {
+        if let Some(_) = window_close_cb.upgrade() {
+            slint::quit_event_loop().unwrap();
+        }
+    });
+
+    let _ = window.run();
 
     if let Some(temp_path) = temp_list_to_clean {
         let _ = std::fs::remove_file(temp_path);
