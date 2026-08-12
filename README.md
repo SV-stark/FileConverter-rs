@@ -131,9 +131,18 @@ FileConverter-rs/
 * Automatically calculates two-pass encoding for target file sizes when configured in preset settings.
 
 ### 3. Native Desktop GUI & Progress Windows (`main.rs`)
-* Built using `eframe` (`egui`) for hardware-accelerated, instantaneous UI rendering.
-* **Settings Window**: Complete preset list management (Add, Delete, Reorder Up/Down), live sample path output previews, max concurrency drag controls, and one-click shell extension registration.
-* **Progress Window**: Triggered automatically when converting files from Windows Explorer right-click menus. Displays real-time per-file progress bars, overall status, and an auto-closing timer countdown.
+* Built using **Slint UI** for native hardware-accelerated, instantaneous rendering.
+* **Settings Window**: Complete preset list management (Add, Delete, Duplicate), live path previews, instant **Fast UX Preferences** (Zero-click auto-start on file drop, 0s instant auto-close, clipboard auto-copy), and one-click shell extension registration.
+* **Progress Window**: Triggered automatically when converting files from Windows Explorer right-click menus. Displays real-time per-file progress bars, overall status, instant `📁 Open Output Folder` and `📋 Copy Output Paths` action buttons, and auto-closing countdown.
+
+---
+
+## ⚡ High-Performance Architecture Stack
+* **Fat Link-Time Optimization (`lto = "fat"`)**: Full cross-crate link-time optimization & binary size minimization.
+* **Lock-Free Poison Safety (`parking_lot`)**: 1-byte poison-free mutexes eliminating `.unwrap()` lock overhead.
+* **SIMD Byte Search (`memchr`)**: SIMD vector search routines for ultra-fast log line parsing.
+* **3x Faster Hashing (`ahash`)**: `AHashMap` preset resolution eliminating string lookup bottlenecks.
+* **`LazyLock<Regex>` Statics**: Global thread-safe regex statics avoiding hot-loop allocations.
 
 ---
 

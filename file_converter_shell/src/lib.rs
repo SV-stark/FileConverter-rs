@@ -554,6 +554,7 @@ fn create_default_settings() -> Settings {
         application_language_name: "en".to_string(),
         copy_files_in_clipboard_after_conversion: true,
         hardware_acceleration_mode: file_converter_core::types::HardwareAccelerationMode::Off,
+        auto_start_on_file_drop: false,
         conversion_presets: vec![],
     }
 }

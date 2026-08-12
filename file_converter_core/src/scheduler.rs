@@ -9,9 +9,10 @@ use crate::types::{
     HardwareAccelerationMode, InputPostConversionAction, OutputType, get_extension_category,
     is_output_type_compatible_with_category,
 };
+use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +186,7 @@ impl ConversionJob {
     }
 
     pub fn cancel(&self) {
-        let mut status = self.status.lock().unwrap();
+        let mut status = self.status.lock();
         if *status == JobStatus::Queue || matches!(*status, JobStatus::Converting(_)) {
             *status = JobStatus::Canceled;
         }
@@ -193,7 +194,7 @@ impl ConversionJob {
 
     pub fn run(&self, hw_accel: HardwareAccelerationMode) {
         {
-            let mut status = self.status.lock().unwrap();
+            let mut status = self.status.lock();
             if *status == JobStatus::Canceled {
                 return;
             }
@@ -205,7 +206,7 @@ impl ConversionJob {
 
         let progress_cb = move |percent: f32, msg: &str| {
             progress_clone.store(percent.to_bits(), Ordering::Relaxed);
-            let mut s = status_clone.lock().unwrap();
+            let mut s = status_clone.lock();
             if let JobStatus::Converting(_) = *s {
                 *s = JobStatus::Converting(msg.to_string());
             }
@@ -213,7 +214,7 @@ impl ConversionJob {
 
         let result = self.execute(&progress_cb, hw_accel);
 
-        let mut status = self.status.lock().unwrap();
+        let mut status = self.status.lock();
         if *status == JobStatus::Canceled {
             // Delete output files
             for path in &self.output_file_paths {
@@ -612,7 +613,7 @@ impl ConversionScheduler {
 
             let handle = thread::spawn(move || {
                 while let Ok((_, job)) = {
-                    let lock = rx.lock().unwrap();
+                    let lock = rx.lock();
                     lock.recv()
                 } {
                     job.run(hw_accel);
@@ -629,7 +630,7 @@ impl ConversionScheduler {
         if self.copy_clipboard {
             let mut successful_files = Vec::new();
             for job in &self.jobs {
-                let status = job.status.lock().unwrap();
+                let status = job.status.lock();
                 if *status == JobStatus::Done {
                     for path in &job.output_file_paths {
                         successful_files.push(path.clone());

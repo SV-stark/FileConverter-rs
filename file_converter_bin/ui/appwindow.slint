@@ -49,12 +49,21 @@ export component SettingsWindow inherits Window {
     in-out property <string> edit_template: "";
     in-out property <string> edit_post_action: "";
 
+    // Global UX settings properties
+    in-out property <bool> auto_start_on_file_drop: false;
+    in-out property <bool> copy_files_in_clipboard_after_conversion: true;
+    in-out property <bool> exit_application_when_conversions_finished: true;
+    in-out property <float> exit_delay_seconds: 2.0;
+
     callback save_settings();
     callback register_shell();
     callback duplicate_preset(int);
     callback select_preset(int);
     callback preset_field_changed();
     callback drop_files();
+    callback toggle_auto_start(bool);
+    callback toggle_copy_clipboard(bool);
+    callback toggle_auto_close(bool);
 
     VerticalLayout {
         padding: 16px;
@@ -345,6 +354,48 @@ export component SettingsWindow inherits Window {
                                 font-size: 13px;
                                 color: #15803d;
                                 horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Fast UX Preferences Panel
+                    Rectangle {
+                        background: #f8fafc;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #cbd5e1;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "⚡ Fast UX Preferences (Minimum Clicks)";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: #334155;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 16px;
+
+                                CheckBox {
+                                    text: "🚀 Zero-click auto-start on file drop";
+                                    checked <=> root.auto_start_on_file_drop;
+                                    toggled => { root.toggle_auto_start(self.checked); }
+                                }
+
+                                CheckBox {
+                                    text: "📋 Auto-copy paths to clipboard";
+                                    checked <=> root.copy_files_in_clipboard_after_conversion;
+                                    toggled => { root.toggle_copy_clipboard(self.checked); }
+                                }
+
+                                CheckBox {
+                                    text: "⚡ Instant auto-close window when finished (0s delay)";
+                                    checked <=> root.exit_application_when_conversions_finished;
+                                    toggled => { root.toggle_auto_close(self.checked); }
+                                }
                             }
                         }
                     }

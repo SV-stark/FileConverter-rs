@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_core"
-version = "0.7.0"
+version = "0.8.1"
 edition = "2024"
 
 [dependencies]
@@ -27,6 +27,12 @@ epub = "2.1"
 pulldown-cmark = "0.12"
 oxipng = "9.0"
 resvg = "0.45"
+parking_lot = "0.12"
+strum = { version = "0.26", features = ["derive"] }
+ahash = "0.8"
+smallvec = "1.13"
+memchr = "2.7"
+derive_more = { version = "2.0", features = ["full"] }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.0"

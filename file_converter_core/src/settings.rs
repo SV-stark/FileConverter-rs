@@ -1,7 +1,7 @@
+use ahash::AHashMap;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string_with_root;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -34,6 +34,9 @@ pub struct Settings {
 
     #[serde(default)]
     pub hardware_acceleration_mode: HardwareAccelerationMode,
+
+    #[serde(default)]
+    pub auto_start_on_file_drop: bool,
 
     #[serde(rename = "ConversionPreset", default)]
     pub conversion_presets: Vec<ConversionPreset>,
@@ -123,7 +126,7 @@ impl Settings {
 }
 
 impl ConversionPreset {
-    pub fn get_settings_map(&self) -> HashMap<String, String> {
+    pub fn get_settings_map(&self) -> AHashMap<String, String> {
         self.settings
             .iter()
             .map(|s| (s.key.clone(), s.value.clone()))

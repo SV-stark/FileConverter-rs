@@ -6,7 +6,18 @@ use regex::Regex;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Duration:\s*(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})")
+        .unwrap()
+});
+
+static PROGRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"size=\s*(?P<sz>[0-9]+).*time=(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})")
+        .unwrap()
+});
 
 pub struct FfmpegPass {
     pub name: String,
@@ -824,12 +835,6 @@ pub fn run_ffmpeg_pass(
     let start_time = std::time::Instant::now();
     let max_duration = Duration::from_secs(3600); // 1 hour maximum execution per pass
 
-    let duration_re = Regex::new(
-        r"Duration:\s*(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})",
-    )
-    .unwrap();
-    let progress_re = Regex::new(r"size=\s*(?P<sz>[0-9]+).*time=(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})").unwrap();
-
     let mut total_duration = Duration::ZERO;
 
     for line_res in reader.lines() {
@@ -847,7 +852,7 @@ pub fn run_ffmpeg_pass(
 
         // Parse duration to know the total length
         if total_duration.is_zero()
-            && let Some(caps) = duration_re.captures(&line)
+            && let Some(caps) = DURATION_RE.captures(&line)
         {
             let h: u64 = caps["h"].parse().unwrap_or(0);
             let m: u64 = caps["m"].parse().unwrap_or(0);
@@ -858,7 +863,7 @@ pub fn run_ffmpeg_pass(
 
         // Parse time to compute progress percent
         if !total_duration.is_zero()
-            && let Some(caps) = progress_re.captures(&line)
+            && let Some(caps) = PROGRESS_RE.captures(&line)
         {
             let h: u64 = caps["h"].parse().unwrap_or(0);
             let m: u64 = caps["m"].parse().unwrap_or(0);

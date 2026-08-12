@@ -245,7 +245,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.7.0",
+    version = "0.8.1",
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
@@ -343,7 +343,7 @@ fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
 
     let mut failed = 0;
     for job in &scheduler.jobs {
-        let status = job.status.lock().unwrap();
+        let status = job.status.lock();
         match &*status {
             JobStatus::Done => println!("[OK] {}", job.input_path),
             JobStatus::Failed(e) => {
@@ -497,11 +497,12 @@ fn run_settings_native_gui() {
         serialization_version: 4,
         maximum_number_of_simultaneous_conversions: 4,
         exit_application_when_conversions_finished: true,
-        duration_between_end_of_conversions_and_application_exit: 2.0,
+        duration_between_end_of_conversions_and_application_exit: 0.0,
         check_upgrade_at_startup: false,
         application_language_name: "en".to_string(),
         copy_files_in_clipboard_after_conversion: true,
         hardware_acceleration_mode: HardwareAccelerationMode::Off,
+        auto_start_on_file_drop: true,
         conversion_presets: vec![],
     });
     let (_, user_xml_path) = get_settings_paths();
@@ -510,7 +511,13 @@ fn run_settings_native_gui() {
     let user_xml_path_rc = Rc::new(user_xml_path);
 
     // Initial Population
-    populate_slint_presets(&window, &settings_state.borrow(), 0);
+    {
+        let s = settings_state.borrow();
+        window.set_auto_start_on_file_drop(s.auto_start_on_file_drop);
+        window.set_copy_files_in_clipboard_after_conversion(s.copy_files_in_clipboard_after_conversion);
+        window.set_exit_application_when_conversions_finished(s.exit_application_when_conversions_finished);
+        populate_slint_presets(&window, &s, 0);
+    }
     populate_slint_history(&window);
 
     // Callback: Save Settings
@@ -524,6 +531,26 @@ fn run_settings_native_gui() {
                 Ok(_) => w.set_status_msg("Settings saved successfully!".into()),
                 Err(e) => w.set_status_msg(format!("Failed to save: {:?}", e).into()),
             }
+        }
+    });
+
+    // Callbacks: Fast UX Toggles
+    let settings_clone = settings_state.clone();
+    window.on_toggle_auto_start(move |val| {
+        settings_clone.borrow_mut().auto_start_on_file_drop = val;
+    });
+
+    let settings_clone = settings_state.clone();
+    window.on_toggle_copy_clipboard(move |val| {
+        settings_clone.borrow_mut().copy_files_in_clipboard_after_conversion = val;
+    });
+
+    let settings_clone = settings_state.clone();
+    window.on_toggle_auto_close(move |val| {
+        let mut s = settings_clone.borrow_mut();
+        s.exit_application_when_conversions_finished = val;
+        if val {
+            s.duration_between_end_of_conversions_and_application_exit = 0.0;
         }
     });
 
@@ -731,7 +758,7 @@ fn run_conversion_gui(args: Vec<String>) {
                     let p = job.get_progress();
                     total_prog += p;
 
-                    let s = job.status.lock().unwrap().clone();
+                    let s = job.status.lock().clone();
                     let filename = Path::new(&job.input_path)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -786,7 +813,8 @@ fn run_conversion_gui(args: Vec<String>) {
 
                         for job in &scheduler_timer.jobs {
                             let out_str = job.output_file_paths.join("; ");
-                            let status_str = match &*job.status.lock().unwrap() {
+                            let status_guard = job.status.lock();
+                            let status_str = match &*status_guard {
                                 JobStatus::Done => "Done".to_string(),
                                 JobStatus::Failed(e) => format!("Failed ({})", e),
                                 JobStatus::Canceled => "Canceled".to_string(),
@@ -825,6 +853,19 @@ fn run_conversion_gui(args: Vec<String>) {
                     .unwrap_or_else(|| Path::new("."));
                 let _ = std::process::Command::new("explorer").arg(parent).spawn();
             }
+        }
+    });
+
+    let scheduler_copy = scheduler_rc.clone();
+    window.on_copy_output_paths(move || {
+        let mut all_outs = Vec::new();
+        for job in &scheduler_copy.jobs {
+            for out in &job.output_file_paths {
+                all_outs.push(out.clone());
+            }
+        }
+        if !all_outs.is_empty() {
+            let _ = file_converter_core::scheduler::copy_files_to_clipboard(&all_outs);
         }
     });
 
