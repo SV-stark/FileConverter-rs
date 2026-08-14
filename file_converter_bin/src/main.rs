@@ -514,8 +514,12 @@ fn run_settings_native_gui() {
     {
         let s = settings_state.borrow();
         window.set_auto_start_on_file_drop(s.auto_start_on_file_drop);
-        window.set_copy_files_in_clipboard_after_conversion(s.copy_files_in_clipboard_after_conversion);
-        window.set_exit_application_when_conversions_finished(s.exit_application_when_conversions_finished);
+        window.set_copy_files_in_clipboard_after_conversion(
+            s.copy_files_in_clipboard_after_conversion,
+        );
+        window.set_exit_application_when_conversions_finished(
+            s.exit_application_when_conversions_finished,
+        );
         populate_slint_presets(&window, &s, 0);
     }
     populate_slint_history(&window);
@@ -542,7 +546,9 @@ fn run_settings_native_gui() {
 
     let settings_clone = settings_state.clone();
     window.on_toggle_copy_clipboard(move |val| {
-        settings_clone.borrow_mut().copy_files_in_clipboard_after_conversion = val;
+        settings_clone
+            .borrow_mut()
+            .copy_files_in_clipboard_after_conversion = val;
     });
 
     let settings_clone = settings_state.clone();

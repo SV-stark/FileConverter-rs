@@ -11,8 +11,8 @@ use crate::types::{
 };
 use parking_lot::Mutex;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

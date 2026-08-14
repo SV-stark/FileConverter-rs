@@ -27,7 +27,7 @@ mod tests {
 
         let settings = Settings::load_from_file(&xml_path).expect("Failed to parse settings XML");
         assert!(
-            settings.conversion_presets.len() > 0,
+            !settings.conversion_presets.is_empty(),
             "Default presets should not be empty"
         );
         assert_eq!(settings.serialization_version, 4);
@@ -50,6 +50,7 @@ mod tests {
             application_language_name: "en".to_string(),
             copy_files_in_clipboard_after_conversion: true,
             hardware_acceleration_mode: HardwareAccelerationMode::Off,
+            auto_start_on_file_drop: true,
             conversion_presets: vec![],
         });
 

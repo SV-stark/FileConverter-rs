@@ -2,7 +2,20 @@ use derive_more::IsVariant;
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Display, EnumString, AsRefStr, IsVariant)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Display,
+    EnumString,
+    AsRefStr,
+    IsVariant,
+)]
 pub enum OutputType {
     #[default]
     None,
@@ -50,7 +63,20 @@ impl OutputType {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Display, EnumString, AsRefStr, IsVariant)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Display,
+    EnumString,
+    AsRefStr,
+    IsVariant,
+)]
 pub enum InputPostConversionAction {
     #[default]
     None,
@@ -58,7 +84,20 @@ pub enum InputPostConversionAction {
     Delete,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Display, EnumString, AsRefStr, IsVariant)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Display,
+    EnumString,
+    AsRefStr,
+    IsVariant,
+)]
 pub enum HardwareAccelerationMode {
     #[default]
     Off,
@@ -68,7 +107,19 @@ pub enum HardwareAccelerationMode {
     Amf,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, EnumString, AsRefStr, IsVariant)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Display,
+    EnumString,
+    AsRefStr,
+    IsVariant,
+)]
 pub enum EncodingMode {
     Wav8,
     Wav16,
@@ -84,7 +135,19 @@ pub enum EncodingMode {
     AacVbr,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, EnumString, AsRefStr, IsVariant)]
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Display,
+    EnumString,
+    AsRefStr,
+    IsVariant,
+)]
 #[serde(rename_all = "PascalCase")]
 pub enum VideoEncodingSpeed {
     UltraFast,
