@@ -36,6 +36,48 @@ pub fn get_ffmpeg_path() -> PathBuf {
     PathBuf::from("ffmpeg.exe")
 }
 
+static DETECTED_HW_ACCEL: LazyLock<HardwareAccelerationMode> = LazyLock::new(|| {
+    let ffmpeg_path = get_ffmpeg_path();
+    if let Ok(output) = Command::new(&ffmpeg_path).arg("-encoders").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("nvenc") {
+            return HardwareAccelerationMode::Cuda;
+        }
+        if stdout.contains("amf") {
+            return HardwareAccelerationMode::Amf;
+        }
+        if stdout.contains("qsv") {
+            return HardwareAccelerationMode::Qsv;
+        }
+    }
+    HardwareAccelerationMode::Off
+});
+
+pub fn detect_best_hardware_acceleration() -> HardwareAccelerationMode {
+    *DETECTED_HW_ACCEL
+}
+
+pub fn compute_audio_filter_args(preset: &ConversionPreset) -> Option<String> {
+    let mut filters = Vec::new();
+    let normalize = preset
+        .get_setting_value("AudioNormalize")
+        .or_else(|| preset.get_setting_value("AudioLoudnorm"))
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(false)
+        || preset.name.to_lowercase().contains("loudnorm")
+        || preset.name.to_lowercase().contains("normalize");
+
+    if normalize {
+        filters.push("loudnorm=I=-16:TP=-1.5:LRA=11");
+    }
+
+    if !filters.is_empty() {
+        Some(filters.join(","))
+    } else {
+        None
+    }
+}
+
 pub fn get_ffmpeg_passes(
     preset: &ConversionPreset,
     input_path: &str,
@@ -45,8 +87,13 @@ pub fn get_ffmpeg_passes(
     let mut passes = Vec::new();
     let base_args = vec!["-n".to_string()];
 
+    let resolved_hw_accel = match hw_accel {
+        HardwareAccelerationMode::Auto => detect_best_hardware_acceleration(),
+        other => other,
+    };
+
     let mut hw_input_args = Vec::new();
-    match hw_accel {
+    match resolved_hw_accel {
         HardwareAccelerationMode::Cuda => {
             hw_input_args.push("-hwaccel".to_string());
             hw_input_args.push("cuda".to_string());
@@ -55,7 +102,11 @@ pub fn get_ffmpeg_passes(
             hw_input_args.push("-hwaccel".to_string());
             hw_input_args.push("d3d11va".to_string());
         }
-        HardwareAccelerationMode::Off => {}
+        HardwareAccelerationMode::Qsv => {
+            hw_input_args.push("-hwaccel".to_string());
+            hw_input_args.push("qsv".to_string());
+        }
+        _ => {}
     }
 
     // Helper to check custom command
@@ -114,6 +165,10 @@ pub fn get_ffmpeg_passes(
             if !channel_args.is_empty() {
                 arguments.push("-ac".to_string());
                 arguments.push(channel_args);
+            }
+            if let Some(af) = compute_audio_filter_args(preset) {
+                arguments.push("-af".to_string());
+                arguments.push(af);
             }
             arguments.extend(aac_metadata);
             arguments.push(output_path.to_string());
@@ -181,6 +236,10 @@ pub fn get_ffmpeg_passes(
             if !channel_args.is_empty() {
                 arguments.push("-ac".to_string());
                 arguments.push(channel_args);
+            }
+            if let Some(af) = compute_audio_filter_args(preset) {
+                arguments.push("-af".to_string());
+                arguments.push(af);
             }
             arguments.push(output_path.to_string());
 
@@ -327,6 +386,10 @@ pub fn get_ffmpeg_passes(
                 arguments.push("-ac".to_string());
                 arguments.push(channel_args);
             }
+            if let Some(af) = compute_audio_filter_args(preset) {
+                arguments.push("-af".to_string());
+                arguments.push(af);
+            }
             arguments.extend(mp3_metadata);
             arguments.push(output_path.to_string());
 
@@ -376,7 +439,7 @@ pub fn get_ffmpeg_passes(
                 (51 - quality).to_string(),
             ];
 
-            match hw_accel {
+            match resolved_hw_accel {
                 HardwareAccelerationMode::Cuda => {
                     video_codec = "h264_nvenc".to_string();
                     let qp = 51 - quality;
@@ -412,7 +475,12 @@ pub fn get_ffmpeg_passes(
                         b_qp.to_string(),
                     ];
                 }
-                HardwareAccelerationMode::Off => {}
+                HardwareAccelerationMode::Qsv => {
+                    video_codec = "h264_qsv".to_string();
+                    video_codec_args =
+                        vec!["-global_quality".to_string(), (51 - quality).to_string()];
+                }
+                _ => {}
             }
 
             arguments.extend(hw_accel_arg);
@@ -462,6 +530,10 @@ pub fn get_ffmpeg_passes(
             if !channel_args.is_empty() {
                 arguments.push("-ac".to_string());
                 arguments.push(channel_args);
+            }
+            if let Some(af) = compute_audio_filter_args(preset) {
+                arguments.push("-af".to_string());
+                arguments.push(af);
             }
             arguments.push(output_path.to_string());
 
@@ -562,6 +634,10 @@ pub fn get_ffmpeg_passes(
             if !channel_args.is_empty() {
                 arguments.push("-ac".to_string());
                 arguments.push(channel_args);
+            }
+            if let Some(af) = compute_audio_filter_args(preset) {
+                arguments.push("-af".to_string());
+                arguments.push(af);
             }
             arguments.push(output_path.to_string());
 
@@ -711,7 +787,7 @@ fn compute_transform_args(preset: &ConversionPreset, hw_accel: HardwareAccelerat
     transform
 }
 
-fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
+pub(crate) fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
     let q = match bitrate {
         460 => "3.9",
         340 => "3",
@@ -732,7 +808,7 @@ fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
     q.to_string()
 }
 
-fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
+pub(crate) fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     match bitrate {
         245 => Ok(0),
         225 => Ok(1),
@@ -751,7 +827,7 @@ fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     }
 }
 
-fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
+pub(crate) fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     match bitrate {
         500 => Ok(10),
         320 => Ok(9),
@@ -773,7 +849,7 @@ fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     }
 }
 
-fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
+pub(crate) fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast => "ultrafast",
         VideoEncodingSpeed::SuperFast => "superfast",
@@ -787,7 +863,7 @@ fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
     }
 }
 
-fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> &'static str {
+pub(crate) fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast => "p1",
         VideoEncodingSpeed::SuperFast => "p2",
@@ -799,7 +875,7 @@ fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> &'static st
     }
 }
 
-fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &'static str {
+pub(crate) fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast
         | VideoEncodingSpeed::SuperFast

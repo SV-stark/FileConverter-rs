@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_core"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 
 [dependencies]
@@ -33,6 +33,9 @@ ahash = "0.8"
 smallvec = "1.13"
 memchr = "2.7"
 derive_more = { version = "2.0", features = ["full"] }
+ebook-rs = "0.16.1"
+jxl-oxide = { version = "0.12.6", features = ["image"] }
+pdf-writer = "0.15.0"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.0"

@@ -888,3 +888,28 @@ fn run_conversion_gui(args: Vec<String>) {
         let _ = std::fs::remove_file(temp_path);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedded_default_settings_xml_syntax() {
+        assert!(!DEFAULT_SETTINGS_XML.is_empty());
+        let settings = Settings::load_from_str(DEFAULT_SETTINGS_XML);
+        assert!(settings.is_ok());
+        let s = settings.unwrap();
+        assert!(!s.conversion_presets.is_empty());
+    }
+
+    #[test]
+    fn test_settings_paths_resolution() {
+        let (default_xml, user_xml) = get_settings_paths();
+        assert!(
+            default_xml
+                .to_string_lossy()
+                .contains("Settings.default.xml")
+        );
+        assert!(user_xml.to_string_lossy().contains("Settings.user.xml"));
+    }
+}

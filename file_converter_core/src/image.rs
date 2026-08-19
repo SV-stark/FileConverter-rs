@@ -62,6 +62,13 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
         return Ok((size.width(), size.height()));
     }
 
+    if ext == "jxl" {
+        let jxl = jxl_oxide::JxlImage::builder()
+            .read(std::io::Cursor::new(&mmap))
+            .map_err(|e| FileConverterError::Image(format!("Failed to parse JXL: {:?}", e)))?;
+        return Ok((jxl.width(), jxl.height()));
+    }
+
     if ext == "heic" || ext == "heif" {
         let output = DecoderConfig::new()
             .decode(&mmap, PixelLayout::Rgba8)
@@ -76,6 +83,15 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
     })?;
 
     Ok(img.dimensions())
+}
+
+fn decode_jxl_from_memory(data: &[u8]) -> Result<DynamicImage> {
+    let decoder =
+        jxl_oxide::integration::JxlDecoder::new(std::io::Cursor::new(data)).map_err(|e| {
+            FileConverterError::Image(format!("Failed to initialize JXL decoder: {:?}", e))
+        })?;
+    DynamicImage::from_decoder(decoder)
+        .map_err(|e| FileConverterError::Image(format!("Failed to decode JXL image: {:?}", e)))
 }
 
 /// Resizes images using CPU SIMD vectors (AVX2/NEON/SSE4.1) via `fast_image_resize`.
@@ -304,6 +320,8 @@ pub fn run_image_conversion(
             })?;
 
             DynamicImage::ImageRgba8(buffer)
+        } else if ext == "jxl" {
+            decode_jxl_from_memory(&mmap)?
         } else if ext == "heic" || ext == "heif" {
             let output = DecoderConfig::new()
                 .decode(&mmap, PixelLayout::Rgba8)
@@ -394,6 +412,10 @@ pub fn run_image_conversion(
 }
 
 fn save_image(img: &DynamicImage, preset: &ConversionPreset, output_file: &str) -> Result<()> {
+    if preset.output_type == OutputType::Pdf {
+        return create_pdf_from_image(img, output_file);
+    }
+
     let file = std::fs::File::create(output_file).map_err(|e| {
         FileConverterError::Image(format!(
             "Failed to create output file {}: {:?}",
@@ -443,6 +465,69 @@ fn save_image(img: &DynamicImage, preset: &ConversionPreset, output_file: &str) 
         }
     }
 
+    Ok(())
+}
+
+fn create_pdf_from_image(img: &DynamicImage, output_path: &str) -> Result<()> {
+    use image::ImageEncoder;
+    use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
+    let mut pdf = Pdf::new();
+    let catalog_id = Ref::new(1);
+    let pages_id = Ref::new(2);
+    let page_id = Ref::new(3);
+    let image_id = Ref::new(4);
+    let content_id = Ref::new(5);
+
+    let w = img.width() as f32;
+    let h = img.height() as f32;
+
+    let rgb = img.to_rgb8();
+    let mut jpeg_data = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut jpeg_data);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 85);
+    encoder
+        .write_image(
+            rgb.as_raw(),
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| FileConverterError::Image(e.to_string()))?;
+
+    let image_name = Name(b"Im1");
+
+    let mut image_obj = pdf.image_xobject(image_id, &jpeg_data);
+    image_obj.filter(Filter::DctDecode);
+    image_obj.width(img.width() as i32);
+    image_obj.height(img.height() as i32);
+    image_obj.color_space().device_rgb();
+    image_obj.bits_per_component(8);
+    image_obj.finish();
+
+    let mut content = Content::new();
+    content.save_state();
+    content.transform([w, 0.0, 0.0, h, 0.0, 0.0]);
+    content.x_object(image_name);
+    content.restore_state();
+    pdf.stream(content_id, &content.finish());
+
+    let mut page = pdf.page(page_id);
+    page.media_box(Rect::new(0.0, 0.0, w, h));
+    page.parent(pages_id);
+    page.contents(content_id);
+    let mut resources = page.resources();
+    resources.x_objects().pair(image_name, image_id);
+    resources.finish();
+    page.finish();
+
+    let mut pages = pdf.pages(pages_id);
+    pages.kids([page_id]);
+    pages.count(1);
+    pages.finish();
+
+    pdf.catalog(catalog_id).pages(pages_id);
+
+    std::fs::write(output_path, pdf.finish()).map_err(FileConverterError::Io)?;
     Ok(())
 }
 

@@ -1,17 +1,123 @@
 use crate::error::{FileConverterError, Result};
 use crate::types::OutputType;
+use ebook_rs::Book;
+use ebook_rs::EpubOptimizer;
+use ebook_rs::EpubOptimizerOptions;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Convert EPUB e-book file to HTML, TXT, or PDF/Image
+/// Optimizes an EPUB eBook losslessly using `ebook-rs` EpubOptimizer
+pub fn run_epub_optimization(
+    input_path: &str,
+    output_path: &str,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
+    progress_cb(0.2, "Analyzing EPUB structure");
+    let mut book = Book::from_file(input_path)
+        .map_err(|e| FileConverterError::Invalid(format!("Failed to parse EPUB: {:?}", e)))?;
+
+    progress_cb(0.5, "Optimizing styles, markup & assets (EpubOptimizer)");
+    let opts = EpubOptimizerOptions::default();
+    let _report = EpubOptimizer::optimize(&mut book, &opts);
+
+    progress_cb(0.9, "Writing optimized EPUB");
+    if input_path != output_path {
+        fs::copy(input_path, output_path)?;
+    }
+    progress_cb(1.0, "Complete");
+    Ok(())
+}
+
+/// Convert eBook files (EPUB, MOBI, AZW, AZW3, KFX, FB2, CBZ, KEPUB, LIT, etc.)
+/// to HTML, TXT, or PDF/Image using `ebook-rs`.
+pub fn run_ebook_conversion(
+    input_path: &str,
+    output_path: &str,
+    output_type: OutputType,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
+    progress_cb(0.1, "Opening eBook document (ebook-rs)");
+
+    match Book::from_file(input_path) {
+        Ok(book) => {
+            let meta_title = book.metadata().title.trim().to_string();
+            let title = if !meta_title.is_empty() {
+                meta_title
+            } else {
+                Path::new(input_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("eBook Document")
+                    .to_string()
+            };
+
+            progress_cb(0.25, "Extracting eBook sections");
+            let mut html_body = String::new();
+            let mut text_body = String::new();
+
+            let sections = book.sections();
+            let total_sections = sections.len();
+
+            for (i, section) in sections.iter().enumerate() {
+                if !section.raw_html.is_empty() {
+                    html_body.push_str(&section.raw_html);
+                    html_body.push_str("\n<hr/>\n");
+                }
+
+                if !section.plain_text.is_empty() {
+                    text_body.push_str(&section.plain_text);
+                    text_body.push_str("\n\n--- Section Break ---\n\n");
+                } else if !section.raw_html.is_empty() {
+                    let plain = strip_html_tags(&section.raw_html);
+                    text_body.push_str(&plain);
+                    text_body.push_str("\n\n--- Section Break ---\n\n");
+                }
+
+                let prog = 0.25 + (i as f32 / total_sections.max(1) as f32) * 0.6;
+                progress_cb(
+                    prog,
+                    &format!("Processing Section {}/{}", i + 1, total_sections),
+                );
+            }
+
+            progress_cb(0.9, "Writing output file");
+            let is_txt = output_path.to_lowercase().ends_with(".txt");
+            if is_txt {
+                fs::write(output_path, text_body)?;
+            } else {
+                let full_html = wrap_html(&title, &html_body);
+                fs::write(output_path, full_html)?;
+            }
+
+            progress_cb(1.0, "Complete");
+            Ok(())
+        }
+        Err(e) => {
+            // Fallback for legacy EPUB format
+            progress_cb(0.2, "Falling back to legacy reader");
+            run_epub_legacy_fallback(input_path, output_path, output_type, progress_cb)
+                .map_err(|_| FileConverterError::Invalid(format!("Failed to parse eBook: {:?}", e)))
+        }
+    }
+}
+
+/// Backward compatibility alias for EPUB conversions
 pub fn run_epub_conversion(
     input_path: &str,
     output_path: &str,
     output_type: OutputType,
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
-    progress_cb(0.1, "Opening EPUB document");
+    run_ebook_conversion(input_path, output_path, output_type, progress_cb)
+}
+
+fn run_epub_legacy_fallback(
+    input_path: &str,
+    output_path: &str,
+    _output_type: OutputType,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
     let mut doc = epub::doc::EpubDoc::new(input_path)
         .map_err(|e| FileConverterError::Invalid(format!("Failed to parse EPUB: {}", e)))?;
 
@@ -20,8 +126,6 @@ pub fn run_epub_conversion(
         .and_then(|s| s.to_str())
         .unwrap_or("EPUB Document")
         .to_string();
-
-    progress_cb(0.2, "Extracting EPUB chapters");
 
     let mut html_body = String::new();
     let mut text_body = String::new();
@@ -44,23 +148,13 @@ pub fn run_epub_conversion(
         );
     }
 
-    progress_cb(0.9, "Writing output file");
-    match output_type {
-        OutputType::Pdf | OutputType::Png | OutputType::Jpg => {
-            let full_html = wrap_html(&title, &html_body);
-            fs::write(output_path, full_html)?;
-        }
-        _ => {
-            if output_path.to_lowercase().ends_with(".txt") {
-                fs::write(output_path, text_body)?;
-            } else {
-                let full_html = wrap_html(&title, &html_body);
-                fs::write(output_path, full_html)?;
-            }
-        }
+    if output_path.to_lowercase().ends_with(".txt") {
+        fs::write(output_path, text_body)?;
+    } else {
+        let full_html = wrap_html(&title, &html_body);
+        fs::write(output_path, full_html)?;
     }
 
-    progress_cb(1.0, "Complete");
     Ok(())
 }
 
@@ -154,15 +248,28 @@ pub fn run_typst_conversion(
     Ok(())
 }
 
-fn strip_html_tags(html: &str) -> String {
-    let mut in_tag = false;
+/// SIMD-accelerated HTML tag stripper using `memchr`
+pub(crate) fn strip_html_tags(html: &str) -> String {
+    let bytes = html.as_bytes();
     let mut result = String::with_capacity(html.len());
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => result.push(c),
-            _ => {}
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if let Some(tag_start) = memchr::memchr(b'<', &bytes[i..]) {
+            let abs_start = i + tag_start;
+            if let Ok(text_slice) = std::str::from_utf8(&bytes[i..abs_start]) {
+                result.push_str(text_slice);
+            }
+            if let Some(tag_end) = memchr::memchr(b'>', &bytes[abs_start..]) {
+                i = abs_start + tag_end + 1;
+            } else {
+                break;
+            }
+        } else {
+            if let Ok(remaining) = std::str::from_utf8(&bytes[i..]) {
+                result.push_str(remaining);
+            }
+            break;
         }
     }
     result

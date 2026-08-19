@@ -76,14 +76,17 @@ pub struct PresetSetting {
 impl Settings {
     pub const CURRENT_VERSION: i32 = 4;
 
+    pub fn load_from_str(content: &str) -> Result<Self> {
+        let mut settings: Settings = from_str(content)?;
+        settings.migrate();
+        Ok(settings)
+    }
+
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = File::open(path)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
-
-        let mut settings: Settings = from_str(&content)?;
-        settings.migrate();
-        Ok(settings)
+        Self::load_from_str(&content)
     }
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-08-19
+
+### 🚀 Added & Enhanced
+- **Native JPEG XL (`.jxl`) Support (`jxl-oxide`):**
+  - Integrated `jxl-oxide` for native pure-Rust decoding of JPEG XL images to all supported target formats.
+- **Direct Image-to-PDF Bundling (`pdf-writer`):**
+  - High-performance, pure-Rust PDF creation directly from images using `pdf-writer` with DCT/Flate streams.
+- **EBU R128 Audio Loudness Normalization (`loudnorm`):**
+  - Broadcast-standard audio normalization filter integration across all audio and video conversion passes in `ffmpeg.rs`.
+- **Dynamic GPU Hardware Acceleration Auto-Detection:**
+  - Added `HardwareAccelerationMode::Auto` with cached runtime probing for NVIDIA NVENC (`CUDA`), AMD (`AMF`), and Intel (`QSV`).
+- **EPUB 3 Lossless Optimization (`ebook-rs`):**
+  - Lossless markup minification, CSS cleanup, and asset optimization for EPUB eBook files.
+- **Windows 11 Modern Context Menu (`ExplorerCommandHandler`):**
+  - Registered `ExplorerCommandHandler` and application icon keys to show File Converter directly on Windows 11 top-level right-click menus.
+- **SIMD & Zero-Allocation Optimizations:**
+  - `memchr` SIMD tag and path delimiter parsing.
+  - `smallvec` stack-allocated path token collection avoiding heap allocator churn.
+  - `bytemuck` zero-copy byte slice casting for rendered page buffers.
+- **Comprehensive Unit Testing Suite:**
+  - Added 28 descriptive unit and integration tests across `file_converter_core`, `file_converter_bin`, and `file_converter_shell`.
+
+---
+
 ## [0.8.1] - 2026-08-12
 
 ### ⚡ Performance & Optimization

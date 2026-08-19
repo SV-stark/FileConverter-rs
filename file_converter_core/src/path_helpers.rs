@@ -164,11 +164,25 @@ pub fn generate_file_path_from_template(
         parent_dir_with_slash.push('/');
     }
 
-    // Split directory folders
-    let folders: Vec<&str> = parent_directory
-        .split(['/', '\\'])
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Split directory folders without heap allocation using SmallVec and memchr
+    let mut folders: smallvec::SmallVec<[&str; 16]> = smallvec::SmallVec::new();
+    let mut start = 0;
+    let bytes = parent_directory.as_bytes();
+    while start < bytes.len() {
+        if let Some(pos) = memchr::memchr2(b'/', b'\\', &bytes[start..]) {
+            let seg = &parent_directory[start..start + pos];
+            if !seg.is_empty() {
+                folders.push(seg);
+            }
+            start += pos + 1;
+        } else {
+            let seg = &parent_directory[start..];
+            if !seg.is_empty() {
+                folders.push(seg);
+            }
+            break;
+        }
+    }
 
     let mut output_path = output_file_path_template.to_string();
 

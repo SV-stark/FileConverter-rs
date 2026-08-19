@@ -28,15 +28,16 @@ All credit for the original application design, default presets schema (`Setting
 | Feature / Subsystem | Original C# FileConverter | Rust Rewrite (`FileConverter-rs`) |
 | :--- | :--- | :--- |
 | **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | 100% XML schema parity via `quick-xml` & `serde` |
-| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) implementing type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & `IClassFactory` |
-| **Windows Explorer Integration** | Legacy "Show more options" only | Native COM `shellex` + **Direct Windows 11 Shell Verb** + **Property Sheet inspection tab** |
-| **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`eframe` / `egui`) |
+| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) implementing type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & Windows 11 `ExplorerCommandHandler` |
+| **Windows Explorer Integration** | Legacy "Show more options" only | Native COM `shellex` + **Direct Windows 11 Top-Level Context Menu** + **Property Sheet inspection tab** |
+| **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
 | **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** (`ProgressApp`) with per-job bars, live timer, per-file cancel controls & countdown |
-| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, & `oxipng` lossless PNG compression |
+| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` lossless PNG compression |
+| **Direct Image-to-PDF Bundling** | ImageMagick / HTML rasterization | **Pure-Rust** `pdf-writer` creating vector-accurate, ultra-compact multi-page PDF documents directly from images |
 | **HEIC/HEIF Support** | ImageMagick / libheif binaries | **Pure-Rust** `heic` decoder with memory-mapped byte buffer parsing |
 | **PDF Page Rasterization** | Ghostscript / ImageMagick | **Pure-Rust** `hayro` engine rendering pages in parallel with `rayon` across all CPU cores |
-| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`epub`, `pulldown-cmark`, `typst`) converting EPUB, Markdown, and Typst to PDF, HTML, and Text |
-| **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper supporting Hardware Acceleration (CUDA/AMF) |
+| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`ebook-rs`, `pulldown-cmark`, `typst`) converting EPUB (with EPUB 3 optimizer), MOBI, AZW, Markdown, and Typst to PDF, HTML, and Text |
+| **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper with **GPU Auto-Detection** (CUDA / AMF / QSV) & **EBU R128 Audio Loudness Normalization** (`loudnorm`) |
 | **Office Conversion** | Word / Excel / PowerPoint COM Interop | Background PowerShell COM automation with intermediate PDF fallback |
 
 ---

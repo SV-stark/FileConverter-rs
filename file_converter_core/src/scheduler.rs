@@ -66,7 +66,10 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         return JobEngine::PowerPoint;
     }
 
-    if ext == "epub" {
+    if matches!(
+        ext.as_str(),
+        "epub" | "mobi" | "azw" | "azw3" | "kfx" | "fb2" | "cbz" | "kepub" | "lit"
+    ) {
         return JobEngine::Epub;
     }
     if ext == "md" || ext == "markdown" {
@@ -494,12 +497,6 @@ impl ConversionJob {
                     filetime::FileTime::from_system_time(accessed_time),
                     filetime::FileTime::from_system_time(modified_time),
                 );
-                // Windows specific creation time setting
-                #[cfg(target_os = "windows")]
-                {
-                    // If creation time is available, we can set it via filetime or raw win32,
-                    // filetime crate handles modification and access.
-                }
             }
         }
     }

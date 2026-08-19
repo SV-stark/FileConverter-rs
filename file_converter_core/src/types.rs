@@ -22,10 +22,12 @@ pub enum OutputType {
     Aac,
     Avi,
     Avif,
+    Epub,
     Flac,
     Gif,
     Ico,
     Jpg,
+    Jxl,
     Mkv,
     Mp3,
     Mp4,
@@ -44,10 +46,12 @@ impl OutputType {
             OutputType::Aac => "aac",
             OutputType::Avi => "avi",
             OutputType::Avif => "avif",
+            OutputType::Epub => "epub",
             OutputType::Flac => "flac",
             OutputType::Gif => "gif",
             OutputType::Ico => "ico",
             OutputType::Jpg => "jpg",
+            OutputType::Jxl => "jxl",
             OutputType::Mkv => "mkv",
             OutputType::Mp3 => "mp3",
             OutputType::Mp4 => "mp4",
@@ -100,11 +104,14 @@ pub enum InputPostConversionAction {
 )]
 pub enum HardwareAccelerationMode {
     #[default]
+    Auto,
     Off,
     #[serde(rename = "CUDA")]
     Cuda,
     #[serde(rename = "AMF")]
     Amf,
+    #[serde(rename = "QSV")]
+    Qsv,
 }
 
 #[derive(
@@ -167,11 +174,12 @@ pub fn get_extension_category(ext: &str) -> &'static str {
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => "Video",
         "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"
-        | "jpg" | "jpeg" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff" | "svg"
-        | "xcf" | "webp" => "Image",
+        | "jpg" | "jpeg" | "jxl" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff"
+        | "svg" | "xcf" | "webp" => "Image",
         "gif" => "Animated Image",
         "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx"
-        | "epub" | "md" | "markdown" | "typ" | "txt" | "html" | "htm" => "Document",
+        | "epub" | "mobi" | "azw" | "azw3" | "kfx" | "fb2" | "cbz" | "kepub" | "lit" | "rtf"
+        | "md" | "markdown" | "typ" | "txt" | "html" | "htm" => "Document",
         _ => "Misc",
     }
 }
@@ -194,6 +202,7 @@ pub fn is_output_type_compatible_with_category(output_type: OutputType, category
         OutputType::Avif
         | OutputType::Ico
         | OutputType::Jpg
+        | OutputType::Jxl
         | OutputType::Png
         | OutputType::Webp => {
             category == "Image" || category == "Document" || category == "Animated Image"
@@ -202,6 +211,7 @@ pub fn is_output_type_compatible_with_category(output_type: OutputType, category
             category == "Image" || category == "Video" || category == "Animated Image"
         }
         OutputType::Pdf => category == "Image" || category == "Document",
+        OutputType::Epub => category == "Document",
         OutputType::None => false,
     }
 }

@@ -809,14 +809,17 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         } else {
             PathBuf::from("file_converter_bin.exe")
         };
+        let bin_exe_str = bin_exe.to_string_lossy().to_string();
         let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
         let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
-        let cmd_str = format!("\"{}\" -settings", bin_exe.to_string_lossy());
+        let cmd_str = format!("\"{}\" -settings", bin_exe_str);
 
         if let Ok(ref root) = hkcu_classes {
             if let Ok((key, _)) = root.create_subkey(&shell_verb_path) {
                 let _ = key.set_value("", &"File Converter");
                 let _ = key.set_value("MUIVerb", &"File Converter");
+                let _ = key.set_value("Icon", &bin_exe_str);
+                let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
             }
             if let Ok((key, _)) = root.create_subkey(&shell_verb_cmd_path) {
                 let _ = key.set_value("", &cmd_str);
@@ -825,6 +828,8 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_path) {
             let _ = key.set_value("", &"File Converter");
             let _ = key.set_value("MUIVerb", &"File Converter");
+            let _ = key.set_value("Icon", &bin_exe_str);
+            let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
         }
         if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_cmd_path) {
             let _ = key.set_value("", &cmd_str);
@@ -913,4 +918,53 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
 
     S_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use file_converter_core::types::InputPostConversionAction;
+
+    #[test]
+    fn test_shell_preset_compatibility_filtering() {
+        let preset = ConversionPreset {
+            name: "To MP3".to_string(),
+            output_type: OutputType::Mp3,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["flac".to_string(), "wav".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+
+        assert!(is_preset_compatible_with_file(
+            &preset,
+            "C:\\Music\\song.flac"
+        ));
+        assert!(is_preset_compatible_with_file(
+            &preset,
+            "C:\\Music\\audio.wav"
+        ));
+        assert!(!is_preset_compatible_with_file(
+            &preset,
+            "C:\\Photos\\image.png"
+        ));
+    }
+
+    #[test]
+    fn test_shell_category_icon_creation() {
+        unsafe {
+            let hbmp_audio = create_category_icon(OutputType::Mp3);
+            assert!(!hbmp_audio.is_invalid());
+
+            let hbmp_video = create_category_icon(OutputType::Mp4);
+            assert!(!hbmp_video.is_invalid());
+
+            let hbmp_image = create_category_icon(OutputType::Png);
+            assert!(!hbmp_image.is_invalid());
+
+            let hbmp_pdf = create_category_icon(OutputType::Pdf);
+            assert!(!hbmp_pdf.is_invalid());
+        }
+    }
 }

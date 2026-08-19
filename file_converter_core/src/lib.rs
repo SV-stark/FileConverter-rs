@@ -205,6 +205,12 @@ mod tests {
     #[test]
     fn test_document_extensions_and_markdown_conversion() {
         assert_eq!(get_extension_category("epub"), "Document");
+        assert_eq!(get_extension_category("mobi"), "Document");
+        assert_eq!(get_extension_category("azw3"), "Document");
+        assert_eq!(get_extension_category("kfx"), "Document");
+        assert_eq!(get_extension_category("fb2"), "Document");
+        assert_eq!(get_extension_category("cbz"), "Document");
+        assert_eq!(get_extension_category("lit"), "Document");
         assert_eq!(get_extension_category("md"), "Document");
         assert_eq!(get_extension_category("typ"), "Document");
 
@@ -269,5 +275,300 @@ mod tests {
 
         let _ = std::fs::remove_file(svg_path);
         let _ = std::fs::remove_file(png_path);
+    }
+
+    #[test]
+    fn test_image_to_pdf_generation_via_pdf_writer() {
+        let temp_dir = std::env::temp_dir();
+        let jpg_path = temp_dir.join("test_img.jpg");
+        let pdf_path = temp_dir.join("test_output.pdf");
+
+        // Create a small test RGB image
+        let img = image::DynamicImage::new_rgb8(120, 80);
+        img.save(&jpg_path).unwrap();
+
+        let preset = ConversionPreset {
+            name: "To Pdf".to_string(),
+            output_type: OutputType::Pdf,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["jpg".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+
+        let res = super::image::run_image_conversion(
+            &preset,
+            jpg_path.to_str().unwrap(),
+            &[pdf_path.to_str().unwrap().to_string()],
+            &|_p, _m| {},
+        );
+        assert!(res.is_ok());
+        assert!(pdf_path.exists());
+        let pdf_bytes = std::fs::read(&pdf_path).unwrap();
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
+
+        let _ = std::fs::remove_file(jpg_path);
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn test_audio_loudnorm_filter_computation() {
+        let preset_normal = ConversionPreset {
+            name: "To MP3".to_string(),
+            output_type: OutputType::Mp3,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["wav".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+        assert!(super::ffmpeg::compute_audio_filter_args(&preset_normal).is_none());
+
+        let preset_loudnorm = ConversionPreset {
+            name: "To MP3 (Normalize)".to_string(),
+            output_type: OutputType::Mp3,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["wav".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+        assert_eq!(
+            super::ffmpeg::compute_audio_filter_args(&preset_loudnorm),
+            Some("loudnorm=I=-16:TP=-1.5:LRA=11".to_string())
+        );
+    }
+
+    #[test]
+    fn test_jxl_and_epub_output_types_and_categories() {
+        assert_eq!(get_extension_category("jxl"), "Image");
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Jxl,
+            "Image"
+        ));
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Epub,
+            "Document"
+        ));
+        assert_eq!(OutputType::Jxl.extension(), "jxl");
+        assert_eq!(OutputType::Epub.extension(), "epub");
+        assert!(matches!(
+            HardwareAccelerationMode::default(),
+            HardwareAccelerationMode::Auto
+        ));
+    }
+
+    #[test]
+    fn test_strip_html_tags_simd_accuracy() {
+        let input = "<p>Welcome to <b>File Converter</b>! <a href=\"https://example.com\">Click here</a> for more.</p>";
+        let stripped = super::doc_convert::strip_html_tags(input);
+        assert_eq!(stripped, "Welcome to File Converter! Click here for more.");
+
+        let unclosed = "Plain text with <unclosed tag and <tag>valid</tag>";
+        let stripped_unclosed = super::doc_convert::strip_html_tags(unclosed);
+        assert_eq!(stripped_unclosed, "Plain text with valid");
+
+        let empty = "";
+        assert_eq!(super::doc_convert::strip_html_tags(empty), "");
+
+        let no_tags = "Just plain text without any HTML tags.";
+        assert_eq!(super::doc_convert::strip_html_tags(no_tags), no_tags);
+    }
+
+    #[test]
+    fn test_path_template_date_and_index_placeholders() {
+        let path = "C:\\Music\\Rock\\Track01.flac";
+        let res = super::path_helpers::generate_file_path_from_template(
+            path,
+            "mp3",
+            "(p)(f)_(n:i)of(n:c)",
+            3,
+            10,
+        );
+        assert_eq!(res, "C:\\Music\\Rock\\Track01_3of10.mp3");
+
+        let res_nesting = super::path_helpers::generate_file_path_from_template(
+            path,
+            "mp3",
+            "(p)(d0)_(d1)_(f)",
+            0,
+            1,
+        );
+        assert_eq!(res_nesting, "C:\\Music\\Rock\\Rock_Music_Track01.mp3");
+    }
+
+    #[test]
+    fn test_ffmpeg_h264_encoding_speed_mappings() {
+        use super::ffmpeg::{
+            h264_encoding_speed_to_amf_quality, h264_encoding_speed_to_nvenc_preset,
+            h264_encoding_speed_to_preset,
+        };
+
+        assert_eq!(
+            h264_encoding_speed_to_preset(VideoEncodingSpeed::UltraFast),
+            "ultrafast"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_preset(VideoEncodingSpeed::Medium),
+            "medium"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_preset(VideoEncodingSpeed::VerySlow),
+            "veryslow"
+        );
+
+        assert_eq!(
+            h264_encoding_speed_to_nvenc_preset(VideoEncodingSpeed::UltraFast),
+            "p1"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_nvenc_preset(VideoEncodingSpeed::Medium),
+            "p4"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_nvenc_preset(VideoEncodingSpeed::VerySlow),
+            "p7"
+        );
+
+        assert_eq!(
+            h264_encoding_speed_to_amf_quality(VideoEncodingSpeed::UltraFast),
+            "speed"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_amf_quality(VideoEncodingSpeed::Medium),
+            "balanced"
+        );
+        assert_eq!(
+            h264_encoding_speed_to_amf_quality(VideoEncodingSpeed::VerySlow),
+            "quality"
+        );
+    }
+
+    #[test]
+    fn test_ffmpeg_audio_quality_conversions() {
+        use super::ffmpeg::{
+            aac_bitrate_to_quality_index, mp3_vbr_bitrate_to_quality_index,
+            ogg_vbr_bitrate_to_quality_index,
+        };
+
+        assert_eq!(aac_bitrate_to_quality_index(340), "3");
+        assert_eq!(aac_bitrate_to_quality_index(128), "1");
+        assert_eq!(aac_bitrate_to_quality_index(48), "0.3");
+
+        assert_eq!(mp3_vbr_bitrate_to_quality_index(245).unwrap(), 0);
+        assert_eq!(mp3_vbr_bitrate_to_quality_index(190).unwrap(), 2);
+        assert_eq!(mp3_vbr_bitrate_to_quality_index(130).unwrap(), 5);
+        assert_eq!(mp3_vbr_bitrate_to_quality_index(65).unwrap(), 9);
+
+        assert_eq!(ogg_vbr_bitrate_to_quality_index(500).unwrap(), 10);
+        assert_eq!(ogg_vbr_bitrate_to_quality_index(160).unwrap(), 5);
+        assert_eq!(ogg_vbr_bitrate_to_quality_index(64).unwrap(), 0);
+        assert_eq!(ogg_vbr_bitrate_to_quality_index(48).unwrap(), -1);
+    }
+
+    #[test]
+    fn test_ffmpeg_custom_command_pass_generation() {
+        let mut preset = ConversionPreset {
+            name: "Custom MP4".to_string(),
+            output_type: OutputType::Mp4,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: false,
+            input_types: vec!["mkv".to_string()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+        preset.set_setting_value("EnableFFMPEGCustomCommand", "true");
+        preset.set_setting_value("FFMPEGCustomCommand", "-c:v copy -c:a copy");
+
+        let passes = super::ffmpeg::get_ffmpeg_passes(
+            &preset,
+            "C:\\input.mkv",
+            "C:\\output.mp4",
+            HardwareAccelerationMode::Off,
+        );
+        assert!(passes.is_ok());
+        let pass_list = passes.unwrap();
+        assert_eq!(pass_list.len(), 1);
+        assert!(pass_list[0].arguments.contains(&"-c:v".to_string()));
+        assert!(pass_list[0].arguments.contains(&"copy".to_string()));
+    }
+
+    #[test]
+    fn test_all_output_type_extensions_and_category_compatibilities() {
+        let all_types = [
+            (OutputType::Aac, "aac", "Audio"),
+            (OutputType::Avi, "avi", "Video"),
+            (OutputType::Avif, "avif", "Image"),
+            (OutputType::Epub, "epub", "Document"),
+            (OutputType::Flac, "flac", "Audio"),
+            (OutputType::Gif, "gif", "Animated Image"),
+            (OutputType::Ico, "ico", "Image"),
+            (OutputType::Jpg, "jpg", "Image"),
+            (OutputType::Jxl, "jxl", "Image"),
+            (OutputType::Mkv, "mkv", "Video"),
+            (OutputType::Mp3, "mp3", "Audio"),
+            (OutputType::Mp4, "mp4", "Video"),
+            (OutputType::Ogg, "ogg", "Audio"),
+            (OutputType::Ogv, "ogv", "Video"),
+            (OutputType::Pdf, "pdf", "Document"),
+            (OutputType::Png, "png", "Image"),
+            (OutputType::Wav, "wav", "Audio"),
+            (OutputType::Webm, "webm", "Video"),
+            (OutputType::Webp, "webp", "Image"),
+        ];
+
+        for (ot, ext, cat) in all_types {
+            assert_eq!(ot.extension(), ext);
+            assert!(is_output_type_compatible_with_category(ot, cat));
+        }
+        assert_eq!(OutputType::None.extension(), "");
+        assert!(!is_output_type_compatible_with_category(
+            OutputType::None,
+            "Audio"
+        ));
+    }
+
+    #[test]
+    fn test_document_and_office_conversion_routing() {
+        let doc_preset = ConversionPreset {
+            name: "To PDF".to_string(),
+            output_type: OutputType::Pdf,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec![
+                "docx".to_string(),
+                "xlsx".to_string(),
+                "md".to_string(),
+                "epub".to_string(),
+            ],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\doc.docx"),
+            JobEngine::Word
+        ));
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\sheet.xlsx"),
+            JobEngine::Excel
+        ));
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\slides.pptx"),
+            JobEngine::PowerPoint
+        ));
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\readme.md"),
+            JobEngine::Markdown
+        ));
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\book.epub"),
+            JobEngine::Epub
+        ));
+        assert!(matches!(
+            determine_job_engine(&doc_preset, "C:\\novel.mobi"),
+            JobEngine::Epub
+        ));
     }
 }
