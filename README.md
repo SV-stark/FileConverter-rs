@@ -1,13 +1,19 @@
-<p align="center">
+<div align="center">
+
   <img src="icon.png" width="128" height="128" alt="File Converter Logo" />
-</p>
 
-# FileConverter-rs
+  # FileConverter-rs
 
-[![Release](https://img.shields.io/github/v/release/SV-stark/FileConverter-rs?color=blue&style=flat-square)](https://github.com/SV-stark/FileConverter-rs/releases)
-[![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-blue.svg?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows_10_%2F_11_x64-brightgreen.svg?style=flat-square)](https://github.com/SV-stark/FileConverter-rs)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/SV-stark/FileConverter-rs/release.yml?style=flat-square)](https://github.com/SV-stark/FileConverter-rs/actions)
+  **A modern, blazing-fast 64-bit Rust rewrite of the popular Windows Explorer utility [FileConverter](https://github.com/Tichau/FileConverter).**
+
+  [![Release](https://img.shields.io/github/v/release/SV-stark/FileConverter-rs?color=blue&style=for-the-badge&logo=github)](https://github.com/SV-stark/FileConverter-rs/releases)
+  [![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-blue.svg?style=for-the-badge&logo=gnu)](LICENSE)
+  [![Platform](https://img.shields.io/badge/Platform-Windows_10_%2F_11_x64-brightgreen.svg?style=for-the-badge&logo=windows)](https://github.com/SV-stark/FileConverter-rs)
+  [![Build Status](https://img.shields.io/github/actions/workflow/status/SV-stark/FileConverter-rs/release.yml?style=for-the-badge&logo=githubactions)](https://github.com/SV-stark/FileConverter-rs/actions)
+
+</div>
+
+---
 
 A **100% feature-parity rewrite** of the popular open-source Windows utility **[FileConverter](https://github.com/Tichau/FileConverter)** in **Rust**.
 
@@ -17,9 +23,10 @@ This project modernizes and accelerates the core conversion pipelines, Windows E
 
 ## 💡 Credits & Attribution
 
-This project is a direct rewrite and port of **[FileConverter](https://github.com/Tichau/FileConverter)** developed by **[Tichau](https://github.com/Tichau)**. 
-
-All credit for the original application design, default presets schema (`Settings.default.xml`), conversion template logic, and Windows Explorer cascading context menu concepts goes to Tichau and the original C# project contributors.
+> [!NOTE]
+> This project is a direct rewrite and port of **[FileConverter](https://github.com/Tichau/FileConverter)** developed by **[Tichau](https://github.com/Tichau)**.
+> 
+> All credit for the original application design, default presets schema (`Settings.default.xml`), conversion template logic, and Windows Explorer cascading context menu concepts goes to Tichau and the original C# project contributors.
 
 ---
 
@@ -27,9 +34,9 @@ All credit for the original application design, default presets schema (`Setting
 
 | Feature / Subsystem | Original C# FileConverter | Rust Rewrite (`FileConverter-rs`) |
 | :--- | :--- | :--- |
-| **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | 100% XML schema parity via `quick-xml` & `serde` |
+| **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | **100% XML schema parity** via `quick-xml` & `serde` |
 | **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & Windows 11 `ExplorerCommandHandler` |
-| **Windows Explorer Integration** | Legacy "Show more options" only | Native COM `shellex` + **Direct Windows 11 Top-Level Context Menu** + **Property Sheet inspection tab** |
+| **Windows Explorer Integration** | Legacy *"Show more options"* only | Native COM `shellex` + **Direct Windows 11 Top-Level Context Menu** + **Property Sheet inspection tab** |
 | **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
 | **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** with per-job live progress, cancel controls, dropzone actions & dynamic status indicators |
 | **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` multi-level lossless PNG compression |
@@ -48,15 +55,15 @@ All credit for the original application design, default presets schema (`Setting
 ### 1. Converting Files from Windows Explorer
 1. Select one or multiple files in **Windows Explorer**.
 2. **Right-click** the selection:
-   - On **Windows 10**: Hover over the **`File Converter`** cascading context menu.
-   - On **Windows 11**: Click **`File Converter`** directly on the main context menu (or expand *"Show more options"*).
+   - **On Windows 10**: Hover over the **`File Converter`** cascading context menu.
+   - **On Windows 11**: Click **`File Converter`** directly on the main context menu (or expand *"Show more options"*).
 3. Select your desired target format (e.g., *"To Mp3"*, *"To Png"*, *"To Pdf"*).
 4. The **Native Progress Window** will pop up, displaying individual progress bars per file, cancel buttons (`✕ Cancel`), and real-time status summary.
 5. Once conversion completes, output files are placed directly alongside source files (or formatted per your path template settings), and the window automatically closes.
 
 ### 2. Batch Operations & Large Selection Handling
-* You can select **hundreds or thousands of files at once**. 
-* If the command-line length exceeds Windows limits (8,000 characters), FileConverter automatically passes file lists via a temporary text manifest file to ensure seamless batch execution.
+> [!TIP]
+> You can select **hundreds or thousands of files at once**. If the command-line length exceeds Windows limits (8,000 characters), FileConverter automatically passes file lists via a temporary text manifest file to ensure seamless batch execution.
 
 ### 3. Configuring Conversion Presets & Dashboard Features
 1. Open **FileConverter** from the **Windows Start Menu** or click **`Configure presets...`** at the bottom of the right-click menu.
@@ -97,35 +104,36 @@ file_converter_bin --settings
 
 The repository is structured as a modular Cargo workspace containing three distinct sub-crates:
 
-```
+```text
 FileConverter-rs/
-├── file_converter_core/    # Core conversion library, XML parser, & scheduler
+├── file_converter_core/       # Core conversion library, XML parser, & scheduler
 │   ├── src/
-│   │   ├── doc_convert.rs  # Vector PDF generation (pdf-writer), eBook & Markdown
-│   │   ├── ffmpeg.rs       # Audio & Video FFMpeg command builder, GPU auto-detect & pass runner
+│   │   ├── doc_convert.rs     # Vector PDF generation (pdf-writer), eBook & Markdown
+│   │   ├── ffmpeg.rs          # Audio & Video FFMpeg command builder, GPU auto-detect & pass runner
 │   │   ├── ffmpeg_download.rs # Multi-mirror FFmpeg downloader with PE header verification
-│   │   ├── image.rs        # Pure-Rust Image & PDF engine, oxipng multi-level compression
-│   │   ├── office.rs       # Word, Excel, PowerPoint COM automation with async stderr drain
-│   │   ├── pdf_compress.rs # Parallel PDF image stream downscaling (Rayon)
-│   │   ├── scheduler.rs    # Rayon work-stealing threadpool & job coordinator
-│   │   ├── settings.rs     # Preset parser, ahash O(1) map index & XML serializer
-│   │   ├── path_helpers.rs # Output path template engine & unique filename generator
-│   │   └── types.rs        # Strongly-typed FileCategory, OutputType, PostAction enums
-├── file_converter_shell/   # Windows Shell Extension COM DLL
+│   │   ├── image.rs           # Pure-Rust Image & PDF engine, oxipng multi-level compression
+│   │   ├── office.rs          # Word, Excel, PowerPoint COM automation with async stderr drain
+│   │   ├── pdf_compress.rs    # Parallel PDF image stream downscaling (Rayon)
+│   │   ├── scheduler.rs       # Rayon work-stealing threadpool & job coordinator
+│   │   ├── settings.rs        # Preset parser, ahash O(1) map index & XML serializer
+│   │   ├── path_helpers.rs    # Output path template engine & unique filename generator
+│   │   └── types.rs           # Strongly-typed FileCategory, OutputType, PostAction enums
+├── file_converter_shell/      # Windows Shell Extension COM DLL
 │   └── src/
-│       └── lib.rs          # IContextMenu, IShellExtInit, IShellPropSheetExt, & DllRegisterServer
-├── file_converter_bin/     # Native Desktop GUI & CLI Application
+│       └── lib.rs             # IContextMenu, IShellExtInit, IShellPropSheetExt, & DllRegisterServer
+├── file_converter_bin/        # Native Desktop GUI & CLI Application
 │   ├── src/
-│   │   └── main.rs         # Slint Settings Dashboard & Progress Dialog
+│   │   └── main.rs            # Slint Settings Dashboard & Progress Dialog
 │   └── ui/
-│       └── appwindow.slint # Slint UI Declarative Fluent interface definitions
-├── Settings.default.xml    # 100% original C# conversion presets XML
-└── installer.nsi           # 64-bit NSIS setup installer script
+│       └── appwindow.slint    # Slint UI Declarative Fluent interface definitions
+├── Settings.default.xml       # 100% original C# conversion presets XML
+└── installer.nsi              # 64-bit NSIS setup installer script
 ```
 
 ---
 
 ## ⚡ High-Performance Architecture Stack
+
 * **Work-Stealing Concurrency (`rayon`)**: Thread pool scheduling for batch file conversions and parallel PDF stream downscaling.
 * **Vector PDF Generation (`pdf-writer`)**: Direct generation of multi-page vector PDF documents from plain text, Markdown, Typst, and images.
 * **Lossless PNG Optimization (`oxipng`)**: Configurable multi-level compression, metadata stripping, and interlace controls.
@@ -193,3 +201,4 @@ makensis /V4 installer.nsi
 ## 📜 License
 
 This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See the [LICENSE](LICENSE) file for complete details.
+
