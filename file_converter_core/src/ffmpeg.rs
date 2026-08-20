@@ -3,7 +3,6 @@ use crate::path_helpers;
 use crate::settings::ConversionPreset;
 use crate::types::{EncodingMode, HardwareAccelerationMode, OutputType, VideoEncodingSpeed};
 use regex::Regex;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
@@ -26,6 +25,17 @@ pub struct FfmpegPass {
 }
 
 pub fn get_ffmpeg_path() -> PathBuf {
+    // 1. Check local app data bin folder
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let app_data_ffmpeg = Path::new(&local_app_data)
+        .join("FileConverter")
+        .join("bin")
+        .join("ffmpeg.exe");
+    if app_data_ffmpeg.exists() {
+        return app_data_ffmpeg;
+    }
+
+    // 2. Check local directory / exe-dir
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop();
         let path = exe_path.join("ffmpeg.exe");
@@ -33,7 +43,16 @@ pub fn get_ffmpeg_path() -> PathBuf {
             return path;
         }
     }
-    PathBuf::from("ffmpeg.exe")
+
+    // 3. Check system PATH
+    if let Ok(path) = which::which("ffmpeg.exe") {
+        return path;
+    }
+    if let Ok(path) = which::which("ffmpeg") {
+        return path;
+    }
+
+    app_data_ffmpeg
 }
 
 static DETECTED_HW_ACCEL: LazyLock<HardwareAccelerationMode> = LazyLock::new(|| {
@@ -212,7 +231,7 @@ pub fn get_ffmpeg_passes(
                 arguments.push("-an".to_string());
             }
 
-            let transform = compute_transform_args(preset, hw_accel);
+            let transform = compute_transform_args(preset, resolved_hw_accel);
             if !transform.is_empty() {
                 arguments.push("-vf".to_string());
                 arguments.push(transform);
@@ -261,7 +280,7 @@ pub fn get_ffmpeg_passes(
                 &[],
             );
 
-            let transform = compute_transform_args(preset, hw_accel);
+            let transform = compute_transform_args(preset, resolved_hw_accel);
             let fps = preset
                 .get_setting_value("VideoFramesPerSecond")
                 .and_then(|v| v.parse::<i32>().ok())
@@ -499,7 +518,7 @@ pub fn get_ffmpeg_passes(
                 arguments.push("-an".to_string());
             }
 
-            let transform = compute_transform_args(preset, hw_accel);
+            let transform = compute_transform_args(preset, resolved_hw_accel);
             if !transform.is_empty() {
                 arguments.push("-vf".to_string());
                 arguments.push(transform);
@@ -574,7 +593,7 @@ pub fn get_ffmpeg_passes(
                 arguments.push("-an".to_string());
             }
 
-            let transform = compute_transform_args(preset, hw_accel);
+            let transform = compute_transform_args(preset, resolved_hw_accel);
             if !transform.is_empty() {
                 arguments.push("-vf".to_string());
                 arguments.push(transform);
@@ -686,7 +705,7 @@ pub fn get_ffmpeg_passes(
                 arguments.push("-an".to_string());
             }
 
-            let transform = compute_transform_args(preset, hw_accel);
+            let transform = compute_transform_args(preset, resolved_hw_accel);
             if !transform.is_empty() {
                 arguments.push("-vf".to_string());
                 arguments.push(transform);
@@ -695,6 +714,26 @@ pub fn get_ffmpeg_passes(
 
             passes.push(FfmpegPass {
                 name: "Conversion".to_string(),
+                arguments,
+                file_to_delete: None,
+            });
+        }
+        OutputType::Jxl => {
+            let mut arguments = base_args.clone();
+            arguments.push("-i".to_string());
+            arguments.push(input_path.to_string());
+            arguments.push("-c:v".to_string());
+            arguments.push("libjxl".to_string());
+
+            let transform = compute_transform_args(preset, resolved_hw_accel);
+            if !transform.is_empty() {
+                arguments.push("-vf".to_string());
+                arguments.push(transform);
+            }
+            arguments.push(output_path.to_string());
+
+            passes.push(FfmpegPass {
+                name: "JPEG XL Conversion".to_string(),
                 arguments,
                 file_to_delete: None,
             });
@@ -889,11 +928,18 @@ pub(crate) fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &
 
 pub fn run_ffmpeg_pass(
     pass: &FfmpegPass,
-    input_path: &str,
-    output_path: &str,
+    _input_path: &str,
+    _output_path: &str,
     progress_callback: &dyn Fn(f32, &str),
 ) -> Result<()> {
-    let ffmpeg_path = get_ffmpeg_path();
+    let mut ffmpeg_path = get_ffmpeg_path();
+    if !ffmpeg_path.exists()
+        && let Ok(downloaded) = crate::ffmpeg_download::ensure_ffmpeg_available()
+    {
+        ffmpeg_path = downloaded;
+    }
+
+    use std::io::Read;
 
     let mut child = Command::new(&ffmpeg_path)
         .args(&pass.arguments)
@@ -904,16 +950,19 @@ pub fn run_ffmpeg_pass(
             FileConverterError::Ffmpeg(format!("Failed to start FFMpeg process: {:?}", e))
         })?;
 
-    let stderr = child.stderr.take().ok_or_else(|| {
+    let mut stderr = child.stderr.take().ok_or_else(|| {
         FileConverterError::Ffmpeg("Failed to open stderr pipe of FFMpeg".to_string())
     })?;
-    let reader = BufReader::new(stderr);
+
     let start_time = std::time::Instant::now();
     let max_duration = Duration::from_secs(3600); // 1 hour maximum execution per pass
 
     let mut total_duration = Duration::ZERO;
+    let mut line_buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let mut recent_error_lines: Vec<String> = Vec::new();
 
-    for line_res in reader.lines() {
+    loop {
         if start_time.elapsed() > max_duration {
             let _ = child.kill();
             return Err(FileConverterError::Timeout(
@@ -921,54 +970,64 @@ pub fn run_ffmpeg_pass(
             ));
         }
 
-        let line = match line_res {
-            Ok(l) => l,
+        let n = match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
 
-        // Parse duration to know the total length
-        if total_duration.is_zero()
-            && let Some(caps) = DURATION_RE.captures(&line)
-        {
-            let h: u64 = caps["h"].parse().unwrap_or(0);
-            let m: u64 = caps["m"].parse().unwrap_or(0);
-            let s: u64 = caps["s"].parse().unwrap_or(0);
-            let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-            total_duration = Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
-        }
+        for &b in &chunk[..n] {
+            if b == b'\r' || b == b'\n' {
+                if !line_buf.is_empty() {
+                    let line = String::from_utf8_lossy(&line_buf);
 
-        // Parse time to compute progress percent
-        if !total_duration.is_zero()
-            && let Some(caps) = PROGRESS_RE.captures(&line)
-        {
-            let h: u64 = caps["h"].parse().unwrap_or(0);
-            let m: u64 = caps["m"].parse().unwrap_or(0);
-            let s: u64 = caps["s"].parse().unwrap_or(0);
-            let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-            let current_time =
-                Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
+                    // Parse duration to know the total length
+                    if total_duration.is_zero()
+                        && let Some(caps) = DURATION_RE.captures(&line)
+                    {
+                        let h: u64 = caps["h"].parse().unwrap_or(0);
+                        let m: u64 = caps["m"].parse().unwrap_or(0);
+                        let s: u64 = caps["s"].parse().unwrap_or(0);
+                        let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
+                        total_duration =
+                            Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
+                    }
 
-            let percent = (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
-            progress_callback(percent.clamp(0.0, 1.0), &pass.name);
-        }
+                    // Parse time to compute progress percent
+                    if !total_duration.is_zero()
+                        && let Some(caps) = PROGRESS_RE.captures(&line)
+                    {
+                        let h: u64 = caps["h"].parse().unwrap_or(0);
+                        let m: u64 = caps["m"].parse().unwrap_or(0);
+                        let s: u64 = caps["s"].parse().unwrap_or(0);
+                        let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
+                        let current_time =
+                            Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
 
-        // Check for error lines excluding filenames to avoid false errors
-        let line_cleaned = line.replace(input_path, "").replace(output_path, "");
-        if line_cleaned.contains("Exiting.")
-            || line_cleaned.contains("Error")
-            || line_cleaned.contains("Unsupported dimensions")
-            || line_cleaned.contains("No such file or directory")
-        {
-            if line_cleaned.contains("Error while decoding stream")
-                && line_cleaned.contains("Invalid data found when processing input")
-            {
-                // Ignore initial TS file frame errors
+                        let percent =
+                            (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
+                        progress_callback(percent.clamp(0.0, 1.0), &pass.name);
+                    } else if !line.starts_with("size=") && !line.starts_with("frame=") {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty()
+                            && (trimmed.contains("Error")
+                                || trimmed.contains("Invalid")
+                                || trimmed.contains("failed")
+                                || trimmed.contains("Option")
+                                || trimmed.contains("Exiting"))
+                        {
+                            if recent_error_lines.len() >= 8 {
+                                recent_error_lines.remove(0);
+                            }
+                            recent_error_lines.push(trimmed.to_string());
+                        }
+                    }
+
+                    line_buf.clear();
+                }
             } else {
-                let _ = child.kill();
-                return Err(FileConverterError::Ffmpeg(format!(
-                    "FFMpeg reported error: {}",
-                    line
-                )));
+                line_buf.push(b);
             }
         }
     }
@@ -977,9 +1036,18 @@ pub fn run_ffmpeg_pass(
         FileConverterError::Ffmpeg(format!("Failed to wait for FFMpeg process: {:?}", e))
     })?;
     if !status.success() {
+        let error_msg = if !recent_error_lines.is_empty() {
+            recent_error_lines.join(" | ")
+        } else {
+            format!("exit code: {:?}", status.code())
+        };
         return Err(FileConverterError::Ffmpeg(format!(
-            "FFMpeg process exited with failure code: {:?}",
-            status.code()
+            "FFMpeg process failed ({}): {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "terminated".to_string()),
+            error_msg
         )));
     }
 

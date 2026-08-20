@@ -1,27 +1,9 @@
 use crate::error::{FileConverterError, Result};
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn get_ffmpeg_binary_path() -> PathBuf {
-    // 1. Check local directory / system PATH
-    if let Ok(path) = which::which("ffmpeg.exe") {
-        return path;
-    }
-    if let Ok(mut exe_dir) = env::current_exe() {
-        exe_dir.pop();
-        let candidate = exe_dir.join("ffmpeg.exe");
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-
-    // 2. Check local app data bin folder
-    let local_app_data = env::var("LOCALAPPDATA").unwrap_or_default();
-    Path::new(&local_app_data)
-        .join("FileConverter")
-        .join("bin")
-        .join("ffmpeg.exe")
+    crate::ffmpeg::get_ffmpeg_path()
 }
 
 pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
@@ -30,23 +12,52 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
         return Ok(target_path);
     }
 
-    let parent = target_path
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let default_bin = std::path::Path::new(&local_app_data)
+        .join("FileConverter")
+        .join("bin")
+        .join("ffmpeg.exe");
+
+    let final_target = if target_path.file_name() == Some(std::ffi::OsStr::new("ffmpeg.exe"))
+        && target_path.parent().is_some()
+    {
+        target_path
+    } else {
+        default_bin
+    };
+
+    let parent = final_target
         .parent()
         .ok_or_else(|| FileConverterError::Invalid("Invalid FFmpeg target path".to_string()))?;
     fs::create_dir_all(parent)?;
 
-    // Download URL for static ffmpeg zip release
-    let download_url = "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-essentials_build.zip";
+    // Download URLs with fallback mirrors
+    let download_sources = [
+        "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-essentials_build.zip",
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    ];
 
     let temp_zip_path = parent.join("ffmpeg_temp.zip");
-    let response = ureq::get(download_url)
-        .call()
-        .map_err(|e| FileConverterError::Ffmpeg(format!("Failed to download FFmpeg: {:?}", e)))?;
+    let mut downloaded = false;
 
-    {
-        let mut out = fs::File::create(&temp_zip_path)?;
-        let mut reader = response.into_reader();
-        std::io::copy(&mut reader, &mut out)?;
+    for url in &download_sources {
+        if let Ok(response) = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(90))
+            .call()
+            && let Ok(mut out) = fs::File::create(&temp_zip_path)
+        {
+            let mut reader = response.into_reader();
+            if std::io::copy(&mut reader, &mut out).is_ok() {
+                downloaded = true;
+                break;
+            }
+        }
+    }
+
+    if !downloaded {
+        return Err(FileConverterError::Ffmpeg(
+            "Failed to download FFmpeg release package from all available mirrors".to_string(),
+        ));
     }
 
     let zip_file = fs::File::open(&temp_zip_path)?;
@@ -60,7 +71,7 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
             .map_err(|e| FileConverterError::Invalid(e.to_string()))?;
 
         if file.name().ends_with("ffmpeg.exe") {
-            let mut out_file = fs::File::create(&target_path)?;
+            let mut out_file = fs::File::create(&final_target)?;
             std::io::copy(&mut file, &mut out_file)?;
             found = true;
             break;
@@ -70,7 +81,17 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     let _ = fs::remove_file(&temp_zip_path);
 
     if found {
-        Ok(target_path)
+        // Validate executable integrity (must be non-empty and start with MZ header)
+        if let Ok(header) = fs::read(&final_target)
+            && header.len() > 1024
+            && header.starts_with(b"MZ")
+        {
+            return Ok(final_target);
+        }
+        let _ = fs::remove_file(&final_target);
+        Err(FileConverterError::Ffmpeg(
+            "Downloaded FFmpeg binary failed executable integrity verification".to_string(),
+        ))
     } else {
         Err(FileConverterError::Ffmpeg(
             "ffmpeg.exe not found in downloaded release package".to_string(),

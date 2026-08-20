@@ -22,7 +22,15 @@ mod tests {
     #[test]
     fn test_load_default_settings_xml() {
         let temp_dir = std::env::temp_dir();
-        let xml_path = temp_dir.join("test_settings_default.xml");
+        let unique_name = format!(
+            "test_settings_default_{}_{}.xml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let xml_path = temp_dir.join(unique_name);
         std::fs::write(&xml_path, DEFAULT_SETTINGS_XML).expect("Failed to write test XML");
 
         let settings = Settings::load_from_file(&xml_path).expect("Failed to parse settings XML");
@@ -38,7 +46,15 @@ mod tests {
     #[test]
     fn test_settings_save_and_reload_roundtrip() {
         let temp_dir = std::env::temp_dir();
-        let xml_path = temp_dir.join("test_settings_roundtrip.xml");
+        let unique_name = format!(
+            "test_settings_roundtrip_{}_{}.xml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let xml_path = temp_dir.join(unique_name);
         std::fs::write(&xml_path, DEFAULT_SETTINGS_XML).expect("Failed to write temp XML");
 
         let mut settings = Settings::load_from_file(&xml_path).unwrap_or_else(|_| Settings {
@@ -204,36 +220,59 @@ mod tests {
 
     #[test]
     fn test_document_extensions_and_markdown_conversion() {
-        assert_eq!(get_extension_category("epub"), "Document");
-        assert_eq!(get_extension_category("mobi"), "Document");
-        assert_eq!(get_extension_category("azw3"), "Document");
-        assert_eq!(get_extension_category("kfx"), "Document");
-        assert_eq!(get_extension_category("fb2"), "Document");
-        assert_eq!(get_extension_category("cbz"), "Document");
-        assert_eq!(get_extension_category("lit"), "Document");
-        assert_eq!(get_extension_category("md"), "Document");
-        assert_eq!(get_extension_category("typ"), "Document");
+        assert_eq!(get_extension_category("epub"), FileCategory::Document);
+        assert_eq!(get_extension_category("mobi"), FileCategory::Document);
+        assert_eq!(get_extension_category("azw3"), FileCategory::Document);
+        assert_eq!(get_extension_category("kfx"), FileCategory::Document);
+        assert_eq!(get_extension_category("fb2"), FileCategory::Document);
+        assert_eq!(get_extension_category("cbz"), FileCategory::Document);
+        assert_eq!(get_extension_category("lit"), FileCategory::Document);
+        assert_eq!(get_extension_category("md"), FileCategory::Document);
+        assert_eq!(get_extension_category("typ"), FileCategory::Document);
 
         let temp_dir = std::env::temp_dir();
-        let md_path = temp_dir.join("test_doc.md");
-        let html_out = temp_dir.join("test_doc.html");
+        let unique_suffix = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let md_path = temp_dir.join(format!("test_doc_{}.md", unique_suffix));
+        let html_out = temp_dir.join(format!("test_doc_{}.html", unique_suffix));
 
         std::fs::write(&md_path, "# Title\n\nThis is **Markdown** text.").unwrap();
-        let res = super::doc_convert::run_markdown_conversion(
+        // 1. Test HTML generation
+        let res_html = super::doc_convert::run_markdown_conversion(
             md_path.to_str().unwrap(),
             html_out.to_str().unwrap(),
-            OutputType::Pdf,
+            OutputType::None,
             &|_p, _m| {},
         );
-        assert!(res.is_ok());
+        assert!(res_html.is_ok());
         assert!(html_out.exists());
 
         let html_content = std::fs::read_to_string(&html_out).unwrap();
         assert!(html_content.contains("Title"));
         assert!(html_content.contains("<strong>Markdown</strong>"));
 
+        // 2. Test PDF vector generation
+        let pdf_out = temp_dir.join(format!("test_doc_{}.pdf", unique_suffix));
+        let res_pdf = super::doc_convert::run_markdown_conversion(
+            md_path.to_str().unwrap(),
+            pdf_out.to_str().unwrap(),
+            OutputType::Pdf,
+            &|_p, _m| {},
+        );
+        assert!(res_pdf.is_ok());
+        assert!(pdf_out.exists());
+        let pdf_bytes = std::fs::read(&pdf_out).unwrap();
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
+
         let _ = std::fs::remove_file(md_path);
         let _ = std::fs::remove_file(html_out);
+        let _ = std::fs::remove_file(pdf_out);
     }
 
     #[test]
@@ -342,14 +381,14 @@ mod tests {
 
     #[test]
     fn test_jxl_and_epub_output_types_and_categories() {
-        assert_eq!(get_extension_category("jxl"), "Image");
+        assert_eq!(get_extension_category("jxl"), FileCategory::Image);
         assert!(is_output_type_compatible_with_category(
             OutputType::Jxl,
-            "Image"
+            FileCategory::Image
         ));
         assert!(is_output_type_compatible_with_category(
             OutputType::Epub,
-            "Document"
+            FileCategory::Document
         ));
         assert_eq!(OutputType::Jxl.extension(), "jxl");
         assert_eq!(OutputType::Epub.extension(), "epub");
@@ -497,35 +536,53 @@ mod tests {
     #[test]
     fn test_all_output_type_extensions_and_category_compatibilities() {
         let all_types = [
-            (OutputType::Aac, "aac", "Audio"),
-            (OutputType::Avi, "avi", "Video"),
-            (OutputType::Avif, "avif", "Image"),
-            (OutputType::Epub, "epub", "Document"),
-            (OutputType::Flac, "flac", "Audio"),
-            (OutputType::Gif, "gif", "Animated Image"),
-            (OutputType::Ico, "ico", "Image"),
-            (OutputType::Jpg, "jpg", "Image"),
-            (OutputType::Jxl, "jxl", "Image"),
-            (OutputType::Mkv, "mkv", "Video"),
-            (OutputType::Mp3, "mp3", "Audio"),
-            (OutputType::Mp4, "mp4", "Video"),
-            (OutputType::Ogg, "ogg", "Audio"),
-            (OutputType::Ogv, "ogv", "Video"),
-            (OutputType::Pdf, "pdf", "Document"),
-            (OutputType::Png, "png", "Image"),
-            (OutputType::Wav, "wav", "Audio"),
-            (OutputType::Webm, "webm", "Video"),
-            (OutputType::Webp, "webp", "Image"),
+            (OutputType::Aac, "aac", FileCategory::Audio),
+            (OutputType::Avi, "avi", FileCategory::Video),
+            (OutputType::Avif, "avif", FileCategory::Image),
+            (OutputType::Epub, "epub", FileCategory::Document),
+            (OutputType::Flac, "flac", FileCategory::Audio),
+            (OutputType::Gif, "gif", FileCategory::AnimatedImage),
+            (OutputType::Ico, "ico", FileCategory::Image),
+            (OutputType::Jpg, "jpg", FileCategory::Image),
+            (OutputType::Jxl, "jxl", FileCategory::Image),
+            (OutputType::Mkv, "mkv", FileCategory::Video),
+            (OutputType::Mp3, "mp3", FileCategory::Audio),
+            (OutputType::Mp4, "mp4", FileCategory::Video),
+            (OutputType::Ogg, "ogg", FileCategory::Audio),
+            (OutputType::Ogv, "ogv", FileCategory::Video),
+            (OutputType::Pdf, "pdf", FileCategory::Document),
+            (OutputType::Png, "png", FileCategory::Image),
+            (OutputType::Wav, "wav", FileCategory::Audio),
+            (OutputType::Webm, "webm", FileCategory::Video),
+            (OutputType::Webp, "webp", FileCategory::Image),
         ];
 
         for (ot, ext, cat) in all_types {
             assert_eq!(ot.extension(), ext);
             assert!(is_output_type_compatible_with_category(ot, cat));
         }
+        // Test GIF compatibility across AnimatedImage, Image, and Video
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Gif,
+            FileCategory::AnimatedImage
+        ));
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Gif,
+            FileCategory::Image
+        ));
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Gif,
+            FileCategory::Video
+        ));
+        assert!(!is_output_type_compatible_with_category(
+            OutputType::Gif,
+            FileCategory::Audio
+        ));
+
         assert_eq!(OutputType::None.extension(), "");
         assert!(!is_output_type_compatible_with_category(
             OutputType::None,
-            "Audio"
+            FileCategory::Audio
         ));
     }
 

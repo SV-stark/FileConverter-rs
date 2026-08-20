@@ -28,17 +28,18 @@ All credit for the original application design, default presets schema (`Setting
 | Feature / Subsystem | Original C# FileConverter | Rust Rewrite (`FileConverter-rs`) |
 | :--- | :--- | :--- |
 | **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | 100% XML schema parity via `quick-xml` & `serde` |
-| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) implementing type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & Windows 11 `ExplorerCommandHandler` |
+| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & Windows 11 `ExplorerCommandHandler` |
 | **Windows Explorer Integration** | Legacy "Show more options" only | Native COM `shellex` + **Direct Windows 11 Top-Level Context Menu** + **Property Sheet inspection tab** |
 | **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
-| **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** (`ProgressApp`) with per-job bars, live timer, per-file cancel controls & countdown |
-| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` lossless PNG compression |
-| **Direct Image-to-PDF Bundling** | ImageMagick / HTML rasterization | **Pure-Rust** `pdf-writer` creating vector-accurate, ultra-compact multi-page PDF documents directly from images |
+| **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** with per-job live progress, cancel controls, dropzone actions & dynamic status indicators |
+| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` multi-level lossless PNG compression |
+| **Direct Vector PDF Generation** | ImageMagick / HTML rasterization | **Pure-Rust** `pdf-writer` creating vector-accurate, multi-page PDF documents directly from eBooks (EPUB, MOBI, AZW), Markdown, Typst, and images |
+| **Parallel Scheduling & PDF Optimization** | Serial / ThreadPool | **Rayon Work-Stealing Pool** for concurrent job conversion and parallel embedded image stream recompression (`pdf_compress.rs`) |
 | **HEIC/HEIF Support** | ImageMagick / libheif binaries | **Pure-Rust** `heic` decoder with memory-mapped byte buffer parsing |
 | **PDF Page Rasterization** | Ghostscript / ImageMagick | **Pure-Rust** `hayro` engine rendering pages in parallel with `rayon` across all CPU cores |
-| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`ebook-rs`, `pulldown-cmark`, `typst`) converting EPUB (with EPUB 3 optimizer), MOBI, AZW, Markdown, and Typst to PDF, HTML, and Text |
-| **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper with **GPU Auto-Detection** (CUDA / AMF / QSV) & **EBU R128 Audio Loudness Normalization** (`loudnorm`) |
-| **Office Conversion** | Word / Excel / PowerPoint COM Interop | Background PowerShell COM automation with intermediate PDF fallback |
+| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`ebook-rs`, `pulldown-cmark`, `typst`) converting EPUB, MOBI, AZW, Markdown, and Typst to PDF, HTML, and Text |
+| **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper with **GPU Auto-Detection** (CUDA / AMF / QSV), chunked stderr streaming, **EBU R128 Audio Normalization** (`loudnorm`), & JPEG XL encoding |
+| **Office Conversion** | Word / Excel / PowerPoint COM Interop | Background PowerShell COM automation with asynchronous stderr draining and 5-minute timeout protection |
 
 ---
 
@@ -50,8 +51,8 @@ All credit for the original application design, default presets schema (`Setting
    - On **Windows 10**: Hover over the **`File Converter`** cascading context menu.
    - On **Windows 11**: Click **`File Converter`** directly on the main context menu (or expand *"Show more options"*).
 3. Select your desired target format (e.g., *"To Mp3"*, *"To Png"*, *"To Pdf"*).
-4. The **Native Progress Window** will pop up, displaying individual progress bars per file and an overall status indicator.
-5. Once conversion completes, the output files are placed directly alongside the source files (or formatted per your path template settings), and the window automatically closes.
+4. The **Native Progress Window** will pop up, displaying individual progress bars per file, cancel buttons (`✕ Cancel`), and real-time status summary.
+5. Once conversion completes, output files are placed directly alongside source files (or formatted per your path template settings), and the window automatically closes.
 
 ### 2. Batch Operations & Large Selection Handling
 * You can select **hundreds or thousands of files at once**. 
@@ -70,20 +71,24 @@ All credit for the original application design, default presets schema (`Setting
 
 ---
 
-## 💻 CLI Automation (`fcrs`)
+## 💻 CLI Automation
 
-FileConverter includes a command-line interface (`fcrs`) for automated terminal scripting:
+FileConverter includes a unified command-line interface (`file_converter_bin`) powered by `clap` supporting standard options and Windows slash-flags:
 
 ```bash
 # List all configured conversion presets
-fcrs list-presets
+file_converter_bin list-presets
 
-# Convert files via a preset
-fcrs convert -p "To Mp3" song1.flac song2.wav
-fcrs convert -p "To Png" ./photos/*.bmp
+# Convert files via a preset (CLI / Headless)
+file_converter_bin convert -p "To Mp3" song1.flac song2.wav
+file_converter_bin convert -p "To Png" --headless ./photos/*.bmp
 
-# Open GUI Dashboard
-fcrs -settings
+# Convert files with Windows Explorer syntax
+file_converter_bin /preset "To Png" file1.jpg file2.jpg
+file_converter_bin --conversion-preset "To Pdf" document.docx
+
+# Open GUI Settings Dashboard
+file_converter_bin --settings
 ```
 
 ---
@@ -96,54 +101,39 @@ The repository is structured as a modular Cargo workspace containing three disti
 FileConverter-rs/
 ├── file_converter_core/    # Core conversion library, XML parser, & scheduler
 │   ├── src/
-│   │   ├── image.rs        # Pure-Rust Image & PDF engine (replaces ImageMagick)
-│   │   ├── ffmpeg.rs       # Audio & Video FFMpeg command builder & pass runner
-│   │   ├── office.rs       # Word, Excel, PowerPoint COM automation
-│   │   ├── scheduler.rs    # Bounded channel worker pool
-│   │   ├── settings.rs     # Preset parser & XML serializer
-│   │   ├── path_helpers.rs # LazyLock regex statics & output path template engine
-│   │   └── types.rs        # Enums for OutputType, PostAction, HW Acceleration
+│   │   ├── doc_convert.rs  # Vector PDF generation (pdf-writer), eBook & Markdown
+│   │   ├── ffmpeg.rs       # Audio & Video FFMpeg command builder, GPU auto-detect & pass runner
+│   │   ├── ffmpeg_download.rs # Multi-mirror FFmpeg downloader with PE header verification
+│   │   ├── image.rs        # Pure-Rust Image & PDF engine, oxipng multi-level compression
+│   │   ├── office.rs       # Word, Excel, PowerPoint COM automation with async stderr drain
+│   │   ├── pdf_compress.rs # Parallel PDF image stream downscaling (Rayon)
+│   │   ├── scheduler.rs    # Rayon work-stealing threadpool & job coordinator
+│   │   ├── settings.rs     # Preset parser, ahash O(1) map index & XML serializer
+│   │   ├── path_helpers.rs # Output path template engine & unique filename generator
+│   │   └── types.rs        # Strongly-typed FileCategory, OutputType, PostAction enums
 ├── file_converter_shell/   # Windows Shell Extension COM DLL
 │   └── src/
-│       └── lib.rs          # IContextMenu / IShellExtInit implementation
+│       └── lib.rs          # IContextMenu, IShellExtInit, IShellPropSheetExt, & DllRegisterServer
 ├── file_converter_bin/     # Native Desktop GUI & CLI Application
-│   └── src/
-│       └── main.rs         # eframe Settings Dashboard & Progress Dialog
+│   ├── src/
+│   │   └── main.rs         # Slint Settings Dashboard & Progress Dialog
+│   └── ui/
+│       └── appwindow.slint # Slint UI Declarative Fluent interface definitions
 ├── Settings.default.xml    # 100% original C# conversion presets XML
 └── installer.nsi           # 64-bit NSIS setup installer script
 ```
 
 ---
 
-## 🚀 Conversion Engines Detail
-
-### 1. Pure-Rust Image & PDF Engine (`image.rs`)
-* **Zero External Dependencies**: Operates completely without needing ImageMagick or Ghostscript installed on the host machine.
-* **SIMD Rescaling**: Employs `fast_image_resize` using CPU SIMD vector instructions (AVX2/NEON/SSE4.1).
-* **Zero-Copy File I/O**: Memory-maps input images and PDF files via `memmap2` to minimize memory allocation overhead.
-* **Parallel PDF Rendering**: Uses `hayro` to parse PDF page structures and rasterizes multiple PDF pages concurrently across all CPU threads via `rayon`.
-* **HEIC / HEIF Picture Support**: Decodes camera picture files natively using the `heic` crate.
-
-### 2. Audio & Video Engine (`ffmpeg.rs`)
-* Converts any media stream to `MP3`, `AAC`, `FLAC`, `OGG`, `WAV`, `MP4`, `MKV`, `WEBM`, `AVI`, `OGV`, `GIF`, or `ICO`.
-* Full support for hardware-accelerated video encoding modes:
-  * **NVIDIA CUDA** (`h264_nvenc`, `hevc_nvenc`)
-  * **AMD AMF** (`h264_amf`, `hevc_amf`)
-* Automatically calculates two-pass encoding for target file sizes when configured in preset settings.
-
-### 3. Native Desktop GUI & Progress Windows (`main.rs`)
-* Built using **Slint UI** for native hardware-accelerated, instantaneous rendering.
-* **Settings Window**: Complete preset list management (Add, Delete, Duplicate), live path previews, instant **Fast UX Preferences** (Zero-click auto-start on file drop, 0s instant auto-close, clipboard auto-copy), and one-click shell extension registration.
-* **Progress Window**: Triggered automatically when converting files from Windows Explorer right-click menus. Displays real-time per-file progress bars, overall status, instant `📁 Open Output Folder` and `📋 Copy Output Paths` action buttons, and auto-closing countdown.
-
----
-
 ## ⚡ High-Performance Architecture Stack
-* **Fat Link-Time Optimization (`lto = "fat"`)**: Full cross-crate link-time optimization & binary size minimization.
-* **Lock-Free Poison Safety (`parking_lot`)**: 1-byte poison-free mutexes eliminating `.unwrap()` lock overhead.
-* **SIMD Byte Search (`memchr`)**: SIMD vector search routines for ultra-fast log line parsing.
-* **3x Faster Hashing (`ahash`)**: `AHashMap` preset resolution eliminating string lookup bottlenecks.
-* **`LazyLock<Regex>` Statics**: Global thread-safe regex statics avoiding hot-loop allocations.
+* **Work-Stealing Concurrency (`rayon`)**: Thread pool scheduling for batch file conversions and parallel PDF stream downscaling.
+* **Vector PDF Generation (`pdf-writer`)**: Direct generation of multi-page vector PDF documents from plain text, Markdown, Typst, and images.
+* **Lossless PNG Optimization (`oxipng`)**: Configurable multi-level compression, metadata stripping, and interlace controls.
+* **$O(1)$ Hash Map Lookups (`ahash`)**: `AHashMap` preset indexing eliminating string scanning bottlenecks.
+* **Poison-Free Mutexes (`parking_lot`)**: Fast, lightweight synchronization primitives.
+* **Zero-Copy File I/O (`memmap2`)**: Memory-mapped page buffers minimizing memory footprint.
+* **SIMD Rescaling (`fast_image_resize`)**: Vectorized image resampling supporting AVX2, SSE4.1, and NEON.
+* **Resilient Multi-Source Downloader (`ureq` + `zip`)**: Automatic FFmpeg extraction with PE header validation and fallback mirrors.
 
 ---
 

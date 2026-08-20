@@ -6,8 +6,8 @@ use crate::office;
 use crate::path_helpers;
 use crate::settings::ConversionPreset;
 use crate::types::{
-    HardwareAccelerationMode, InputPostConversionAction, OutputType, get_extension_category,
-    is_output_type_compatible_with_category,
+    FileCategory, HardwareAccelerationMode, InputPostConversionAction, OutputType,
+    get_extension_category, is_output_type_compatible_with_category,
 };
 use parking_lot::Mutex;
 use std::path::Path;
@@ -34,18 +34,19 @@ pub struct ConversionJob {
     pub status: Arc<Mutex<JobStatus>>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum JobEngine {
+    Image,
+    Ffmpeg,
     Word,
     Excel,
     PowerPoint,
-    Epub,
-    Markdown,
-    Typst,
     Oxipng,
     Ico,
     Gif,
-    Image,
-    Ffmpeg,
+    Epub,
+    Markdown,
+    Typst,
 }
 
 pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobEngine {
@@ -79,7 +80,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         return JobEngine::Typst;
     }
 
-    if category == "Audio" || category == "Video" {
+    if category == FileCategory::Audio || category == FileCategory::Video {
         return JobEngine::Ffmpeg;
     }
 
@@ -274,6 +275,7 @@ impl ConversionJob {
                 progress_cb,
             ),
             JobEngine::Oxipng => image::run_oxipng_compression(
+                Some(&self.preset),
                 &self.input_path,
                 &self.output_file_paths[0],
                 progress_cb,
@@ -330,7 +332,7 @@ impl ConversionJob {
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_lowercase();
-                let is_image = get_extension_category(&ext) == "Image";
+                let is_image = get_extension_category(&ext) == FileCategory::Image;
 
                 if is_image && ext != "png" {
                     // Convert to PNG first
@@ -595,32 +597,20 @@ impl ConversionScheduler {
             self.max_threads
         };
 
-        let (tx, rx) = std::sync::mpsc::channel::<(usize, ConversionJob)>();
-        let rx = Arc::new(Mutex::new(rx));
-
-        for (idx, job) in self.jobs.iter().enumerate() {
-            let _ = tx.send((idx, job.clone()));
-        }
-        drop(tx); // Close queue so workers terminate when finished
-
-        let mut handles = Vec::new();
-        for _ in 0..max_concurrency {
-            let rx = rx.clone();
-            let hw_accel = self.hw_accel;
-
-            let handle = thread::spawn(move || {
-                while let Ok((_, job)) = {
-                    let lock = rx.lock();
-                    lock.recv()
-                } {
-                    job.run(hw_accel);
-                }
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+            .num_threads(max_concurrency)
+            .build()
+        {
+            use rayon::prelude::*;
+            pool.install(|| {
+                self.jobs.par_iter().for_each(|job| {
+                    job.run(self.hw_accel);
+                });
             });
-            handles.push(handle);
-        }
-
-        for h in handles {
-            let _ = h.join();
+        } else {
+            for job in &self.jobs {
+                job.run(self.hw_accel);
+            }
         }
 
         // Copy files to clipboard on completion

@@ -1,36 +1,141 @@
 use crate::error::{FileConverterError, Result};
 use crate::types::OutputType;
 use ebook_rs::Book;
-use ebook_rs::EpubOptimizer;
-use ebook_rs::EpubOptimizerOptions;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Optimizes an EPUB eBook losslessly using `ebook-rs` EpubOptimizer
-pub fn run_epub_optimization(
-    input_path: &str,
-    output_path: &str,
-    progress_cb: &(dyn Fn(f32, &str) + Sync),
-) -> Result<()> {
-    progress_cb(0.2, "Analyzing EPUB structure");
-    let mut book = Book::from_file(input_path)
-        .map_err(|e| FileConverterError::Invalid(format!("Failed to parse EPUB: {:?}", e)))?;
+use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
 
-    progress_cb(0.5, "Optimizing styles, markup & assets (EpubOptimizer)");
-    let opts = EpubOptimizerOptions::default();
-    let _report = EpubOptimizer::optimize(&mut book, &opts);
+/// Creates a multi-page vector PDF document from plain text or extracted markup.
+pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Result<()> {
+    let mut pdf = Pdf::new();
 
-    progress_cb(0.9, "Writing optimized EPUB");
-    if input_path != output_path {
-        fs::copy(input_path, output_path)?;
+    let catalog_id = Ref::new(1);
+    let pages_id = Ref::new(2);
+    let font_id = Ref::new(3);
+    let bold_font_id = Ref::new(4);
+
+    let page_width = 595.28f32; // A4 standard width
+    let page_height = 841.89f32; // A4 standard height
+    let margin = 50.0f32;
+    let line_height = 14.0f32;
+    let max_lines_per_page = ((page_height - margin * 2.0) / line_height).floor() as usize;
+
+    let mut lines = Vec::new();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim_end();
+        if trimmed.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        let mut cur_line = String::new();
+        for word in words {
+            if cur_line.is_empty() {
+                cur_line.push_str(word);
+            } else if cur_line.len() + 1 + word.len() <= 80 {
+                cur_line.push(' ');
+                cur_line.push_str(word);
+            } else {
+                lines.push(cur_line);
+                cur_line = word.to_string();
+            }
+        }
+        if !cur_line.is_empty() {
+            lines.push(cur_line);
+        }
     }
-    progress_cb(1.0, "Complete");
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    let chunks: Vec<&[String]> = lines.chunks(max_lines_per_page.max(1)).collect();
+    let mut page_ids = Vec::new();
+    let mut current_ref_num = 5;
+
+    for (page_idx, chunk) in chunks.iter().enumerate() {
+        let page_id = Ref::new(current_ref_num);
+        current_ref_num += 1;
+        let content_id = Ref::new(current_ref_num);
+        current_ref_num += 1;
+
+        let mut content = Content::new();
+        content.begin_text();
+        content.set_font(Name(b"F1"), 10.0);
+        content.set_leading(line_height);
+
+        let start_y = page_height - margin;
+        content.next_line(margin, start_y);
+
+        if page_idx == 0 && !title.is_empty() {
+            content.set_font(Name(b"F2"), 14.0);
+            let sanitized_title: String = title
+                .chars()
+                .map(|c| {
+                    if (c as u32) < 128 && !c.is_control() {
+                        c
+                    } else {
+                        ' '
+                    }
+                })
+                .collect();
+            content.show(Str(sanitized_title.as_bytes()));
+            content.next_line(0.0, -20.0);
+            content.set_font(Name(b"F1"), 10.0);
+        }
+
+        for line in *chunk {
+            let sanitized: String = line
+                .chars()
+                .map(|c| {
+                    if (c as u32) < 128 && !c.is_control() {
+                        c
+                    } else {
+                        ' '
+                    }
+                })
+                .collect();
+            content.show(Str(sanitized.as_bytes()));
+            content.next_line(0.0, -line_height);
+        }
+        content.end_text();
+
+        pdf.stream(content_id, &content.finish());
+
+        let mut page = pdf.page(page_id);
+        page.media_box(Rect::new(0.0, 0.0, page_width, page_height));
+        page.parent(pages_id);
+        page.contents(content_id);
+
+        let mut resources = page.resources();
+        let mut fonts = resources.fonts();
+        fonts.pair(Name(b"F1"), font_id);
+        fonts.pair(Name(b"F2"), bold_font_id);
+        fonts.finish();
+        resources.finish();
+        page.finish();
+
+        page_ids.push(page_id);
+    }
+
+    let mut pages = pdf.pages(pages_id);
+    pages.kids(page_ids.iter().copied());
+    pages.count(page_ids.len() as i32);
+    pages.finish();
+
+    pdf.type1_font(font_id).base_font(Name(b"Helvetica"));
+    pdf.type1_font(bold_font_id)
+        .base_font(Name(b"Helvetica-Bold"));
+    pdf.catalog(catalog_id).pages(pages_id);
+
+    fs::write(output_path, pdf.finish()).map_err(FileConverterError::Io)?;
     Ok(())
 }
 
 /// Convert eBook files (EPUB, MOBI, AZW, AZW3, KFX, FB2, CBZ, KEPUB, LIT, etc.)
-/// to HTML, TXT, or PDF/Image using `ebook-rs`.
+/// to HTML, TXT, or PDF using `ebook-rs`.
 pub fn run_ebook_conversion(
     input_path: &str,
     output_path: &str,
@@ -82,8 +187,14 @@ pub fn run_ebook_conversion(
             }
 
             progress_cb(0.9, "Writing output file");
-            let is_txt = output_path.to_lowercase().ends_with(".txt");
-            if is_txt {
+            let is_pdf =
+                output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
+            let is_txt =
+                output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
+
+            if is_pdf {
+                create_pdf_from_text(&title, &text_body, output_path)?;
+            } else if is_txt {
                 fs::write(output_path, text_body)?;
             } else {
                 let full_html = wrap_html(&title, &html_body);
@@ -115,7 +226,7 @@ pub fn run_epub_conversion(
 fn run_epub_legacy_fallback(
     input_path: &str,
     output_path: &str,
-    _output_type: OutputType,
+    output_type: OutputType,
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
     let mut doc = epub::doc::EpubDoc::new(input_path)
@@ -148,7 +259,12 @@ fn run_epub_legacy_fallback(
         );
     }
 
-    if output_path.to_lowercase().ends_with(".txt") {
+    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
+    let is_txt = output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
+
+    if is_pdf {
+        create_pdf_from_text(&title, &text_body, output_path)?;
+    } else if is_txt {
         fs::write(output_path, text_body)?;
     } else {
         let full_html = wrap_html(&title, &html_body);
@@ -162,7 +278,7 @@ fn run_epub_legacy_fallback(
 pub fn run_markdown_conversion(
     input_path: &str,
     output_path: &str,
-    _output_type: OutputType,
+    output_type: OutputType,
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
     progress_cb(0.2, "Reading Markdown file");
@@ -179,7 +295,13 @@ pub fn run_markdown_conversion(
         .and_then(|s| s.to_str())
         .unwrap_or("Document");
 
-    if output_path.to_lowercase().ends_with(".txt") {
+    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
+    let is_txt = output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
+
+    if is_pdf {
+        let plain_text = strip_html_tags(&html_output);
+        create_pdf_from_text(file_stem, &plain_text, output_path)?;
+    } else if is_txt {
         let plain_text = strip_html_tags(&html_output);
         fs::write(output_path, plain_text)?;
     } else {
@@ -195,10 +317,12 @@ pub fn run_markdown_conversion(
 pub fn run_typst_conversion(
     input_path: &str,
     output_path: &str,
-    _output_type: OutputType,
+    output_type: OutputType,
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
     progress_cb(0.2, "Checking Typst compiler");
+
+    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
 
     if which::which("typst").is_ok() {
         progress_cb(0.5, "Compiling document with Typst");
@@ -229,7 +353,7 @@ pub fn run_typst_conversion(
         }
     }
 
-    // Fallback if typst binary is not installed: parse as formatted markup document
+    // Fallback if typst binary is not installed: parse source as text/markup
     progress_cb(0.5, "Formatting Typst source code");
     let content = fs::read_to_string(input_path)?;
     let parser = pulldown_cmark::Parser::new(&content);
@@ -241,10 +365,15 @@ pub fn run_typst_conversion(
         .and_then(|s| s.to_str())
         .unwrap_or("Typst Document");
 
-    let styled_html = wrap_html(file_stem, &html_output);
-    fs::write(output_path, styled_html)?;
+    if is_pdf {
+        let plain = strip_html_tags(&html_output);
+        create_pdf_from_text(file_stem, &plain, output_path)?;
+    } else {
+        let styled_html = wrap_html(file_stem, &html_output);
+        fs::write(output_path, styled_html)?;
+    }
 
-    progress_cb(1.0, "Complete (HTML fallback)");
+    progress_cb(1.0, "Complete (Fallback)");
     Ok(())
 }
 

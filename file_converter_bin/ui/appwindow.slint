@@ -578,8 +578,19 @@ export component ProgressWindow inherits Window {
                                     }
                                 }
 
-                                ProgressIndicator {
-                                    progress: job.progress;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: space-between;
+
+                                    ProgressIndicator {
+                                        progress: job.progress;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    if !job.is_done && !job.is_failed : Button {
+                                        text: "✕ Cancel";
+                                        clicked => { root.cancel_job(job.id); }
+                                    }
                                 }
                             }
                         }

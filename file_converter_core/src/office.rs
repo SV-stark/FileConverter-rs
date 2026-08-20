@@ -79,21 +79,64 @@ pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> 
         }
     };
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
+    execute_powershell_with_timeout(&script, 300)
+}
+
+fn execute_powershell_with_timeout(script: &str, timeout_secs: u64) -> Result<()> {
+    let mut child = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| {
             FileConverterError::Office(format!("Failed to execute powershell: {:?}", e))
         })?;
 
-    if !output.status.success() {
-        return Err(FileConverterError::Office(format!(
-            "Office conversion script failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
+    let stderr_pipe = child.stderr.take();
+    let stderr_handle = std::thread::spawn(move || {
+        let mut stderr_str = String::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr_str);
+        }
+        stderr_str
+    });
 
-    Ok(())
+    let start = std::time::Instant::now();
+    let max_dur = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stderr_str = stderr_handle.join().unwrap_or_default();
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(FileConverterError::Office(format!(
+                        "Office conversion script failed (exit code {:?}): {}",
+                        status.code(),
+                        stderr_str
+                    )));
+                }
+            }
+            Ok(None) => {
+                if start.elapsed() > max_dur {
+                    let _ = child.kill();
+                    return Err(FileConverterError::Timeout(format!(
+                        "Office conversion timed out after {}s",
+                        timeout_secs
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(FileConverterError::Office(format!(
+                    "Failed waiting for PowerShell process: {:?}",
+                    e
+                )));
+            }
+        }
+    }
 }
 
 pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)]) -> Result<()> {
@@ -170,21 +213,7 @@ pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)
         }
     };
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| {
-            FileConverterError::Office(format!("Failed to execute powershell: {:?}", e))
-        })?;
-
-    if !output.status.success() {
-        return Err(FileConverterError::Office(format!(
-            "Office conversion script failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    Ok(())
+    execute_powershell_with_timeout(&script, 300)
 }
 
 pub fn run_office_conversion(

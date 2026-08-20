@@ -110,6 +110,14 @@ impl Settings {
         }
     }
 
+    pub fn build_preset_map(&self) -> AHashMap<&str, &ConversionPreset> {
+        let mut map = AHashMap::with_capacity(self.conversion_presets.len());
+        for preset in &self.conversion_presets {
+            map.insert(preset.name.as_str(), preset);
+        }
+        map
+    }
+
     pub fn get_preset_from_name(&self, name: &str) -> Option<&ConversionPreset> {
         self.conversion_presets.iter().find(|p| p.name == name)
     }

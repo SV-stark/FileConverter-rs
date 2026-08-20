@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-08-20
+
+### 🐛 Fixed & Enhanced
+- **Direct Vector PDF Document Generation (`pdf-writer`):**
+  - Resolved issue where EPUB, Markdown, and Typst conversions produced HTML files when targeting `.pdf`.
+  - Integrated high-performance multi-page vector PDF generation via `pdf-writer` with text wrapping, typography formatting, and pagination.
+- **Hardware Acceleration Filter Chain Fix:**
+  - Resolved `HardwareAccelerationMode::Auto` to concrete hardware acceleration before building video transform arguments, fixing NVIDIA NVENC filter graph errors where CPU scaling filters collided with CUDA decoded frames.
+- **Out-of-the-Box Shell Context Menu:**
+  - Embedded `Settings.default.xml` directly into `file_converter_shell.dll` ensuring Explorer right-click context menu presets appear immediately on fresh installations prior to first GUI launch.
+- **Work-Stealing Rayon Concurrency & Parallel PDF Optimization:**
+  - Replaced custom `mpsc` thread pool in `ConversionScheduler::execute_all` with `rayon::ThreadPool` and `par_iter()` work-stealing execution.
+  - Parallelized embedded image downscaling and multi-threaded DCT/Flate recompression across PDF stream objects in `pdf_compress.rs`.
+- **Configurable OxiPNG Presets (`oxipng`):**
+  - Updated `run_oxipng_compression` to parse and apply preset settings for `OxipngOptimizationLevel` (levels 1–6), `OxipngStrip` (`all`, `safe`, `none`), and `OxipngInterlace` (`Adam7`, `None`).
+- **$O(1)$ AHashMap Preset Resolution (`ahash`):**
+  - Added `Settings::build_preset_map` returning `AHashMap<&str, &ConversionPreset>` for fast lookups by name.
+- **JPEG XL Output Encoding (`OutputType::Jxl`):**
+  - Added `OutputType::Jxl` encoding pass in `ffmpeg.rs` using `libjxl` with video transformation parameters.
+- **Trimmed `derive_more` Compilation Footprint:**
+  - Reduced `derive_more` features to `["is_variant"]` in `file_converter_core/Cargo.toml`, cutting downstream compilation time.
+- **Slint UI Interactive Cancel Controls & DND:**
+  - Added visible "✕ Cancel" buttons per active conversion row in `ProgressWindow` wired directly to `cancel_job(id)`.
+  - Wired dropzone click and file drop triggers in `SettingsWindow`.
+  - Dynamically updated `overall_status_text` with real-time conversion progress and failure counts.
+- **Unified Command-Line Parser (`clap`):**
+  - Eliminated duplicate manual string parser loop in `main.rs`.
+  - Added argument normalization for Windows-style slash flags (`/preset`, `/settings`, `/input-files`) into canonical `clap` CLI options.
+- **FFmpeg Error Diagnostics & Asynchronous Stderr Draining:**
+  - Retained rolling stderr log buffer in `run_ffmpeg_pass` to output actionable FFmpeg error messages upon non-zero exit codes.
+  - Added background asynchronous reader threads for PowerShell COM pipes in `office.rs`, preventing process deadlocks on >64KB stderr buffers.
+- **Multi-Source FFmpeg Downloader with Executable Verification:**
+  - Added multiple mirror download sources with request timeouts.
+  - Added validation of extracted binary size and `MZ` PE executable header integrity.
+- **Streamlined COM Shell Registration & Registry Footprint Reduction:**
+  - Refactored `DllRegisterServer` to target only the canonical `*` (all files) and `Directory` (folders) shell associations instead of redundant multi-root writes across `Drive`, `Background`, and `Folder`.
+  - Removed duplicate static `shell\FileConverter\command` verb subkey, letting Windows 11 `ExplorerCommandHandler` and `IContextMenu` handle invocations cleanly via COM.
+  - Replaced `KEY_ALL_ACCESS` with least-privilege `KEY_WRITE` flags and prioritized system-wide `HKLM\Software\Classes` when elevated with clean fallback to `HKCU\Software\Classes`.
+- **GDI 32bpp BGRA Little-Endian Icon Color Fix:**
+  - Introduced explicit `rgb(r, g, b)` bitwise helper for `CreateBitmap` Little-Endian memory layout ensuring correct amber, blue, emerald green, and red hues.
+- **Dead Code Pruning & Category Multi-Match Testing:**
+  - Removed dead/broken `run_epub_optimization` stub.
+  - Implemented `as_str()` on `FileCategory` and verified multi-category compatibility for `OutputType::Gif` across `AnimatedImage`, `Image`, and `Video`.
+
+---
+
 ## [0.9.0] - 2026-08-19
 
 ### 🚀 Added & Enhanced

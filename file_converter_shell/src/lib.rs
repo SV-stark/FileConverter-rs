@@ -80,33 +80,42 @@ pub unsafe extern "system" fn DllMain(
     1
 }
 
+const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
+
+const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
 unsafe fn create_category_icon(output_type: OutputType) -> HBITMAP {
+    // 32bpp GDI Bitmap memory layout: Byte 0 = B, Byte 1 = G, Byte 2 = R, Byte 3 = 0
     let color: u32 = match output_type {
         OutputType::Aac
         | OutputType::Flac
         | OutputType::Mp3
         | OutputType::Ogg
-        | OutputType::Wav => 0x00D09000,
+        | OutputType::Wav => rgb(255, 140, 0), // Vibrant Amber / Orange (Audio)
         OutputType::Avi
         | OutputType::Mkv
         | OutputType::Mp4
         | OutputType::Ogv
-        | OutputType::Webm => 0x003030E0,
+        | OutputType::Webm => rgb(32, 96, 224), // Vivid Blue (Video)
         OutputType::Avif
         | OutputType::Ico
         | OutputType::Jpg
+        | OutputType::Jxl
         | OutputType::Png
         | OutputType::Webp
-        | OutputType::Gif => 0x0040A040,
-        OutputType::Pdf => 0x001080E0,
-        _ => 0x00808080,
+        | OutputType::Gif => rgb(48, 176, 32), // Emerald Green (Image)
+        OutputType::Pdf => rgb(216, 32, 32), // Crimson Red (PDF / Document)
+        _ => rgb(112, 112, 112),             // Slate Gray
     };
 
     let mut pixels = [color; 16 * 16];
+    let border_color = rgb(48, 48, 48);
     for y in 0..16 {
         for x in 0..16 {
             if x == 0 || x == 15 || y == 0 || y == 15 {
-                pixels[y * 16 + x] = 0x00303030;
+                pixels[y * 16 + x] = border_color;
             }
         }
     }
@@ -545,7 +554,7 @@ unsafe extern "system" fn file_converter_prop_page_proc(
 }
 
 fn create_default_settings() -> Settings {
-    Settings {
+    Settings::load_from_str(DEFAULT_SETTINGS_XML).unwrap_or_else(|_| Settings {
         serialization_version: 4,
         maximum_number_of_simultaneous_conversions: 2,
         exit_application_when_conversions_finished: true,
@@ -556,7 +565,7 @@ fn create_default_settings() -> Settings {
         hardware_acceleration_mode: file_converter_core::types::HardwareAccelerationMode::Off,
         auto_start_on_file_drop: false,
         conversion_presets: vec![],
-    }
+    })
 }
 
 fn get_bin_path() -> PathBuf {
@@ -668,7 +677,7 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE};
 
     let hmodule = G_DLL_INSTANCE.load(Ordering::Relaxed);
     let mut module_path = PathBuf::new();
@@ -716,8 +725,8 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
+    let hklm_classes =
+        RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_WRITE);
     let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
         .create_subkey("Software\\Classes")
         .map(|(k, _)| k);
@@ -729,110 +738,51 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     if let Ok(ref root) = hklm_classes {
         let _ = root.delete_subkey_all(&clsid_key_path);
     }
-    if let Ok(ref root) = hkcu_classes {
-        let _ = root.delete_subkey_all(&clsid_key_path);
-    }
+    // Target HKLM\Software\Classes if writable (system-wide), otherwise fallback to HKCU\Software\Classes (per-user)
+    let root_classes = if let Ok(ref root) = hklm_classes {
+        root
+    } else if let Ok(ref root) = hkcu_classes {
+        root
+    } else {
+        &hkcr
+    };
 
-    if let Ok(ref root) = hkcu_classes {
-        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
-            let _ = key.set_value("", &"FileConverter Shell Extension");
-        }
-        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
-            let _ = key.set_value("", &mod_path_str);
-            let _ = key.set_value("ThreadingModel", &"Apartment");
-        }
-    }
-
-    if let Ok((key, _)) = hkcr.create_subkey(&clsid_key_path) {
+    if let Ok((key, _)) = root_classes.create_subkey(&clsid_key_path) {
         let _ = key.set_value("", &"FileConverter Shell Extension");
     }
-    if let Ok((key, _)) = hkcr.create_subkey(&clsid_inproc_path) {
+    if let Ok((key, _)) = root_classes.create_subkey(&clsid_inproc_path) {
         let _ = key.set_value("", &mod_path_str);
         let _ = key.set_value("ThreadingModel", &"Apartment");
     }
-    if let Ok(ref root) = hklm_classes {
-        if let Ok((key, _)) = root.create_subkey(&clsid_key_path) {
-            let _ = key.set_value("", &"FileConverter Shell Extension");
-        }
-        if let Ok((key, _)) = root.create_subkey(&clsid_inproc_path) {
-            let _ = key.set_value("", &mod_path_str);
-            let _ = key.set_value("ThreadingModel", &"Apartment");
-        }
-    }
 
-    let associations = [
-        "*",
-        "AllFilesystemObjects",
-        "Directory",
-        "Directory\\Background",
-        "Drive",
-        "Folder",
-    ];
+    // Register handlers cleanly on files and folders
+    let associations = ["*", "Directory"];
+
+    let bin_exe = if let Some(parent) = module_path.parent() {
+        parent.join("file_converter_bin.exe")
+    } else {
+        PathBuf::from("file_converter_bin.exe")
+    };
+    let bin_exe_str = bin_exe.to_string_lossy().to_string();
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root.delete_subkey_all(&path);
-            if let Ok((key, _)) = root.create_subkey(&path) {
-                let _ = key.set_value("", &clsid_str);
-            }
-        }
-
-        if let Ok((key, _)) = hkcr.create_subkey(&path) {
+        if let Ok((key, _)) = root_classes.create_subkey(&path) {
             let _ = key.set_value("", &clsid_str);
-        }
-        if let Ok(ref root) = hklm_classes {
-            if let Ok((key, _)) = root.create_subkey(&path) {
-                let _ = key.set_value("", &clsid_str);
-            }
         }
 
         let prop_path = format!("{}\\shellex\\PropertySheetHandlers\\FileConverter", assoc);
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root.delete_subkey_all(&prop_path);
-            if let Ok((key, _)) = root.create_subkey(&prop_path) {
-                let _ = key.set_value("", &clsid_str);
-            }
-        }
-        if let Ok((key, _)) = hkcr.create_subkey(&prop_path) {
+        if let Ok((key, _)) = root_classes.create_subkey(&prop_path) {
             let _ = key.set_value("", &clsid_str);
         }
-        if let Ok(ref root) = hklm_classes {
-            if let Ok((key, _)) = root.create_subkey(&prop_path) {
-                let _ = key.set_value("", &clsid_str);
-            }
-        }
 
-        let bin_exe = if let Some(parent) = module_path.parent() {
-            parent.join("file_converter_bin.exe")
-        } else {
-            PathBuf::from("file_converter_bin.exe")
-        };
-        let bin_exe_str = bin_exe.to_string_lossy().to_string();
+        // Modern Windows 11 Explorer Command Handler
         let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
-        let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
-        let cmd_str = format!("\"{}\" -settings", bin_exe_str);
-
-        if let Ok(ref root) = hkcu_classes {
-            if let Ok((key, _)) = root.create_subkey(&shell_verb_path) {
-                let _ = key.set_value("", &"File Converter");
-                let _ = key.set_value("MUIVerb", &"File Converter");
-                let _ = key.set_value("Icon", &bin_exe_str);
-                let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
-            }
-            if let Ok((key, _)) = root.create_subkey(&shell_verb_cmd_path) {
-                let _ = key.set_value("", &cmd_str);
-            }
-        }
-        if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_path) {
+        if let Ok((key, _)) = root_classes.create_subkey(&shell_verb_path) {
             let _ = key.set_value("", &"File Converter");
             let _ = key.set_value("MUIVerb", &"File Converter");
             let _ = key.set_value("Icon", &bin_exe_str);
             let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
-        }
-        if let Ok((key, _)) = hkcr.create_subkey(&shell_verb_cmd_path) {
-            let _ = key.set_value("", &cmd_str);
         }
     }
 

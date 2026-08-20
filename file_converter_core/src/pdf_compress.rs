@@ -38,13 +38,14 @@ pub fn compress_pdf<P: AsRef<Path>>(
     // Target max dimensions for a standard 8.5x11 inch page at target DPI
     let max_dimension = ((11.0 * options.target_dpi as f32) as u32).max(600);
 
-    let mut resizer = Resizer::new();
-    let resize_options = ResizeOptions::default();
+    use rayon::prelude::*;
 
-    // Iterate through objects and process image XObject streams
+    // Collect candidate image streams for parallel processing
+    let mut image_tasks = Vec::new();
     let object_ids: Vec<_> = doc.objects.keys().copied().collect();
-    for id in object_ids {
-        if let Ok(Object::Stream(stream)) = doc.get_object_mut(id) {
+
+    for id in &object_ids {
+        if let Ok(Object::Stream(stream)) = doc.get_object(*id) {
             let is_image = stream
                 .dict
                 .get(b"Subtype")
@@ -52,46 +53,53 @@ pub fn compress_pdf<P: AsRef<Path>>(
                 .map(|name| name == b"Image")
                 .unwrap_or(false);
 
-            if !is_image {
-                // Compress content stream if uncompressed
-                if !stream.dict.has(b"Filter") {
-                    let _ = stream.compress();
+            if is_image {
+                let width = stream
+                    .dict
+                    .get(b"Width")
+                    .and_then(|obj| obj.as_i64())
+                    .unwrap_or(0) as u32;
+
+                let height = stream
+                    .dict
+                    .get(b"Height")
+                    .and_then(|obj| obj.as_i64())
+                    .unwrap_or(0) as u32;
+
+                if (width > max_dimension || height > max_dimension)
+                    && let Ok(decompressed) = stream.decompressed_content()
+                {
+                    image_tasks.push((*id, decompressed, width, height));
                 }
-                continue;
             }
+        }
+    }
 
-            let width = stream
-                .dict
-                .get(b"Width")
-                .and_then(|obj| obj.as_i64())
-                .unwrap_or(0) as u32;
+    struct CompressedImageTask {
+        id: lopdf::ObjectId,
+        content: Vec<u8>,
+        width: u32,
+        height: u32,
+    }
 
-            let height = stream
-                .dict
-                .get(b"Height")
-                .and_then(|obj| obj.as_i64())
-                .unwrap_or(0) as u32;
-
-            if width <= max_dimension && height <= max_dimension {
-                continue;
-            }
-
-            // Attempt to decode and resize embedded image stream
-            if let Ok(decompressed) = stream.decompressed_content()
-                && let Ok(img) = image::load_from_memory(&decompressed)
-            {
+    // Process and recompress images in parallel using Rayon
+    let jpeg_quality = options.jpeg_quality;
+    let processed_images: Vec<CompressedImageTask> = image_tasks
+        .into_par_iter()
+        .filter_map(|(id, decompressed, _w, _h)| {
+            if let Ok(img) = image::load_from_memory(&decompressed) {
                 let rgb_img = img.to_rgb8();
                 let orig_w = rgb_img.width();
                 let orig_h = rgb_img.height();
 
                 if orig_w == 0 || orig_h == 0 {
-                    continue;
+                    return None;
                 }
 
                 let scale = (max_dimension as f32 / orig_w as f32)
                     .min(max_dimension as f32 / orig_h as f32);
                 if scale >= 1.0 {
-                    continue;
+                    return None;
                 }
 
                 let new_w = ((orig_w as f32 * scale) as u32).max(1);
@@ -100,25 +108,22 @@ pub fn compress_pdf<P: AsRef<Path>>(
                 let src_image =
                     match Image::from_vec_u8(orig_w, orig_h, rgb_img.into_raw(), PixelType::U8x3) {
                         Ok(img) => img,
-                        Err(_) => continue,
+                        Err(_) => return None,
                     };
 
                 let mut dst_image = Image::new(new_w, new_h, src_image.pixel_type());
-
-                if resizer
-                    .resize(&src_image, &mut dst_image, Some(&resize_options))
+                let mut local_resizer = Resizer::new();
+                if local_resizer
+                    .resize(&src_image, &mut dst_image, Some(&ResizeOptions::default()))
                     .is_err()
                 {
-                    continue;
+                    return None;
                 }
 
-                // Re-encode resized image as JPEG
                 let mut jpeg_buf = Vec::new();
                 let mut cursor = Cursor::new(&mut jpeg_buf);
-                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut cursor,
-                    options.jpeg_quality,
-                );
+                let encoder =
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, jpeg_quality);
 
                 if encoder
                     .write_image(
@@ -129,20 +134,49 @@ pub fn compress_pdf<P: AsRef<Path>>(
                     )
                     .is_err()
                 {
-                    continue;
+                    return None;
                 }
 
-                // Update PDF image stream properties
-                stream.content = jpeg_buf;
-                stream.dict.set("Width", new_w as i64);
-                stream.dict.set("Height", new_h as i64);
-                stream
-                    .dict
-                    .set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
-                stream.dict.set("BitsPerComponent", 8);
-                stream
-                    .dict
-                    .set("Filter", Object::Name(b"DCTDecode".to_vec()));
+                Some(CompressedImageTask {
+                    id,
+                    content: jpeg_buf,
+                    width: new_w,
+                    height: new_h,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Apply compressed images back to doc
+    for item in processed_images {
+        if let Ok(Object::Stream(stream)) = doc.get_object_mut(item.id) {
+            stream.content = item.content;
+            stream.dict.set("Width", item.width as i64);
+            stream.dict.set("Height", item.height as i64);
+            stream
+                .dict
+                .set("Filter", Object::Name(b"DCTDecode".to_vec()));
+            stream
+                .dict
+                .set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+            stream.dict.set("BitsPerComponent", 8i64);
+        }
+    }
+
+    // Compress non-image content streams if uncompressed
+    for id in object_ids {
+        if let Ok(Object::Stream(stream)) = doc.get_object_mut(id) {
+            let is_image = stream
+                .dict
+                .get(b"Subtype")
+                .and_then(|obj| obj.as_name())
+                .map(|name| name == b"Image")
+                .unwrap_or(false);
+
+            if !is_image && !stream.dict.has(b"Filter") {
+                let _ = stream.compress();
             }
         }
     }

@@ -245,7 +245,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.8.1",
+    version = "0.9.1",
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
@@ -296,6 +296,22 @@ enum Commands {
     Gui,
 }
 
+fn create_conversion_jobs(
+    preset: &file_converter_core::settings::ConversionPreset,
+    input_files: &[String],
+) -> Vec<ConversionJob> {
+    let total_input_files = input_files.len();
+    let mut jobs = Vec::new();
+    for (idx, file) in input_files.iter().enumerate() {
+        let mut job = ConversionJob::new(idx + 1, preset.clone(), file.clone());
+        if let Err(e) = job.prepare(idx, total_input_files) {
+            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
+        }
+        jobs.push(job);
+    }
+    jobs
+}
+
 fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
     let settings = match initialize_user_settings_if_needed() {
         Ok(s) => s,
@@ -317,15 +333,7 @@ fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
         }
     };
 
-    let total_input_files = input_files.len();
-    let mut jobs = Vec::new();
-    for (idx, file) in input_files.into_iter().enumerate() {
-        let mut job = ConversionJob::new(idx + 1, preset.clone(), file);
-        if let Err(e) = job.prepare(idx, total_input_files) {
-            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
-        }
-        jobs.push(job);
-    }
+    let jobs = create_conversion_jobs(&preset, &input_files);
 
     let scheduler = ConversionScheduler::new(
         jobs,
@@ -359,14 +367,41 @@ fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
     }
 }
 
+fn normalize_args(args: &[String]) -> Vec<String> {
+    args.iter()
+        .map(|a| {
+            if a == "/preset" || a == "-preset" || a == "-conversion-preset" {
+                "--preset".to_string()
+            } else if a == "/input-files" || a == "-input-files" {
+                "--input-files".to_string()
+            } else if a == "/settings" || a == "-settings" {
+                "--settings".to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
 fn main() {
     let raw_args: Vec<String> = env::args().collect();
+    let normalized = normalize_args(&raw_args);
 
-    // Check if invoked via standard clap CLI
-    if let Ok(cli) = Cli::try_parse() {
-        #[allow(clippy::collapsible_match)]
-        match cli.command {
-            Some(Commands::ListPresets) => {
+    let cli = match Cli::try_parse_from(&normalized) {
+        Ok(c) => c,
+        Err(_) => {
+            if raw_args.len() <= 1 {
+                run_settings_native_gui();
+            } else {
+                eprintln!("Invalid command line arguments.");
+            }
+            return;
+        }
+    };
+
+    if let Some(cmd) = cli.command {
+        match cmd {
+            Commands::ListPresets => {
                 if let Ok(settings) = initialize_user_settings_if_needed() {
                     println!(
                         "Available Conversion Presets (Total: {}):",
@@ -387,47 +422,65 @@ fn main() {
                 }
                 return;
             }
-            Some(Commands::Register) => {
+            Commands::Register => {
                 println!("{}", register_shell_extension_dll());
                 return;
             }
-            Some(Commands::Unregister) => {
+            Commands::Unregister => {
                 println!("{}", unregister_shell_extension_dll());
                 return;
             }
-            Some(Commands::Gui) => {
+            Commands::Gui => {
                 run_settings_native_gui();
                 return;
             }
-            Some(Commands::Convert {
+            Commands::Convert {
                 preset,
                 headless,
                 files,
-            }) => {
+            } => {
                 if headless {
                     run_headless_conversion(&preset, files);
-                    return;
+                } else {
+                    run_conversion_gui(&preset, files, None);
                 }
+                return;
             }
-            None => {}
-        }
-
-        if cli.settings {
-            run_settings_native_gui();
-            return;
         }
     }
 
-    let is_settings_arg = raw_args.iter().skip(1).any(|a| {
-        a.eq_ignore_ascii_case("-settings")
-            || a.eq_ignore_ascii_case("--settings")
-            || a.eq_ignore_ascii_case("/settings")
-    });
-
-    if is_settings_arg || raw_args.len() < 2 {
+    if cli.settings || (cli.preset.is_none() && cli.files.is_empty() && cli.input_files.is_none()) {
         run_settings_native_gui();
+        return;
+    }
+
+    if let Some(preset_name) = cli.preset {
+        let mut input_files = Vec::new();
+        let mut temp_to_clean = None;
+
+        if let Some(ref list_path) = cli.input_files {
+            if list_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(list_path) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            input_files.push(trimmed.to_string());
+                        }
+                    }
+                }
+                temp_to_clean = Some(list_path.clone());
+            }
+        }
+        input_files.extend(cli.files);
+
+        if input_files.is_empty() {
+            println!("Usage: file_converter_bin.exe --preset <PresetName> <file1> <file2> ...");
+            return;
+        }
+
+        run_conversion_gui(&preset_name, input_files, temp_to_clean);
     } else {
-        run_conversion_gui(raw_args);
+        run_settings_native_gui();
     }
 }
 
@@ -626,10 +679,24 @@ fn run_settings_native_gui() {
         }
     });
 
+    // Callback: Drop Files
+    let window_weak = window.as_weak();
+    window.on_drop_files(move || {
+        if let Some(w) = window_weak.upgrade() {
+            w.set_status_msg(
+                "Drop files directly into the window or select a preset to convert.".into(),
+            );
+        }
+    });
+
     let _ = window.run();
 }
 
-fn run_conversion_gui(args: Vec<String>) {
+fn run_conversion_gui(
+    preset_name: &str,
+    input_files: Vec<String>,
+    temp_list_to_clean: Option<PathBuf>,
+) {
     let settings = match initialize_user_settings_if_needed() {
         Ok(s) => s,
         Err(e) => {
@@ -638,55 +705,15 @@ fn run_conversion_gui(args: Vec<String>) {
         }
     };
 
-    let mut preset_name = String::new();
-    let mut input_files = Vec::new();
-    let mut temp_list_to_clean: Option<PathBuf> = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-        if (arg == "-preset"
-            || arg == "/preset"
-            || arg == "--preset"
-            || arg == "--conversion-preset"
-            || arg == "-conversion-preset")
-            && i + 1 < args.len()
-        {
-            preset_name = args[i + 1].clone();
-            i += 2;
-        } else if (arg == "--input-files" || arg == "-input-files" || arg == "/input-files")
-            && i + 1 < args.len()
-        {
-            let list_path = PathBuf::from(&args[i + 1]);
-            if list_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&list_path) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            input_files.push(trimmed.to_string());
-                        }
-                    }
-                }
-                temp_list_to_clean = Some(list_path);
-            }
-            i += 2;
-        } else if arg == "-settings" || arg == "--settings" || arg == "/settings" {
-            i += 1;
-        } else {
-            input_files.push(args[i].clone());
-            i += 1;
-        }
-    }
-
     if preset_name.is_empty() || input_files.is_empty() {
-        println!("Usage: file_converter_bin.exe -preset <PresetName> <file1> <file2> ...");
+        println!("Usage: file_converter_bin.exe --preset <PresetName> <file1> <file2> ...");
         return;
     }
 
     let preset = match settings
         .conversion_presets
         .iter()
-        .find(|p| p.name.eq_ignore_ascii_case(&preset_name))
+        .find(|p| p.name.eq_ignore_ascii_case(preset_name))
     {
         Some(p) => p.clone(),
         None => {
@@ -695,15 +722,7 @@ fn run_conversion_gui(args: Vec<String>) {
         }
     };
 
-    let total_input_files = input_files.len();
-    let mut jobs = Vec::new();
-    for (idx, file) in input_files.into_iter().enumerate() {
-        let mut job = ConversionJob::new(idx + 1, preset.clone(), file);
-        if let Err(e) = job.prepare(idx, total_input_files) {
-            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
-        }
-        jobs.push(job);
-    }
+    let jobs = create_conversion_jobs(&preset, &input_files);
 
     let max_threads = settings.maximum_number_of_simultaneous_conversions;
     let hw_accel = settings.hardware_acceleration_mode;
@@ -729,8 +748,9 @@ fn run_conversion_gui(args: Vec<String>) {
         }
     };
 
-    window.set_preset_name(preset_name.as_str().into());
+    window.set_preset_name(preset_name.into());
     window.set_overall_progress(0.0);
+    window.set_overall_status_text("Starting conversion...".into());
 
     let scheduler_rc = scheduler.clone();
     let auto_close = settings.exit_application_when_conversions_finished;
@@ -739,7 +759,7 @@ fn run_conversion_gui(args: Vec<String>) {
     let finished_flag = Rc::new(std::cell::Cell::new(false));
     let close_time_flag = Rc::new(std::cell::RefCell::new(None::<Instant>));
 
-    let preset_name_clone = preset_name.clone();
+    let preset_name_clone = preset_name.to_string();
 
     // Slint Timer for Live UI Progress Updates (100ms interval)
     let timer = slint::Timer::default();
@@ -755,7 +775,7 @@ fn run_conversion_gui(args: Vec<String>) {
             if let Some(w) = window_weak.upgrade() {
                 let mut total_prog = 0.0f32;
                 let mut completed_count = 0;
-                let mut _failed_count = 0;
+                let mut failed_count = 0;
                 let total_count = scheduler_timer.jobs.len();
 
                 let mut job_models = Vec::new();
@@ -781,7 +801,7 @@ fn run_conversion_gui(args: Vec<String>) {
                         }
                         JobStatus::Failed(err) => {
                             completed_count += 1;
-                            _failed_count += 1;
+                            failed_count += 1;
                             (format!("Error: {}", err), false, true)
                         }
                         JobStatus::Canceled => {
@@ -808,6 +828,21 @@ fn run_conversion_gui(args: Vec<String>) {
                     1.0
                 };
 
+                let status_summary = if completed_count >= total_count {
+                    if failed_count > 0 {
+                        format!("Completed with {} failure(s)", failed_count)
+                    } else {
+                        "All conversions completed successfully!".to_string()
+                    }
+                } else {
+                    format!(
+                        "Converting {} of {} file(s)...",
+                        (completed_count + 1).min(total_count),
+                        total_count
+                    )
+                };
+
+                w.set_overall_status_text(status_summary.into());
                 w.set_overall_progress(overall);
                 w.set_jobs(Rc::new(slint::VecModel::from(job_models)).into());
 
@@ -850,6 +885,15 @@ fn run_conversion_gui(args: Vec<String>) {
     );
 
     // Callbacks
+    let scheduler_cancel = scheduler_rc.clone();
+    window.on_cancel_job(move |job_id| {
+        for job in &scheduler_cancel.jobs {
+            if job.id == job_id as usize {
+                job.cancel();
+            }
+        }
+    });
+
     let scheduler_folder = scheduler_rc.clone();
     window.on_open_output_folder(move || {
         if let Some(first_job) = scheduler_folder.jobs.first() {

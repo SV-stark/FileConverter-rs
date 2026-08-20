@@ -1,6 +1,6 @@
 use file_converter_core::settings::Settings;
 use file_converter_core::types::{
-    OutputType, get_extension_category, is_output_type_compatible_with_category,
+    FileCategory, OutputType, get_extension_category, is_output_type_compatible_with_category,
 };
 
 const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
@@ -8,7 +8,15 @@ const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
 #[test]
 fn test_default_settings_xml_parsing_integration() {
     let temp_dir = std::env::temp_dir();
-    let xml_path = temp_dir.join("test_settings_default_integration.xml");
+    let unique_name = format!(
+        "test_settings_default_integration_{}_{}.xml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let xml_path = temp_dir.join(unique_name);
     std::fs::write(&xml_path, DEFAULT_SETTINGS_XML).expect("Failed to write default XML");
 
     let settings = Settings::load_from_file(&xml_path).expect("Failed to load settings XML");
@@ -23,31 +31,49 @@ fn test_default_settings_xml_parsing_integration() {
 
 #[test]
 fn test_preset_compatibility_logic_integration() {
-    assert_eq!(get_extension_category("mp3"), "Audio");
-    assert_eq!(get_extension_category("mp4"), "Video");
-    assert_eq!(get_extension_category("png"), "Image");
-    assert_eq!(get_extension_category("gif"), "Animated Image");
-    assert_eq!(get_extension_category("docx"), "Document");
+    assert_eq!(get_extension_category("mp3"), FileCategory::Audio);
+    assert_eq!(get_extension_category("mp4"), FileCategory::Video);
+    assert_eq!(get_extension_category("png"), FileCategory::Image);
+    assert_eq!(get_extension_category("gif"), FileCategory::AnimatedImage);
+    assert_eq!(get_extension_category("docx"), FileCategory::Document);
 
     assert!(is_output_type_compatible_with_category(
         OutputType::Mp3,
-        "Audio"
+        FileCategory::Audio
     ));
     assert!(is_output_type_compatible_with_category(
         OutputType::Mp3,
-        "Video"
+        FileCategory::Video
     ));
     assert!(!is_output_type_compatible_with_category(
         OutputType::Mp3,
-        "Image"
+        FileCategory::Image
     ));
 
     assert!(is_output_type_compatible_with_category(
         OutputType::Png,
-        "Image"
+        FileCategory::Image
     ));
     assert!(is_output_type_compatible_with_category(
         OutputType::Png,
-        "Document"
+        FileCategory::Document
+    ));
+
+    // Direct coverage for OutputType::Gif across AnimatedImage, Image, and Video
+    assert!(is_output_type_compatible_with_category(
+        OutputType::Gif,
+        FileCategory::AnimatedImage
+    ));
+    assert!(is_output_type_compatible_with_category(
+        OutputType::Gif,
+        FileCategory::Image
+    ));
+    assert!(is_output_type_compatible_with_category(
+        OutputType::Gif,
+        FileCategory::Video
+    ));
+    assert!(!is_output_type_compatible_with_category(
+        OutputType::Gif,
+        FileCategory::Audio
     ));
 }

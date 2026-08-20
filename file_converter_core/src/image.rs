@@ -533,6 +533,7 @@ fn create_pdf_from_image(img: &DynamicImage, output_path: &str) -> Result<()> {
 
 /// Losslessly compresses a PNG image using `oxipng`.
 pub fn run_oxipng_compression<F>(
+    preset: Option<&crate::settings::ConversionPreset>,
     input_file: &str,
     output_file: &str,
     progress_callback: F,
@@ -541,7 +542,35 @@ where
     F: Fn(f32, &str),
 {
     progress_callback(0.1, "Reading PNG file");
-    let options = oxipng::Options::default();
+
+    let opt_level = preset
+        .and_then(|p| p.get_setting_value("OxipngOptimizationLevel"))
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(2)
+        .clamp(1, 6);
+
+    let mut options = oxipng::Options::from_preset(opt_level);
+
+    if let Some(strip_val) = preset.and_then(|p| p.get_setting_value("OxipngStrip")) {
+        match strip_val.to_lowercase().as_str() {
+            "all" => options.strip = oxipng::StripChunks::All,
+            "safe" => options.strip = oxipng::StripChunks::Safe,
+            "none" => options.strip = oxipng::StripChunks::None,
+            _ => {}
+        }
+    }
+
+    if let Some(interlace_val) = preset.and_then(|p| p.get_setting_value("OxipngInterlace")) {
+        if interlace_val.eq_ignore_ascii_case("true") || interlace_val.eq_ignore_ascii_case("adam7")
+        {
+            options.interlace = Some(oxipng::Interlacing::Adam7);
+        } else if interlace_val.eq_ignore_ascii_case("false")
+            || interlace_val.eq_ignore_ascii_case("none")
+        {
+            options.interlace = Some(oxipng::Interlacing::None);
+        }
+    }
+
     let in_file = oxipng::InFile::Path(std::path::PathBuf::from(input_file));
     let out_file = oxipng::OutFile::Path {
         path: Some(std::path::PathBuf::from(output_file)),
