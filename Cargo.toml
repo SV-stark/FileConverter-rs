@@ -6,6 +6,86 @@ members = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+# Workspace internal crate
+file_converter_core = { path = "file_converter_core" }
+
+# Serialization & Error handling
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+quick-xml = { version = "0.36", features = ["serialize"] }
+compact_str = { version = "0.9", features = ["serde"] }
+strum = { version = "0.26", features = ["derive"] }
+
+# Network, Archive & System
+ureq = "3"
+zip = "4"
+trash = "5.1"
+filetime = "0.2"
+tempfile = "3"
+clipboard-win = "5.0"
+winreg = "0.52"
+
+# Date & Time (migrated from chrono)
+jiff = "0.2"
+
+# Performance, String & Data structures
+regex = { version = "1.11", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+ahash = "0.8"
+smallvec = "1.13"
+memchr = "2.7"
+memmap2 = "0.9.11"
+parking_lot = "0.12"
+rayon = "1.12.0"
+bytemuck = "1.25.2"
+
+# Media & Document processing
+image = { version = "0.25.10", features = ["avif"] }
+heic = "0.1.6"
+hayro = "0.7.1"
+hayro-interpret = "0.7.0"
+fast_image_resize = { version = "6.0.0", features = ["image"] }
+oxipng = "9.0"
+resvg = "0.45"
+jxl-oxide = { version = "0.12.6", features = ["image"] }
+lopdf = "0.35"
+pdf-writer = "0.15.0"
+ebook-rs = "0.16.1"
+pulldown-cmark = "0.12"
+infer = "0.22"
+
+# Hashing & Crypto
+sha2 = "0.10"
+hex = "0.4"
+
+# Logging & CLI
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+
+# UI & Windows Integration
+slint = "1.9"
+slint-build = "1.9"
+winres = "0.1"
+scopeguard = "1"
+windows-core = "=0.58.0"
+windows = { version = "=0.58.0", features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Diagnostics_Debug",
+] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

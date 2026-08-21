@@ -1,43 +1,47 @@
 [package]
 name = "file_converter_core"
-version = "0.9.1"
+version = "0.9.3"
 edition = "2024"
 
 [dependencies]
-thiserror = "2.0"
-serde = { version = "1.0", features = ["derive"] }
-quick-xml = { version = "0.36", features = ["serialize"] }
-regex = "1.10"
-trash = "5.1"
-filetime = "0.2"
-chrono = "0.4"
-image = { version = "0.25.10", features = ["avif"] }
-heic = "0.1.6"
-hayro = "0.7.1"
-hayro-interpret = "0.7.0"
-bytemuck = "1.25.2"
-rayon = "1.12.0"
-memmap2 = "0.9.11"
-lopdf = "0.35"
-ureq = "2.9"
-zip = "2.1"
-which = "7.0"
-fast_image_resize = { version = "6.0.0", features = ["image"] }
-epub = "2.1"
-pulldown-cmark = "0.12"
-oxipng = "9.0"
-resvg = "0.45"
-parking_lot = "0.12"
-strum = { version = "0.26", features = ["derive"] }
-ahash = "0.8"
-smallvec = "1.13"
-memchr = "2.7"
-derive_more = { version = "2.0", features = ["is_variant"] }
-ebook-rs = "0.16.1"
-jxl-oxide = { version = "0.12.6", features = ["image"] }
-pdf-writer = "0.15.0"
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+trash.workspace = true
+filetime.workspace = true
+jiff.workspace = true
+image.workspace = true
+heic.workspace = true
+hayro.workspace = true
+hayro-interpret.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+memmap2.workspace = true
+lopdf.workspace = true
+ureq.workspace = true
+zip.workspace = true
+fast_image_resize.workspace = true
+pulldown-cmark.workspace = true
+oxipng.workspace = true
+resvg.workspace = true
+parking_lot.workspace = true
+strum.workspace = true
+ahash.workspace = true
+smallvec.workspace = true
+memchr.workspace = true
+ebook-rs.workspace = true
+jxl-oxide.workspace = true
+pdf-writer.workspace = true
+compact_str.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+sha2.workspace = true
+hex.workspace = true
+infer.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-clipboard-win = "5.0"
-winreg = "0.52"
+clipboard-win.workspace = true
+winreg.workspace = true
 

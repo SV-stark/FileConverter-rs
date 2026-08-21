@@ -201,7 +201,7 @@ fn save_history(history: &[HistoryRecord]) {
 
 fn add_history_record(preset_name: &str, input_path: &str, output_path: &str, status: &str) {
     let mut history = load_history();
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string();
     history.insert(
         0,
         HistoryRecord {
@@ -245,7 +245,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.9.1",
+    version = "0.9.3",
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
@@ -305,7 +305,7 @@ fn create_conversion_jobs(
     for (idx, file) in input_files.iter().enumerate() {
         let mut job = ConversionJob::new(idx + 1, preset.clone(), file.clone());
         if let Err(e) = job.prepare(idx, total_input_files) {
-            eprintln!("Failed to prepare job for file {}: {}", job.input_path, e);
+            tracing::error!("Failed to prepare job for file {}: {}", job.input_path, e);
         }
         jobs.push(job);
     }
@@ -316,7 +316,7 @@ fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
     let settings = match initialize_user_settings_if_needed() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error initializing settings: {}", e);
+            tracing::error!("Error initializing settings: {}", e);
             std::process::exit(1);
         }
     };
@@ -328,7 +328,7 @@ fn run_headless_conversion(preset_name: &str, input_files: Vec<String>) {
     {
         Some(p) => p.clone(),
         None => {
-            eprintln!("Preset '{}' not found in settings.", preset_name);
+            tracing::error!("Preset '{}' not found in settings.", preset_name);
             std::process::exit(1);
         }
     };
@@ -384,6 +384,8 @@ fn normalize_args(args: &[String]) -> Vec<String> {
 }
 
 fn main() {
+    tracing_subscriber::fmt::init();
+
     let raw_args: Vec<String> = env::args().collect();
     let normalized = normalize_args(&raw_args);
 
@@ -393,7 +395,7 @@ fn main() {
             if raw_args.len() <= 1 {
                 run_settings_native_gui();
             } else {
-                eprintln!("Invalid command line arguments.");
+                tracing::error!("Invalid command line arguments.");
             }
             return;
         }
@@ -536,12 +538,12 @@ fn populate_slint_history(window: &SettingsWindow) {
 }
 
 fn run_settings_native_gui() {
-    println!("Launching File Converter Slint Fluent GUI Settings Window...");
+    tracing::info!("Launching File Converter Slint Fluent GUI Settings Window...");
 
     let window = match SettingsWindow::new() {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("Failed to initialize Slint SettingsWindow: {}", e);
+            tracing::error!("Failed to initialize Slint SettingsWindow: {}", e);
             return;
         }
     };
@@ -558,10 +560,12 @@ fn run_settings_native_gui() {
         auto_start_on_file_drop: true,
         conversion_presets: vec![],
     });
-    let (_, user_xml_path) = get_settings_paths();
+    let check_upgrade = settings.check_upgrade_at_startup;
+    let (default_xml_path, user_xml_path) = get_settings_paths();
 
     let settings_state = Rc::new(std::cell::RefCell::new(settings));
     let user_xml_path_rc = Rc::new(user_xml_path);
+    let default_xml_path_rc = Rc::new(default_xml_path);
 
     // Initial Population
     {
@@ -650,6 +654,99 @@ fn run_settings_native_gui() {
         }
     });
 
+    // Callback: New Preset
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_new_preset(move || {
+        if let Some(w) = window_weak.upgrade() {
+            let mut s = settings_clone.borrow_mut();
+            let new_preset = file_converter_core::settings::ConversionPreset {
+                name: "New Preset".to_string(),
+                output_type: file_converter_core::types::OutputType::Png,
+                is_default_settings: false,
+                input_types: vec![
+                    file_converter_core::settings::CompactStr::new("jpg"),
+                    file_converter_core::settings::CompactStr::new("bmp"),
+                ],
+                input_post_conversion_action:
+                    file_converter_core::types::InputPostConversionAction::None,
+                settings: vec![],
+                output_file_name_template: "(p)(f)".to_string(),
+            };
+            s.conversion_presets.push(new_preset);
+            let new_idx = s.conversion_presets.len() - 1;
+            populate_slint_presets(&w, &s, new_idx);
+            w.set_status_msg("New preset created.".into());
+        }
+    });
+
+    // Callback: Delete Preset
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_delete_preset(move |index| {
+        if let Some(w) = window_weak.upgrade() {
+            let mut s = settings_clone.borrow_mut();
+            let idx = index as usize;
+            if s.conversion_presets.len() > 1 && idx < s.conversion_presets.len() {
+                let deleted_name = s.conversion_presets.remove(idx).name;
+                let new_idx = if idx >= s.conversion_presets.len() {
+                    s.conversion_presets.len().saturating_sub(1)
+                } else {
+                    idx
+                };
+                populate_slint_presets(&w, &s, new_idx);
+                w.set_status_msg(format!("Preset '{}' deleted.", deleted_name).into());
+            } else {
+                w.set_status_msg("Cannot delete the last remaining preset.".into());
+            }
+        }
+    });
+
+    // Callback: Import Presets
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    let default_import_path_clone = default_xml_path_rc.clone();
+    window.on_import_presets(move || {
+        if let Some(w) = window_weak.upgrade() {
+            if let Ok(imported_settings) =
+                file_converter_core::settings::Settings::load_from_file(&*default_import_path_clone)
+            {
+                let mut s = settings_clone.borrow_mut();
+                s.merge(imported_settings);
+                populate_slint_presets(&w, &s, 0);
+                w.set_status_msg("Default presets imported and merged.".into());
+            } else {
+                w.set_status_msg("Failed to read default presets for import.".into());
+            }
+        }
+    });
+
+    // Callback: Export Presets
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    let export_dir = user_xml_path_rc
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    window.on_export_presets(move || {
+        if let Some(w) = window_weak.upgrade() {
+            let s = settings_clone.borrow();
+            let export_path = export_dir.join("Presets_Export.xml");
+            if s.save_to_file(&export_path).is_ok() {
+                w.set_status_msg(format!("Exported presets to {}", export_path.display()).into());
+            } else {
+                w.set_status_msg("Failed to export presets.".into());
+            }
+        }
+    });
+
+    // Callback: Open Update URL
+    window.on_open_update_url(move |url| {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", url.as_str()])
+            .spawn();
+    });
+
     // Callback: Preset Field Edited
     let window_weak = window.as_weak();
     let settings_clone = settings_state.clone();
@@ -663,7 +760,7 @@ fn run_settings_native_gui() {
                 preset.input_types = w
                     .get_edit_input_types()
                     .split(',')
-                    .map(|str| str.trim().to_string())
+                    .map(|str| file_converter_core::settings::CompactStr::new(str.trim()))
                     .filter(|str| !str.is_empty())
                     .collect();
 
@@ -689,6 +786,32 @@ fn run_settings_native_gui() {
         }
     });
 
+    // Check for updates asynchronously in background if enabled
+    if check_upgrade {
+        let window_weak = window.as_weak();
+        std::thread::spawn(move || {
+            let current_version = env!("CARGO_PKG_VERSION");
+            if let Some(update_info) =
+                file_converter_core::update_check::check_for_updates(current_version)
+            {
+                if update_info.is_newer {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = window_weak.upgrade() {
+                            w.set_update_available_text(
+                                format!(
+                                    "🎉 New version {} is available!",
+                                    update_info.latest_version
+                                )
+                                .into(),
+                            );
+                            w.set_update_download_url(update_info.download_url.into());
+                        }
+                    });
+                }
+            }
+        });
+    }
+
     let _ = window.run();
 }
 
@@ -700,7 +823,7 @@ fn run_conversion_gui(
     let settings = match initialize_user_settings_if_needed() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error initializing settings: {}", e);
+            tracing::error!("Error initializing settings: {}", e);
             return;
         }
     };
@@ -717,7 +840,7 @@ fn run_conversion_gui(
     {
         Some(p) => p.clone(),
         None => {
-            eprintln!("Preset '{}' not found in settings.", preset_name);
+            tracing::error!("Preset '{}' not found in settings.", preset_name);
             return;
         }
     };

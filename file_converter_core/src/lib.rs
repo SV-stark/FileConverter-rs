@@ -9,6 +9,7 @@ pub mod pdf_compress;
 pub mod scheduler;
 pub mod settings;
 pub mod types;
+pub mod update_check;
 
 #[cfg(test)]
 mod tests {
@@ -89,7 +90,7 @@ mod tests {
             output_type: OutputType::Mp3,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: false,
-            input_types: vec!["wav".to_string(), "flac".to_string()],
+            input_types: vec!["wav".into(), "flac".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -160,7 +161,7 @@ mod tests {
             output_type: OutputType::Mp3,
             output_file_name_template: "(p)(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["wav".to_string()],
+            input_types: vec!["wav".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -181,7 +182,7 @@ mod tests {
             output_type: OutputType::Png,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["jpg".to_string(), "bmp".to_string()],
+            input_types: vec!["jpg".into(), "bmp".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -197,7 +198,7 @@ mod tests {
             output_type: OutputType::Png,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["jpg".to_string()],
+            input_types: vec!["jpg".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -298,7 +299,7 @@ mod tests {
             output_type: OutputType::Png,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["svg".to_string()],
+            input_types: vec!["svg".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -331,7 +332,7 @@ mod tests {
             output_type: OutputType::Pdf,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["jpg".to_string()],
+            input_types: vec!["jpg".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -358,7 +359,7 @@ mod tests {
             output_type: OutputType::Mp3,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["wav".to_string()],
+            input_types: vec!["wav".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -369,7 +370,7 @@ mod tests {
             output_type: OutputType::Mp3,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["wav".to_string()],
+            input_types: vec!["wav".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -513,7 +514,7 @@ mod tests {
             output_type: OutputType::Mp4,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: false,
-            input_types: vec!["mkv".to_string()],
+            input_types: vec!["mkv".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };
@@ -593,12 +594,7 @@ mod tests {
             output_type: OutputType::Pdf,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec![
-                "docx".to_string(),
-                "xlsx".to_string(),
-                "md".to_string(),
-                "epub".to_string(),
-            ],
+            input_types: vec!["docx".into(), "xlsx".into(), "md".into(), "epub".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };

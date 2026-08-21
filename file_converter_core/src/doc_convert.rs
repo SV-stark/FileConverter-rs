@@ -204,12 +204,10 @@ pub fn run_ebook_conversion(
             progress_cb(1.0, "Complete");
             Ok(())
         }
-        Err(e) => {
-            // Fallback for legacy EPUB format
-            progress_cb(0.2, "Falling back to legacy reader");
-            run_epub_legacy_fallback(input_path, output_path, output_type, progress_cb)
-                .map_err(|_| FileConverterError::Invalid(format!("Failed to parse eBook: {:?}", e)))
-        }
+        Err(e) => Err(FileConverterError::Invalid(format!(
+            "Failed to parse eBook: {:?}",
+            e
+        ))),
     }
 }
 
@@ -221,57 +219,6 @@ pub fn run_epub_conversion(
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
     run_ebook_conversion(input_path, output_path, output_type, progress_cb)
-}
-
-fn run_epub_legacy_fallback(
-    input_path: &str,
-    output_path: &str,
-    output_type: OutputType,
-    progress_cb: &(dyn Fn(f32, &str) + Sync),
-) -> Result<()> {
-    let mut doc = epub::doc::EpubDoc::new(input_path)
-        .map_err(|e| FileConverterError::Invalid(format!("Failed to parse EPUB: {}", e)))?;
-
-    let title = Path::new(input_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("EPUB Document")
-        .to_string();
-
-    let mut html_body = String::new();
-    let mut text_body = String::new();
-
-    let num_chapters = doc.spine.len();
-    for i in 0..num_chapters {
-        let _ = doc.set_current_chapter(i);
-        if let Some((content, _mime)) = doc.get_current_str() {
-            html_body.push_str(&content);
-            html_body.push_str("\n<hr/>\n");
-
-            let plain_text = strip_html_tags(&content);
-            text_body.push_str(&plain_text);
-            text_body.push_str("\n\n--- Chapter Break ---\n\n");
-        }
-        let prog = 0.2 + (i as f32 / num_chapters.max(1) as f32) * 0.65;
-        progress_cb(
-            prog,
-            &format!("Processing Chapter {}/{}", i + 1, num_chapters),
-        );
-    }
-
-    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
-    let is_txt = output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
-
-    if is_pdf {
-        create_pdf_from_text(&title, &text_body, output_path)?;
-    } else if is_txt {
-        fs::write(output_path, text_body)?;
-    } else {
-        let full_html = wrap_html(&title, &html_body);
-        fs::write(output_path, full_html)?;
-    }
-
-    Ok(())
 }
 
 /// Convert Markdown file to HTML, TXT, or PDF via pulldown-cmark
@@ -324,7 +271,7 @@ pub fn run_typst_conversion(
 
     let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
 
-    if which::which("typst").is_ok() {
+    if crate::path_helpers::find_in_path("typst").is_some() {
         progress_cb(0.5, "Compiling document with Typst");
         let output = Command::new("typst")
             .arg("compile")

@@ -30,16 +30,29 @@ use windows::Win32::Foundation::{
     BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HINSTANCE, HMODULE, HWND,
     LPARAM, S_FALSE, S_OK, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::{CreateBitmap, HBITMAP};
+use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP};
 use windows::Win32::System::Com::{
     DVASPECT_CONTENT, FORMATETC, IClassFactory, IClassFactory_Impl, IDataObject, STGMEDIUM,
     TYMED_HGLOBAL,
 };
-use windows::core::{GUID, HRESULT, Interface, PSTR, Result, implement};
+use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+use windows::core::{GUID, HRESULT, Interface, PCWSTR, PSTR, Result, implement};
 
 #[link(name = "ole32")]
 unsafe extern "system" {
     fn ReleaseStgMedium(pmedium: *mut STGMEDIUM);
+}
+
+/// Debug logging helper for the shell extension (visible in debuggers / DebugView).
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "windows")]
+        {
+            let msg = format!($($arg)*);
+            let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe { OutputDebugStringW(PCWSTR(wide.as_ptr())); }
+        }
+    }};
 }
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
@@ -76,6 +89,7 @@ pub unsafe extern "system" fn DllMain(
     if fdw_reason == 1 {
         // DLL_PROCESS_ATTACH
         G_DLL_INSTANCE.store(hinst_dll.0 as usize, Ordering::Relaxed);
+        dbg_log!("FileConverter shell DLL attached");
     }
     1
 }
@@ -134,9 +148,17 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
     unsafe {
         if let Ok(mut medium) = data_obj.GetData(&fmt) {
             let h_drop = medium.u.hGlobal;
+
+            // Guarantee the STGMEDIUM is released on every exit path.
+            let _release = scopeguard::guard((), |_| ReleaseStgMedium(&mut medium));
+
             if !h_drop.0.is_null() {
                 let ptr = GlobalLock(h_drop);
                 if !ptr.is_null() {
+                    let _unlock = scopeguard::guard((), |_| {
+                        let _ = GlobalUnlock(h_drop);
+                    });
+
                     let file_count = DragQueryFileW(HDROP(ptr), 0xFFFFFFFF, None);
                     for i in 0..file_count {
                         let size = DragQueryFileW(HDROP(ptr), i, None);
@@ -151,10 +173,8 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
                             }
                         }
                     }
-                    let _ = GlobalUnlock(h_drop);
                 }
             }
-            ReleaseStgMedium(&mut medium);
         }
     }
     files
@@ -325,6 +345,12 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
 
                     let icon_bmp = create_category_icon(preset.output_type);
 
+                    // The menu takes ownership of the bitmap on success; on failure
+                    // the guard deletes it to avoid a GDI handle leak.
+                    let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
+                        let _ = DeleteObject(b);
+                    });
+
                     let mii = MENUITEMINFOW {
                         cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
                         fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
@@ -336,7 +362,10 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                         ..Default::default()
                     };
 
-                    let _ = InsertMenuItemW(hmenu, indexmenu + i as u32, true, &mii);
+                    let inserted = InsertMenuItemW(hmenu, indexmenu + i as u32, true, &mii);
+                    if inserted.is_ok() {
+                        scopeguard::ScopeGuard::into_inner(bitmap_guard);
+                    }
                 }
 
                 HRESULT(presets_count as i32).ok()
@@ -349,6 +378,10 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
 
                     let icon_bmp = create_category_icon(preset.output_type);
 
+                    let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
+                        let _ = DeleteObject(b);
+                    });
+
                     let mii = MENUITEMINFOW {
                         cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
                         fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
@@ -360,7 +393,10 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                         ..Default::default()
                     };
 
-                    let _ = InsertMenuItemW(h_sub_menu, i as u32, true, &mii);
+                    let inserted = InsertMenuItemW(h_sub_menu, i as u32, true, &mii);
+                    if inserted.is_ok() {
+                        scopeguard::ScopeGuard::into_inner(bitmap_guard);
+                    }
                 }
 
                 let sep_mii = MENUITEMINFOW {
@@ -444,12 +480,14 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         }
 
         let presets_count = presets.len();
+        dbg_log!("InvokeCommand verb_offset={} presets_count={}", verb_offset, presets_count);
 
         if verb_offset < presets_count {
             let preset_name = &presets[verb_offset];
 
             let bin_path = get_bin_path();
             if !bin_path.exists() {
+                dbg_log!("Converter binary not found: {}", bin_path.display());
                 return Err(E_FAIL.into());
             }
 
@@ -487,6 +525,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             if cmd.spawn().is_ok() {
                 Ok(())
             } else {
+                dbg_log!("Failed to spawn converter process: {}", bin_path.display());
                 Err(E_FAIL.into())
             }
         } else if verb_offset == presets_count {
@@ -495,6 +534,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                 let _ = Command::new(&bin_path).arg("-settings").spawn();
                 Ok(())
             } else {
+                dbg_log!("Converter binary not found for settings: {}", bin_path.display());
                 Err(E_FAIL.into())
             }
         } else {
@@ -882,7 +922,7 @@ mod tests {
             output_type: OutputType::Mp3,
             output_file_name_template: "(p)\\(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["flac".to_string(), "wav".to_string()],
+            input_types: vec!["flac".into(), "wav".into()],
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
         };

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.3] - 2026-08-21
+
+### 🚀 Enhanced & Refactored
+- **Modernized HTTP & Extraction Pipeline (`ureq` 3 & `zip` 4):**
+  - Upgraded HTTP engine to `ureq` v3.4.0 with centralized timeout configs and streaming body readers.
+  - Upgraded archive decompression engine to `zip` v4.6.1 for robust multi-source FFmpeg bundle downloads.
+- **Ultra-Fast Temporal Processing (`jiff`):**
+  - Migrated date/time parsing and formatting from `chrono` to `jiff` (v0.2.35) for path template formatting and history logging.
+- **Optimized Regex Footprint:**
+  - Trimmed `regex` crate features to minimal required set (`["std", "perf", "unicode-case", "unicode-perl"]`), eliminating unneeded Unicode tables and reducing binary footprint.
+- **Unified Workspace Dependencies (`[workspace.dependencies]`):**
+  - Centralized dependency definitions and versions in root `Cargo.toml`, ensuring unified builds across `file_converter_core`, `file_converter_bin`, and `file_converter_shell`.
+
+---
+
+## [0.9.2] - 2026-08-20
+
+### 🚀 Added & Enhanced
+- **Zero-Allocation Inline Strings (`compact_str`):**
+  - Replaced heap-allocated `String` with `compact_str::CompactString` across `PresetSetting` key-values and `preset.input_types`.
+  - Eliminates over 750 heap allocations on application launch and Explorer shell context menu initialization.
+- **Asynchronous GitHub Release Update Checker (`update_check.rs`):**
+  - Added non-blocking background update checking on launch when `check_upgrade_at_startup` is enabled.
+  - Displays dynamic in-app notification banner with direct download link when a newer version is released.
+- **Preset Management Controls (New / Delete / Import / Export):**
+  - Added dedicated `➕ New Preset`, `🗑️ Delete Preset`, `📥 Import XML`, and `📤 Export XML` action buttons in Slint Settings UI.
+
+### 🐛 Fixed
+- **Multi-Page Office to Image Export (`office.rs`):**
+  - Resolved bug where converting multi-page Office documents (`.docx`, `.xlsx`, `.pptx`) to image formats (`.png`, `.jpg`, `.webp`, `.avif`) only rendered the first page.
+  - Dynamically queries intermediate PDF page counts via `image::get_pdf_page_count` and generates sequence output paths (`(1)`, `(2)`, etc.) across all pages.
+
+---
+
 ## [0.9.1] - 2026-08-20
 
 ### 🐛 Fixed & Enhanced

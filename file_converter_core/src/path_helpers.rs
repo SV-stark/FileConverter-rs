@@ -1,4 +1,4 @@
-use chrono::Local;
+use jiff::Zoned;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,20 @@ pub fn is_path_drive_letter_valid(path: &str) -> bool {
 
 pub fn get_path_drive_letter(path: &str) -> Option<String> {
     RE_DRIVE_LETTER.find(path).map(|m| m.as_str().to_string())
+}
+
+/// Locate an executable by scanning each directory in the `PATH` environment
+/// variable (replaces the `which` crate with a lightweight, dependency-free
+/// equivalent sufficient for our lookup needs).
+pub fn find_in_path(exe_name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(exe_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub fn is_path_valid(path: &str) -> bool {
@@ -225,12 +239,12 @@ pub fn generate_file_path_from_template(
     output_path = output_path.replace("(n:c)", &number_max.to_string());
 
     // Date formatting (d:format)
-    let now = Local::now();
+    let now = Zoned::now();
 
     output_path = RE_DATE_FMT
         .replace_all(&output_path, |caps: &regex::Captures| {
             let fmt_str = translate_csharp_date_format(&caps["format"]);
-            now.format(&fmt_str)
+            now.strftime(&fmt_str)
                 .to_string()
                 .replace('/', "-")
                 .replace(':', "'")

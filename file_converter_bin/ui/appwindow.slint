@@ -49,6 +49,10 @@ export component SettingsWindow inherits Window {
     in-out property <string> edit_template: "";
     in-out property <string> edit_post_action: "";
 
+    // Update notification properties
+    in-out property <string> update_available_text: "";
+    in-out property <string> update_download_url: "";
+
     // Global UX settings properties
     in-out property <bool> auto_start_on_file_drop: false;
     in-out property <bool> copy_files_in_clipboard_after_conversion: true;
@@ -57,13 +61,18 @@ export component SettingsWindow inherits Window {
 
     callback save_settings();
     callback register_shell();
+    callback new_preset();
     callback duplicate_preset(int);
+    callback delete_preset(int);
+    callback import_presets();
+    callback export_presets();
     callback select_preset(int);
     callback preset_field_changed();
     callback drop_files();
     callback toggle_auto_start(bool);
     callback toggle_copy_clipboard(bool);
     callback toggle_auto_close(bool);
+    callback open_update_url(string);
 
     VerticalLayout {
         padding: 16px;
@@ -127,6 +136,32 @@ export component SettingsWindow inherits Window {
             }
         }
 
+        // Update Notification Banner
+        if root.update_available_text != "" : Rectangle {
+            height: 38px;
+            background: #fef3c7;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #fde68a;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: space-between;
+                Text {
+                    text: root.update_available_text;
+                    font-size: 13px;
+                    color: #92400e;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: "🚀 Download Update";
+                    clicked => { root.open_update_url(root.update_download_url); }
+                }
+            }
+        }
+
         // Status Feedback Banner
         if root.status_msg != "" : Rectangle {
             height: 32px;
@@ -154,7 +189,7 @@ export component SettingsWindow inherits Window {
 
             // Left Pane: Presets List & Search
             Rectangle {
-                width: 280px;
+                width: 300px;
                 background: #ffffff;
                 border-radius: 8px;
                 border-width: 1px;
@@ -228,9 +263,32 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
-                    Button {
-                        text: "📋 Duplicate Preset";
-                        clicked => { root.duplicate_preset(root.selected_preset_index); }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Button {
+                            text: "➕ New";
+                            clicked => { root.new_preset(); }
+                        }
+                        Button {
+                            text: "📋 Duplicate";
+                            clicked => { root.duplicate_preset(root.selected_preset_index); }
+                        }
+                        Button {
+                            text: "🗑️ Delete";
+                            clicked => { root.delete_preset(root.selected_preset_index); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Button {
+                            text: "📥 Import XML";
+                            clicked => { root.import_presets(); }
+                        }
+                        Button {
+                            text: "📤 Export XML";
+                            clicked => { root.export_presets(); }
+                        }
                     }
                 }
             }

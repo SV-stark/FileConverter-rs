@@ -1,4 +1,3 @@
-use derive_more::IsVariant;
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString};
 
@@ -14,7 +13,6 @@ use strum::{AsRefStr, Display, EnumString};
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 pub enum OutputType {
     #[default]
@@ -79,7 +77,6 @@ impl OutputType {
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 pub enum InputPostConversionAction {
     #[default]
@@ -100,7 +97,6 @@ pub enum InputPostConversionAction {
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 pub enum HardwareAccelerationMode {
     #[default]
@@ -125,7 +121,6 @@ pub enum HardwareAccelerationMode {
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 pub enum EncodingMode {
     Wav8,
@@ -153,7 +148,6 @@ pub enum EncodingMode {
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum VideoEncodingSpeed {
@@ -179,7 +173,6 @@ pub enum VideoEncodingSpeed {
     Display,
     EnumString,
     AsRefStr,
-    IsVariant,
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum FileCategory {

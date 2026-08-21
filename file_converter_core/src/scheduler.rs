@@ -55,7 +55,22 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let category = get_extension_category(&ext);
+    let mut category = get_extension_category(&ext);
+
+    // Fall back to magic-byte sniffing when the extension is unknown/missing,
+    // so content-valid media files still route to the correct engine.
+    if category == FileCategory::Misc
+        && let Ok(Some(kind)) = infer::get_from_path(input_path)
+    {
+        let mime = kind.mime_type();
+        if mime.starts_with("image/") {
+            category = FileCategory::Image;
+        } else if mime.starts_with("audio/") {
+            category = FileCategory::Audio;
+        } else if mime.starts_with("video/") {
+            category = FileCategory::Video;
+        }
+    }
 
     if ext == "docx" || ext == "odt" || ext == "doc" {
         return JobEngine::Word;
@@ -281,13 +296,13 @@ impl ConversionJob {
                 progress_cb,
             ),
             JobEngine::Ico => {
-                let temp_dir = std::env::temp_dir();
+                let temp_dir = tempfile::tempdir()?;
                 let file_name = Path::new(&self.input_path)
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("temp");
                 let temp_png = path_helpers::generate_unique_path(
-                    temp_dir.join(format!("{}_ico_temp.png", file_name)),
+                    temp_dir.path().join(format!("{}_ico_temp.png", file_name)),
                     &[],
                 );
                 let temp_png_str = temp_png.to_string_lossy().to_string();
@@ -336,13 +351,13 @@ impl ConversionJob {
 
                 if is_image && ext != "png" {
                     // Convert to PNG first
-                    let temp_dir = std::env::temp_dir();
+                    let temp_dir = tempfile::tempdir()?;
                     let file_name = Path::new(&self.input_path)
                         .file_name()
                         .and_then(|s| s.to_str())
                         .unwrap_or("temp");
                     let temp_png = path_helpers::generate_unique_path(
-                        temp_dir.join(format!("{}_gif_temp.png", file_name)),
+                        temp_dir.path().join(format!("{}_gif_temp.png", file_name)),
                         &[],
                     );
                     let temp_png_str = temp_png.to_string_lossy().to_string();

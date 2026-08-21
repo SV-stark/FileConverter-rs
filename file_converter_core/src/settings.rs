@@ -42,6 +42,8 @@ pub struct Settings {
     pub conversion_presets: Vec<ConversionPreset>,
 }
 
+pub use compact_str::CompactString as CompactStr;
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct ConversionPreset {
@@ -55,7 +57,7 @@ pub struct ConversionPreset {
     pub is_default_settings: bool,
 
     #[serde(rename = "InputTypes", default)]
-    pub input_types: Vec<String>,
+    pub input_types: Vec<CompactStr>,
 
     pub input_post_conversion_action: InputPostConversionAction,
 
@@ -68,9 +70,9 @@ pub struct ConversionPreset {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct PresetSetting {
     #[serde(rename = "@Key")]
-    pub key: String,
+    pub key: CompactStr,
     #[serde(rename = "@Value")]
-    pub value: String,
+    pub value: CompactStr,
 }
 
 impl Settings {
@@ -137,7 +139,7 @@ impl Settings {
 }
 
 impl ConversionPreset {
-    pub fn get_settings_map(&self) -> AHashMap<String, String> {
+    pub fn get_settings_map(&self) -> AHashMap<CompactStr, CompactStr> {
         self.settings
             .iter()
             .map(|s| (s.key.clone(), s.value.clone()))
@@ -153,11 +155,11 @@ impl ConversionPreset {
 
     pub fn set_setting_value(&mut self, key: &str, value: &str) {
         if let Some(setting) = self.settings.iter_mut().find(|s| s.key == key) {
-            setting.value = value.to_string();
+            setting.value = CompactStr::new(value);
         } else {
             self.settings.push(PresetSetting {
-                key: key.to_string(),
-                value: value.to_string(),
+                key: CompactStr::new(key),
+                value: CompactStr::new(value),
             });
         }
     }

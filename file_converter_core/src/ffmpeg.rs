@@ -45,10 +45,10 @@ pub fn get_ffmpeg_path() -> PathBuf {
     }
 
     // 3. Check system PATH
-    if let Ok(path) = which::which("ffmpeg.exe") {
+    if let Some(path) = path_helpers::find_in_path("ffmpeg.exe") {
         return path;
     }
-    if let Ok(path) = which::which("ffmpeg") {
+    if let Some(path) = path_helpers::find_in_path("ffmpeg") {
         return path;
     }
 
@@ -941,6 +941,13 @@ pub fn run_ffmpeg_pass(
 
     use std::io::Read;
 
+    tracing::debug!(
+        path = %ffmpeg_path.display(),
+        args = ?pass.arguments,
+        "Invoking ffmpeg pass: {}",
+        pass.name
+    );
+
     let mut child = Command::new(&ffmpeg_path)
         .args(&pass.arguments)
         .stdout(Stdio::null())
@@ -1041,6 +1048,7 @@ pub fn run_ffmpeg_pass(
         } else {
             format!("exit code: {:?}", status.code())
         };
+        tracing::error!(path = %ffmpeg_path.display(), args = ?pass.arguments, error = %error_msg, "ffmpeg pass failed");
         return Err(FileConverterError::Ffmpeg(format!(
             "FFMpeg process failed ({}): {}",
             status

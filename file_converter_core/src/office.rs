@@ -239,26 +239,42 @@ pub fn run_office_conversion(
         progress_callback(1.0, "Done");
     } else {
         // Export to intermediate PDF
-        let temp_dir = std::env::temp_dir();
+        let temp_dir = tempfile::tempdir()?;
         let file_name = Path::new(input_path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("temp");
         let temp_pdf = crate::path_helpers::generate_unique_path(
-            temp_dir.join(format!("{}_temp.pdf", file_name)),
+            temp_dir.path().join(format!("{}_temp.pdf", file_name)),
             &[],
         );
         let temp_pdf_str = temp_pdf.to_string_lossy().to_string();
 
         convert_office_to_pdf(app_name, input_path, &temp_pdf_str)?;
 
-        // Convert intermediate PDF to images
-        let conversion_res = image::run_image_conversion(
-            preset,
-            &temp_pdf_str,
-            output_file_paths,
-            progress_callback,
-        );
+        // Determine actual page count of the generated intermediate PDF
+        let page_count = image::get_pdf_page_count(&temp_pdf_str).unwrap_or(1);
+
+        let target_paths = if output_file_paths.len() < page_count {
+            let mut paths = Vec::with_capacity(page_count);
+            for i in 0..page_count {
+                let out_path = crate::path_helpers::generate_file_path_from_template(
+                    input_path,
+                    preset.output_type.extension(),
+                    &preset.output_file_name_template,
+                    i + 1,
+                    page_count,
+                );
+                paths.push(out_path);
+            }
+            paths
+        } else {
+            output_file_paths.to_vec()
+        };
+
+        // Convert intermediate PDF to images across all pages
+        let conversion_res =
+            image::run_image_conversion(preset, &temp_pdf_str, &target_paths, progress_callback);
 
         // Clean up
         let _ = std::fs::remove_file(temp_pdf);

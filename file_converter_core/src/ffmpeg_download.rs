@@ -1,6 +1,13 @@
 use crate::error::{FileConverterError, Result};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
+
+/// SHA-256 of `ffmpeg-7.0.2-essentials_build.zip` from
+/// https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-essentials_build.zip
+/// (verified 2026-08-20 against the official GitHub release artifact).
+const FFMPEG_SHA256: &str = "D5308D30872B2739CF53169DF61FABA8639D39A19B20B91E611C177EF676F64C";
 
 pub fn get_ffmpeg_binary_path() -> PathBuf {
     crate::ffmpeg::get_ffmpeg_path()
@@ -40,13 +47,16 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     let temp_zip_path = parent.join("ffmpeg_temp.zip");
     let mut downloaded = false;
 
+    let config = ureq::config::Config::builder()
+        .timeout_global(Some(std::time::Duration::from_secs(90)))
+        .build();
+    let agent: ureq::Agent = config.into();
+
     for url in &download_sources {
-        if let Ok(response) = ureq::get(url)
-            .timeout(std::time::Duration::from_secs(90))
-            .call()
+        if let Ok(response) = agent.get(*url).call()
             && let Ok(mut out) = fs::File::create(&temp_zip_path)
         {
-            let mut reader = response.into_reader();
+            let mut reader = response.into_body().into_reader();
             if std::io::copy(&mut reader, &mut out).is_ok() {
                 downloaded = true;
                 break;
@@ -58,6 +68,26 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
         return Err(FileConverterError::Ffmpeg(
             "Failed to download FFmpeg release package from all available mirrors".to_string(),
         ));
+    }
+
+    // Verify package integrity against the pinned SHA-256 before extraction.
+    let mut file_for_hash = fs::File::open(&temp_zip_path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file_for_hash.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hex::encode(hasher.finalize());
+    if !digest.eq_ignore_ascii_case(FFMPEG_SHA256) {
+        let _ = fs::remove_file(&temp_zip_path);
+        return Err(FileConverterError::Ffmpeg(format!(
+            "Downloaded FFmpeg package failed SHA-256 integrity verification (expected {}, got {})",
+            FFMPEG_SHA256, digest
+        )));
     }
 
     let zip_file = fs::File::open(&temp_zip_path)?;
