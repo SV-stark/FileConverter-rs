@@ -240,6 +240,21 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
     }
 }
 
+fn is_windows_dark_mode() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") {
+            if let Ok(val) = key.get_value::<u32, _>("AppsUseLightTheme") {
+                return val == 0;
+            }
+        }
+    }
+    false
+}
+
 fn is_preset_compatible_with_file(
     preset: &file_converter_core::settings::ConversionPreset,
     file_path: &str,
@@ -750,10 +765,13 @@ fn populate_slint_presets(window: &SettingsWindow, settings: &Settings, selected
     let slint_presets: Vec<PresetData> = settings
         .conversion_presets
         .iter()
-        .map(|p| PresetData {
+        .enumerate()
+        .map(|(i, p)| PresetData {
+            original_index: i as i32,
             name: p.name.as_str().into(),
             category: get_category_badge(p.output_type).into(),
             output_type: format!("{:?}", p.output_type).into(),
+            output_ext: p.output_type.extension().into(),
             input_types: p.input_types.join(", ").into(),
             output_file_name_template: p.output_file_name_template.as_str().into(),
             input_post_conversion_action: format!("{:?}", p.input_post_conversion_action).into(),
@@ -779,6 +797,58 @@ fn populate_slint_presets(window: &SettingsWindow, settings: &Settings, selected
         );
         window.set_preview_path(preview.into());
     }
+}
+
+fn refresh_filtered_presets(
+    window: &SettingsWindow,
+    settings: &Settings,
+    query: &str,
+    category: &str,
+) {
+    let query_str = query.to_lowercase();
+    let cat_filter = category.to_lowercase();
+
+    let filtered: Vec<PresetData> = settings
+        .conversion_presets
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            let badge = get_category_badge(p.output_type);
+            let cat_match = if cat_filter == "all" {
+                true
+            } else if cat_filter.contains("audio") {
+                badge.contains("Audio")
+            } else if cat_filter.contains("video") {
+                badge.contains("Video")
+            } else if cat_filter.contains("image") {
+                badge.contains("Image")
+            } else if cat_filter.contains("doc") {
+                badge.contains("Document")
+            } else {
+                true
+            };
+
+            let text_match = query_str.is_empty()
+                || p.name.to_lowercase().contains(&query_str)
+                || p.input_types.iter().any(|t| t.to_lowercase().contains(&query_str))
+                || format!("{:?}", p.output_type).to_lowercase().contains(&query_str)
+                || p.output_type.extension().to_lowercase().contains(&query_str);
+
+            cat_match && text_match
+        })
+        .map(|(i, p)| PresetData {
+            original_index: i as i32,
+            name: p.name.as_str().into(),
+            category: get_category_badge(p.output_type).into(),
+            output_type: format!("{:?}", p.output_type).into(),
+            output_ext: p.output_type.extension().into(),
+            input_types: p.input_types.join(", ").into(),
+            output_file_name_template: p.output_file_name_template.as_str().into(),
+            input_post_conversion_action: format!("{:?}", p.input_post_conversion_action).into(),
+        })
+        .collect();
+
+    window.set_presets(Rc::new(slint::VecModel::from(filtered)).into());
 }
 
 fn populate_slint_history(window: &SettingsWindow) {
@@ -832,6 +902,8 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     // Initial Population
     {
         let s = settings_state.borrow();
+        window.set_dark_mode(is_windows_dark_mode());
+        window.set_active_category("All".into());
         window.set_auto_start_on_file_drop(s.auto_start_on_file_drop);
         window.set_copy_files_in_clipboard_after_conversion(
             s.copy_files_in_clipboard_after_conversion,
@@ -1085,37 +1157,89 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
         }
     });
 
+    // Callback: Toggle Theme
+    window.on_toggle_theme(move |_dark| {});
+
+    // Callback: Filter Category Changed
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_filter_category_changed(move |cat| {
+        if let Some(w) = window_weak.upgrade() {
+            let s = settings_clone.borrow();
+            refresh_filtered_presets(&w, &s, &w.get_search_query(), &cat);
+        }
+    });
+
     // Callback: Search Query Changed
     let window_weak = window.as_weak();
     let settings_clone = settings_state.clone();
     window.on_search_query_changed(move |query| {
         if let Some(w) = window_weak.upgrade() {
             let s = settings_clone.borrow();
-            let query_str = query.to_lowercase();
-            let filtered: Vec<PresetData> = s
-                .conversion_presets
-                .iter()
-                .filter(|p| {
-                    query_str.is_empty()
-                        || p.name.to_lowercase().contains(&query_str)
-                        || p.input_types
-                            .iter()
-                            .any(|t| t.to_lowercase().contains(&query_str))
-                        || format!("{:?}", p.output_type)
-                            .to_lowercase()
-                            .contains(&query_str)
-                })
-                .map(|p| PresetData {
-                    name: p.name.as_str().into(),
-                    category: get_category_badge(p.output_type).into(),
-                    output_type: format!("{:?}", p.output_type).into(),
-                    input_types: p.input_types.join(", ").into(),
-                    output_file_name_template: p.output_file_name_template.as_str().into(),
-                    input_post_conversion_action: format!("{:?}", p.input_post_conversion_action)
-                        .into(),
-                })
-                .collect();
-            w.set_presets(Rc::new(slint::VecModel::from(filtered)).into());
+            refresh_filtered_presets(&w, &s, &query, &w.get_active_category());
+        }
+    });
+
+    // Callback: Quick Set Output Type
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_set_output_type(move |out_type_str| {
+        if let Some(w) = window_weak.upgrade() {
+            w.set_edit_output_type(out_type_str.clone());
+            let mut s = settings_clone.borrow_mut();
+            let idx = w.get_selected_preset_index() as usize;
+            if let Some(preset) = s.conversion_presets.get_mut(idx) {
+                if let Ok(parsed) = out_type_str.as_str().parse::<OutputType>() {
+                    preset.output_type = parsed;
+                    let preview = file_converter_core::path_helpers::generate_file_path_from_template(
+                        "C:\\Music\\Album\\sample_track.flac",
+                        preset.output_type.extension(),
+                        &preset.output_file_name_template,
+                        1,
+                        1,
+                    );
+                    w.set_preview_path(preview.into());
+                }
+            }
+            refresh_filtered_presets(&w, &s, &w.get_search_query(), &w.get_active_category());
+        }
+    });
+
+    // Callback: Quick Set Post Action
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_set_post_action(move |act_str| {
+        if let Some(w) = window_weak.upgrade() {
+            w.set_edit_post_action(act_str.clone());
+            let mut s = settings_clone.borrow_mut();
+            let idx = w.get_selected_preset_index() as usize;
+            if let Some(preset) = s.conversion_presets.get_mut(idx) {
+                if let Ok(parsed) = act_str.as_str().parse::<file_converter_core::types::InputPostConversionAction>() {
+                    preset.input_post_conversion_action = parsed;
+                }
+            }
+        }
+    });
+
+    // Callback: Quick Set Path Template
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_set_path_template(move |tmpl_str| {
+        if let Some(w) = window_weak.upgrade() {
+            w.set_edit_template(tmpl_str.clone());
+            let mut s = settings_clone.borrow_mut();
+            let idx = w.get_selected_preset_index() as usize;
+            if let Some(preset) = s.conversion_presets.get_mut(idx) {
+                preset.output_file_name_template = tmpl_str.to_string();
+                let preview = file_converter_core::path_helpers::generate_file_path_from_template(
+                    "C:\\Music\\Album\\sample_track.flac",
+                    preset.output_type.extension(),
+                    &preset.output_file_name_template,
+                    1,
+                    1,
+                );
+                w.set_preview_path(preview.into());
+            }
         }
     });
 
@@ -1299,6 +1423,8 @@ fn run_conversion_gui(
         }
     };
 
+    window.set_dark_mode(is_windows_dark_mode());
+    window.on_toggle_theme(move |_dark| {});
     window.set_preset_name(preset_name.into());
     window.set_overall_progress(0.0);
     window.set_overall_status_text("Starting conversion...".into());
