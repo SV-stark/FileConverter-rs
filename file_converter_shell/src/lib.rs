@@ -480,7 +480,11 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         }
 
         let presets_count = presets.len();
-        dbg_log!("InvokeCommand verb_offset={} presets_count={}", verb_offset, presets_count);
+        dbg_log!(
+            "InvokeCommand verb_offset={} presets_count={}",
+            verb_offset,
+            presets_count
+        );
 
         if verb_offset < presets_count {
             let preset_name = &presets[verb_offset];
@@ -534,7 +538,10 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                 let _ = Command::new(&bin_path).arg("-settings").spawn();
                 Ok(())
             } else {
-                dbg_log!("Converter binary not found for settings: {}", bin_path.display());
+                dbg_log!(
+                    "Converter binary not found for settings: {}",
+                    bin_path.display()
+                );
                 Err(E_FAIL.into())
             }
         } else {
@@ -652,6 +659,22 @@ fn get_bin_path() -> PathBuf {
         if path.exists() {
             return path;
         }
+    }
+
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let local_bin = Path::new(&local_app_data)
+        .join("FileConverter")
+        .join("file_converter_bin.exe");
+    if local_bin.exists() {
+        return local_bin;
+    }
+
+    let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+    let pf_bin = Path::new(&program_files)
+        .join("FileConverter")
+        .join("file_converter_bin.exe");
+    if pf_bin.exists() {
+        return pf_bin;
     }
 
     PathBuf::from("file_converter_bin.exe")

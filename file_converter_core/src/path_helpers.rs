@@ -63,6 +63,7 @@ pub fn generate_unique_path<P: AsRef<Path>>(path: P, blacklist: &[String]) -> Pa
 
 pub fn create_folders<P: AsRef<Path>>(file_path: P) -> bool {
     if let Some(parent) = file_path.as_ref().parent()
+        && !parent.as_os_str().is_empty()
         && !parent.exists()
         && fs::create_dir_all(parent).is_err()
     {

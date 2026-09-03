@@ -68,5 +68,6 @@ mod tests {
         assert!(is_version_newer("0.8.0", "0.9.0"));
         assert!(!is_version_newer("0.9.2", "0.9.2"));
         assert!(!is_version_newer("0.9.3", "0.9.2"));
+        assert!(!is_version_newer("0.9.4", "0.9.3"));
     }
 }

@@ -303,7 +303,7 @@ pub fn get_ffmpeg_passes(
             passes.push(FfmpegPass {
                 name: "Indexing colors".to_string(),
                 arguments: args1,
-                file_to_delete: Some(palette_path.clone()),
+                file_to_delete: None,
             });
 
             // Pass 2: PaletteUse
@@ -319,7 +319,7 @@ pub fn get_ffmpeg_passes(
             passes.push(FfmpegPass {
                 name: "Conversion".to_string(),
                 arguments: args2,
-                file_to_delete: None,
+                file_to_delete: Some(palette_path.clone()),
             });
         }
         OutputType::Ico => {
@@ -938,6 +938,16 @@ pub fn run_ffmpeg_pass(
     {
         ffmpeg_path = downloaded;
     }
+
+    struct FileCleanupGuard<'a>(&'a Option<PathBuf>);
+    impl Drop for FileCleanupGuard<'_> {
+        fn drop(&mut self) {
+            if let Some(path) = self.0 {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    let _cleanup_guard = FileCleanupGuard(&pass.file_to_delete);
 
     use std::io::Read;
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.4] - 2026-09-03
+
+### 🐛 Fixed & Hardened
+- **SVG Vector Scaling Accuracy (`image.rs`):**
+  - Resolved double-scaling bug where SVG files were rasterized at target scale and then resized again during the general transform pass.
+- **Robust Relative Path Handling (`path_helpers.rs`):**
+  - Fixed `create_folders` failure on relative paths without directory components (`output.mp3`).
+- **HTML Tag Stripper Markup Retention (`doc_convert.rs`):**
+  - Fixed issue where unclosed angle brackets (`<`) caused subsequent document text to be truncated during tag stripping.
+- **Resource Cleanup for GIF Conversions (`ffmpeg.rs`):**
+  - Attached intermediate palette removal to final pass with an RAII cleanup guard to prevent orphaned palette files in `%TEMP%`.
+- **HEIF Format Classification (`types.rs`):**
+  - Added `.heif` extension to `FileCategory::Image` categorization for full compatibility with native image decoding.
+- **Multi-Page Office Export Collision Avoidance (`office.rs`):**
+  - Added automatic directory creation and unique collision-free naming across all pages during multi-page Office exports.
+- **Reliable FFmpeg Package Fallback Mirror (`ffmpeg_download.rs`):**
+  - Updated secondary download mirror to permanent 7.0.2 package URL matching the pinned SHA-256 checksum.
+- **Shell Extension Binary Discovery (`file_converter_shell`):**
+  - Added `%LOCALAPPDATA%\FileConverter` and `%ProgramFiles%\FileConverter` lookup fallbacks for reliable Explorer context menu launching.
+
+---
+
 ## [0.9.3] - 2026-08-21
 
 ### 🚀 Enhanced & Refactored

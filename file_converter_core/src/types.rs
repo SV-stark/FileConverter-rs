@@ -111,16 +111,7 @@ pub enum HardwareAccelerationMode {
 }
 
 #[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Display,
-    EnumString,
-    AsRefStr,
+    Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, EnumString, AsRefStr,
 )]
 pub enum EncodingMode {
     Wav8,
@@ -138,16 +129,7 @@ pub enum EncodingMode {
 }
 
 #[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Display,
-    EnumString,
-    AsRefStr,
+    Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Display, EnumString, AsRefStr,
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum VideoEncodingSpeed {
@@ -162,17 +144,7 @@ pub enum VideoEncodingSpeed {
     VerySlow,
 }
 #[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Display,
-    EnumString,
-    AsRefStr,
+    Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, AsRefStr,
 )]
 #[serde(rename_all = "PascalCase")]
 pub enum FileCategory {
@@ -191,9 +163,9 @@ pub fn get_extension_category(ext: &str) -> FileCategory {
         | "wav" | "wma" => FileCategory::Audio,
         "3gp" | "3gpp" | "avi" | "bik" | "flv" | "m4v" | "mp4" | "mpg" | "mpeg" | "mov" | "mkv"
         | "ogv" | "rm" | "ts" | "vob" | "webm" | "wmv" => FileCategory::Video,
-        "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "ico" | "jfif"
-        | "jpg" | "jpeg" | "jxl" | "nef" | "png" | "psd" | "raf" | "tga" | "tif" | "tiff"
-        | "svg" | "xcf" | "webp" => FileCategory::Image,
+        "arw" | "avif" | "bmp" | "cr2" | "dds" | "dng" | "exr" | "heic" | "heif" | "ico"
+        | "jfif" | "jpg" | "jpeg" | "jxl" | "nef" | "png" | "psd" | "raf" | "tga" | "tif"
+        | "tiff" | "svg" | "xcf" | "webp" => FileCategory::Image,
         "gif" => FileCategory::AnimatedImage,
         "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx"
         | "epub" | "mobi" | "azw" | "azw3" | "kfx" | "fb2" | "cbz" | "kepub" | "lit" | "rtf"

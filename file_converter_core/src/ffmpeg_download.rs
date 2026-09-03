@@ -41,7 +41,7 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     // Download URLs with fallback mirrors
     let download_sources = [
         "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-essentials_build.zip",
-        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+        "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.0.2-essentials_build.zip",
     ];
 
     let temp_zip_path = parent.join("ffmpeg_temp.zip");

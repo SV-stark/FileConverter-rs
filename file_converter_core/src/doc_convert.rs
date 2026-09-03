@@ -339,6 +339,9 @@ pub(crate) fn strip_html_tags(html: &str) -> String {
             if let Some(tag_end) = memchr::memchr(b'>', &bytes[abs_start..]) {
                 i = abs_start + tag_end + 1;
             } else {
+                if let Ok(remaining) = std::str::from_utf8(&bytes[abs_start..]) {
+                    result.push_str(remaining);
+                }
                 break;
             }
         } else {

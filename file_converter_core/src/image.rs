@@ -341,12 +341,13 @@ pub fn run_image_conversion(
 
         progress_callback(0.4, "Processing transforms");
 
-        // Scale
+        // Scale (SVGs are already rasterized at target scale_factor for optimal vector fidelity)
+        let already_scaled = ext == "svg";
         let scale_factor = preset
             .get_setting_value("ImageScale")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(1.0);
-        if (scale_factor - 1.0).abs() >= 0.005 {
+        if !already_scaled && (scale_factor - 1.0).abs() >= 0.005 {
             let (w, h) = img.dimensions();
             let nw = (w as f32 * scale_factor) as u32;
             let nh = (h as f32 * scale_factor) as u32;

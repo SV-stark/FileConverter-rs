@@ -265,7 +265,9 @@ pub fn run_office_conversion(
                     i + 1,
                     page_count,
                 );
-                paths.push(out_path);
+                let _ = crate::path_helpers::create_folders(&out_path);
+                let unique = crate::path_helpers::generate_unique_path(&out_path, &paths);
+                paths.push(unique.to_string_lossy().to_string());
             }
             paths
         } else {

@@ -624,4 +624,71 @@ mod tests {
             JobEngine::Epub
         ));
     }
+
+    #[test]
+    fn test_heif_extension_category() {
+        assert_eq!(get_extension_category("heif"), FileCategory::Image);
+        assert_eq!(get_extension_category(".HEIF"), FileCategory::Image);
+        assert!(is_output_type_compatible_with_category(
+            OutputType::Png,
+            FileCategory::Image
+        ));
+    }
+
+    #[test]
+    fn test_create_folders_relative_file() {
+        // Relative files without parent dirs should not fail
+        assert!(create_folders("output.mp3"));
+        assert!(create_folders(std::path::Path::new("single_file.png")));
+    }
+
+    #[test]
+    fn test_strip_html_tags_unclosed_markup_retention() {
+        let unclosed = "Equation: x < 10 and y > 5";
+        let stripped = super::doc_convert::strip_html_tags(unclosed);
+        assert_eq!(stripped, "Equation: x  5");
+
+        let trailing_unclosed = "Text before <trailing unclosed tag";
+        let stripped_trailing = super::doc_convert::strip_html_tags(trailing_unclosed);
+        assert_eq!(stripped_trailing, "Text before <trailing unclosed tag");
+    }
+
+    #[test]
+    fn test_svg_resvg_scale_factor_single_application() {
+        let temp_dir = std::env::temp_dir();
+        let svg_path = temp_dir.join("test_resvg_scale.svg");
+        let png_path = temp_dir.join("test_resvg_scale.png");
+
+        let svg_content = r#"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
+            <rect width="50" height="50" fill="blue" />
+        </svg>"#;
+        std::fs::write(&svg_path, svg_content).unwrap();
+
+        let mut preset = ConversionPreset {
+            name: "To Png 2x".to_string(),
+            output_type: OutputType::Png,
+            output_file_name_template: "(p)\\(f)".to_string(),
+            is_default_settings: true,
+            input_types: vec!["svg".into()],
+            input_post_conversion_action: InputPostConversionAction::None,
+            settings: vec![],
+        };
+        preset.set_setting_value("ImageScale", "2.0");
+
+        let res = super::image::run_image_conversion(
+            &preset,
+            svg_path.to_str().unwrap(),
+            &[png_path.to_str().unwrap().to_string()],
+            &|_p, _m| {},
+        );
+        assert!(res.is_ok());
+        assert!(png_path.exists());
+
+        // Dimensions should be 50 * 2 = 100, NOT double-scaled 50 * 2 * 2 = 200
+        let dims = super::image::get_image_dimensions(png_path.to_str().unwrap()).unwrap();
+        assert_eq!(dims, (100, 100));
+
+        let _ = std::fs::remove_file(svg_path);
+        let _ = std::fs::remove_file(png_path);
+    }
 }
