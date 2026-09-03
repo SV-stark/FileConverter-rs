@@ -29,7 +29,7 @@ fn get_settings_paths() -> (PathBuf, PathBuf) {
     (default_xml, user_xml)
 }
 
-const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
+const DEFAULT_SETTINGS_XML: &str = include_str!("../Settings.default.xml");
 
 fn initialize_user_settings_if_needed() -> Result<Settings, String> {
     let (default_xml, user_xml) = get_settings_paths();
