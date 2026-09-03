@@ -268,31 +268,34 @@ impl ConversionJob {
         progress_cb: &(dyn Fn(f32, &str) + Sync),
         hw_accel: HardwareAccelerationMode,
     ) -> Result<()> {
+        let out_path = self.output_file_paths.first().ok_or_else(|| {
+            FileConverterError::Invalid("No output path specified for job".to_string())
+        })?;
         let engine = determine_job_engine(&self.preset, &self.input_path);
 
         match engine {
             JobEngine::Epub => doc_convert::run_epub_conversion(
                 &self.input_path,
-                &self.output_file_paths[0],
+                out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::Markdown => doc_convert::run_markdown_conversion(
                 &self.input_path,
-                &self.output_file_paths[0],
+                out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::Typst => doc_convert::run_typst_conversion(
                 &self.input_path,
-                &self.output_file_paths[0],
+                out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::Oxipng => image::run_oxipng_compression(
                 Some(&self.preset),
                 &self.input_path,
-                &self.output_file_paths[0],
+                out_path,
                 progress_cb,
             ),
             JobEngine::Ico => {
@@ -323,16 +326,12 @@ impl ConversionJob {
                 )?;
 
                 // 2. Convert PNG to ICO
-                let passes = ffmpeg::get_ffmpeg_passes(
-                    &self.preset,
-                    &temp_png_str,
-                    &self.output_file_paths[0],
-                    hw_accel,
-                )?;
+                let passes =
+                    ffmpeg::get_ffmpeg_passes(&self.preset, &temp_png_str, out_path, hw_accel)?;
                 let res = ffmpeg::run_ffmpeg_pass(
                     &passes[0],
                     &temp_png_str,
-                    &self.output_file_paths[0],
+                    out_path,
                     &|percent, name| {
                         progress_cb(0.5 + percent * 0.5, name);
                     },
@@ -374,18 +373,14 @@ impl ConversionJob {
                         },
                     )?;
 
-                    let passes = ffmpeg::get_ffmpeg_passes(
-                        &self.preset,
-                        &temp_png_str,
-                        &self.output_file_paths[0],
-                        hw_accel,
-                    )?;
+                    let passes =
+                        ffmpeg::get_ffmpeg_passes(&self.preset, &temp_png_str, out_path, hw_accel)?;
                     let total_passes = passes.len();
                     for (i, pass) in passes.iter().enumerate() {
                         let step_res = ffmpeg::run_ffmpeg_pass(
                             pass,
                             &temp_png_str,
-                            &self.output_file_paths[0],
+                            out_path,
                             &|percent, name| {
                                 let overall =
                                     0.3 + (i as f32 + percent) / total_passes as f32 * 0.7;
@@ -403,7 +398,7 @@ impl ConversionJob {
                     let passes = ffmpeg::get_ffmpeg_passes(
                         &self.preset,
                         &self.input_path,
-                        &self.output_file_paths[0],
+                        out_path,
                         hw_accel,
                     )?;
                     let total_passes = passes.len();
@@ -411,7 +406,7 @@ impl ConversionJob {
                         ffmpeg::run_ffmpeg_pass(
                             pass,
                             &self.input_path,
-                            &self.output_file_paths[0],
+                            out_path,
                             &|percent, name| {
                                 let overall = (i as f32 + percent) / total_passes as f32;
                                 progress_cb(overall, name);
@@ -435,11 +430,8 @@ impl ConversionJob {
                         target_dpi: dpi,
                         jpeg_quality: 75,
                     };
-                    let res = crate::pdf_compress::compress_pdf(
-                        &self.input_path,
-                        &self.output_file_paths[0],
-                        &options,
-                    );
+                    let res =
+                        crate::pdf_compress::compress_pdf(&self.input_path, out_path, &options);
                     progress_cb(1.0, "Complete");
                     res
                 } else {
@@ -473,23 +465,14 @@ impl ConversionJob {
                 progress_cb,
             ),
             JobEngine::Ffmpeg => {
-                let passes = ffmpeg::get_ffmpeg_passes(
-                    &self.preset,
-                    &self.input_path,
-                    &self.output_file_paths[0],
-                    hw_accel,
-                )?;
+                let passes =
+                    ffmpeg::get_ffmpeg_passes(&self.preset, &self.input_path, out_path, hw_accel)?;
                 let total_passes = passes.len();
                 for (i, pass) in passes.iter().enumerate() {
-                    ffmpeg::run_ffmpeg_pass(
-                        pass,
-                        &self.input_path,
-                        &self.output_file_paths[0],
-                        &|percent, name| {
-                            let overall = (i as f32 + percent) / total_passes as f32;
-                            progress_cb(overall, name);
-                        },
-                    )?;
+                    ffmpeg::run_ffmpeg_pass(pass, &self.input_path, out_path, &|percent, name| {
+                        let overall = (i as f32 + percent) / total_passes as f32;
+                        progress_cb(overall, name);
+                    })?;
                 }
                 Ok(())
             }

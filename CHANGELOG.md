@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.5] - 2026-09-03
+
+### 🛡️ Security, Reliability & Critical Fixes
+- **PowerShell Injection & COM Leak Elimination (`office.rs`):**
+  - Switched Office conversion execution to UTF-16LE Base64 `-EncodedCommand`, preventing command injection via special characters (`;`, `$`, quotes) in filenames.
+  - Wrapped COM script automation in `try/finally` blocks ensuring `$doc.Close(0)` and `$app.Quit()` always execute, eliminating orphaned `WINWORD.EXE`, `EXCEL.EXE`, and `POWERPNT.EXE` background processes.
+- **Panic Prevention on Worker Execution (`scheduler.rs` & `path_helpers.rs`):**
+  - Replaced direct unchecked `output_file_paths[0]` indexing with safe extraction, returning clear errors instead of worker thread panics.
+  - Replaced byte slicing with UTF-8 boundary safe `rfind('.')` in `generate_file_path_from_template`, preventing panics when processing non-ASCII or multi-byte filenames.
+  - Updated `RE_VALID_PATH` regex to accept relative paths alongside absolute Windows and UNC paths.
+- **Collision & Hijack Hardening (`ffmpeg.rs`, `ffmpeg_download.rs`, `main.rs`):**
+  - Replaced predictable filenames (`{stem} - palette.png`, `ffmpeg_temp.zip`) with cryptographically secure temporary files via `tempfile::Builder`.
+  - Replaced `cmd /c start <url>` with Win32 `ShellExecuteW`, restricted to `http(s)://` protocols.
+
+### 🎨 GUI & UX Architecture Improvements
+- **Preset Customization Persistence (`main.rs`):**
+  - Wired `edit_output_type` and `edit_post_action` in `on_preset_field_changed` so user changes to output type and post-conversion action persist reliably.
+  - Guarded pending file clearance to prevent silent file drop discards when presets are unselected.
+  - Synchronized `exit_delay_seconds` on dashboard initialization and save.
+- **Live Preset Search (`appwindow.slint`, `main.rs`):**
+  - Connected the preset search bar to a reactive `search_query_changed` callback, enabling live filtering by preset name, category, and file extensions.
+- **Event Loop Decoupling (`main.rs`):**
+  - Replaced reentrant `window.run()` calls from settings callbacks with detached process spawning (`spawn_conversion_process`), eliminating nested event loop freezes.
+
+### ⚡ Engine & Shell Enhancements
+- **PDF Color Space & Transparency Preservation (`pdf_compress.rs`):**
+  - Retained Grayscale, CMYK, and transparent `/SMask` image streams without forcing `DeviceRGB` and `DCTDecode`.
+  - Added `is_encrypted()` checks and atomic same-file overwrite protection via temporary staging.
+  - Corrected US Letter dimensions to use separate width and height DPI scaling factors.
+- **Non-ASCII Text Preservation (`doc_convert.rs`):**
+  - Replaced ASCII `< 128` filtering with `sanitize_text_for_pdf`, preserving Latin-1 accented characters (é, ü, ñ, à, ç, etc.) and typography.
+  - Ensured destination directories are automatically created before writing outputs.
+  - Added 60s execution timeout and process reaping to Typst CLI invocation.
+- **FFmpeg Hardware Acceleration & Bitrate Support (`ffmpeg.rs`):**
+  - Attached `-hwaccel` before input arguments for video conversions.
+  - Implemented continuous range-based quality mapping for MP3 and OGG VBR bitrates (supporting standard bitrates like 320, 256, 128 kbps).
+  - Added quote-aware command tokenization for custom FFmpeg commands.
+- **Explorer Shell Extension Hardening (`lib.rs`):**
+  - Disabled blank property sheet tab injection in Explorer Properties dialog.
+  - Added boundary checking against `_idcmdlast` in `QueryContextMenu` to prevent menu ID overflow.
+  - Hid Windows 11 context menu when no files are selected.
+- **Hot-Path Optimization (`image.rs`):**
+  - Cached `resvg` system font scanning via `LazyLock<Arc<Database>>`, eliminating seconds of font scanning latency on SVG conversions.
+- **Packaging & Uninstaller Cleanup (`installer.nsi`, `.github/workflows/release.yml`):**
+  - Added deletion of icons and `/REBOOTOK` handling for locked DLLs in the NSIS uninstaller, with `SHChangeNotify` cache refresh.
+  - Bundled default XML and icons into the portable zip package.
+
+---
+
 ## [0.9.4] - 2026-09-03
 
 ### 🐛 Fixed & Hardened

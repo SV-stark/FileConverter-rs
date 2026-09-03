@@ -13,6 +13,7 @@ use file_converter_core::settings::Settings;
 use file_converter_core::types::{HardwareAccelerationMode, OutputType};
 
 slint::include_modules!();
+use slint::Model;
 
 fn get_settings_paths() -> (PathBuf, PathBuf) {
     let mut exe_dir = env::current_exe().unwrap_or_default();
@@ -239,6 +240,242 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
     }
 }
 
+fn is_preset_compatible_with_file(
+    preset: &file_converter_core::settings::ConversionPreset,
+    file_path: &str,
+) -> bool {
+    let ext = Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext.is_empty() {
+        return true;
+    }
+
+    if !preset.input_types.is_empty() {
+        if preset.input_types.iter().any(|it| {
+            let clean_it = it.trim().trim_start_matches('.').to_lowercase();
+            clean_it == "*" || clean_it == ext
+        }) {
+            return true;
+        }
+    }
+
+    let cat = file_converter_core::types::get_extension_category(&ext);
+    file_converter_core::types::is_output_type_compatible_with_category(preset.output_type, cat)
+}
+
+#[cfg(target_os = "windows")]
+fn open_file_dialog() -> Vec<String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog_res: windows::core::Result<IFileOpenDialog> =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL);
+        if let Ok(dialog) = dialog_res {
+            let _ = dialog.SetOptions(FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST);
+            let _ = dialog.SetTitle(windows::core::w!("Select Files to Convert"));
+            if dialog.Show(HWND(std::ptr::null_mut())).is_ok() {
+                if let Ok(results) = dialog.GetResults() {
+                    let mut file_paths = Vec::new();
+                    if let Ok(count) = results.GetCount() {
+                        for i in 0..count {
+                            if let Ok(item) = results.GetItemAt(i) {
+                                if let Ok(display_name) = item.GetDisplayName(SIGDN_FILESYSPATH) {
+                                    if !display_name.is_null() {
+                                        let path_str = display_name.to_string().unwrap_or_default();
+                                        CoTaskMemFree(Some(display_name.0 as *const _));
+                                        if !path_str.is_empty() {
+                                            file_paths.push(path_str);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return file_paths;
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_file_dialog() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_windows_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == std::process::id() {
+            let target = lparam.0 as *mut windows::Win32::Foundation::HWND;
+            *target = hwnd;
+            return windows::Win32::Foundation::BOOL(0);
+        }
+    }
+    windows::Win32::Foundation::BOOL(1)
+}
+
+#[cfg(target_os = "windows")]
+fn find_our_window_hwnd() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, FindWindowW};
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(None, windows::core::w!("⚡ File Converter Settings")) {
+            if !hwnd.0.is_null() {
+                return Some(hwnd);
+            }
+        }
+        let mut target = windows::Win32::Foundation::HWND(std::ptr::null_mut());
+        let _ = EnumWindows(
+            Some(enum_windows_proc),
+            windows::Win32::Foundation::LPARAM(&mut target as *mut _ as isize),
+        );
+        if !target.0.is_null() {
+            Some(target)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+type NativeDropCallback = Box<dyn Fn(Vec<String>) + Send + Sync + 'static>;
+
+#[cfg(target_os = "windows")]
+static DROP_CALLBACK: std::sync::Mutex<Option<NativeDropCallback>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "windows")]
+#[link(name = "comctl32")]
+unsafe extern "system" {
+    fn SetWindowSubclass(
+        hwnd: windows::Win32::Foundation::HWND,
+        pfnSubclass: Option<
+            unsafe extern "system" fn(
+                windows::Win32::Foundation::HWND,
+                u32,
+                windows::Win32::Foundation::WPARAM,
+                windows::Win32::Foundation::LPARAM,
+                usize,
+                usize,
+            ) -> windows::Win32::Foundation::LRESULT,
+        >,
+        uIdSubclass: usize,
+        dwRefData: usize,
+    ) -> windows::Win32::Foundation::BOOL;
+
+    fn DefSubclassProc(
+        hwnd: windows::Win32::Foundation::HWND,
+        uMsg: u32,
+        wParam: windows::Win32::Foundation::WPARAM,
+        lParam: windows::Win32::Foundation::LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT;
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn drop_subclass_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _uidsubclass: usize,
+    _refdata: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
+    use windows::Win32::UI::WindowsAndMessaging::WM_DROPFILES;
+
+    if msg == WM_DROPFILES {
+        let hdrop = HDROP(wparam.0 as *mut _);
+        let mut files = Vec::new();
+        unsafe {
+            let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+            for i in 0..count {
+                let len = DragQueryFileW(hdrop, i, None);
+                if len > 0 {
+                    let mut buf = vec![0u16; (len + 1) as usize];
+                    DragQueryFileW(hdrop, i, Some(&mut buf));
+                    if let Some(pos) = buf.iter().position(|&c| c == 0) {
+                        files.push(String::from_utf16_lossy(&buf[..pos]));
+                    }
+                }
+            }
+            DragFinish(hdrop);
+        }
+
+        if !files.is_empty() {
+            if let Ok(guard) = DROP_CALLBACK.lock() {
+                if let Some(ref cb) = *guard {
+                    cb(files);
+                }
+            }
+        }
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+#[cfg(target_os = "windows")]
+fn setup_window_drag_and_drop<F>(on_drop: F)
+where
+    F: Fn(Vec<String>) + Send + Sync + 'static,
+{
+    if let Ok(mut guard) = DROP_CALLBACK.lock() {
+        *guard = Some(Box::new(on_drop));
+    }
+
+    std::thread::spawn(|| {
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(50));
+            if let Some(hwnd) = find_our_window_hwnd() {
+                use windows::Win32::UI::Shell::DragAcceptFiles;
+                unsafe {
+                    DragAcceptFiles(hwnd, true);
+                    let _ = SetWindowSubclass(hwnd, Some(drop_subclass_proc), 1001, 0);
+                }
+                break;
+            }
+        }
+    });
+}
+
+fn update_pending_ui(window: &SettingsWindow, pending_files: &Rc<std::cell::RefCell<Vec<String>>>) {
+    let files = pending_files.borrow();
+    let count = files.len();
+    window.set_pending_files_count(count as i32);
+    if count == 0 {
+        window.set_pending_files_summary("".into());
+    } else if count == 1 {
+        let name = Path::new(&files[0])
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| files[0].clone());
+        window.set_pending_files_summary(name.into());
+    } else {
+        let first_name = Path::new(&files[0])
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| files[0].clone());
+        window.set_pending_files_summary(format!("{} + {} more", first_name, count - 1).into());
+    }
+}
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -393,9 +630,19 @@ fn main() {
         Ok(c) => c,
         Err(_) => {
             if raw_args.len() <= 1 {
-                run_settings_native_gui();
+                run_settings_native_gui(None);
             } else {
-                tracing::error!("Invalid command line arguments.");
+                let mut possible_files = Vec::new();
+                for arg in raw_args.iter().skip(1) {
+                    if Path::new(arg).exists() {
+                        possible_files.push(arg.clone());
+                    }
+                }
+                if !possible_files.is_empty() {
+                    run_settings_native_gui(Some(possible_files));
+                } else {
+                    tracing::error!("Invalid command line arguments.");
+                }
             }
             return;
         }
@@ -433,7 +680,7 @@ fn main() {
                 return;
             }
             Commands::Gui => {
-                run_settings_native_gui();
+                run_settings_native_gui(None);
                 return;
             }
             Commands::Convert {
@@ -452,7 +699,7 @@ fn main() {
     }
 
     if cli.settings || (cli.preset.is_none() && cli.files.is_empty() && cli.input_files.is_none()) {
-        run_settings_native_gui();
+        run_settings_native_gui(None);
         return;
     }
 
@@ -481,8 +728,21 @@ fn main() {
         }
 
         run_conversion_gui(&preset_name, input_files, temp_to_clean);
+    } else if !cli.files.is_empty() {
+        run_settings_native_gui(Some(cli.files));
     } else {
-        run_settings_native_gui();
+        run_settings_native_gui(None);
+    }
+}
+
+fn spawn_conversion_process(preset_name: &str, files: &[String]) {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(exe_path);
+        cmd.arg("--preset").arg(preset_name);
+        for f in files {
+            cmd.arg(f);
+        }
+        let _ = cmd.spawn();
     }
 }
 
@@ -537,7 +797,7 @@ fn populate_slint_history(window: &SettingsWindow) {
     window.set_history_items(Rc::new(slint::VecModel::from(slint_history)).into());
 }
 
-fn run_settings_native_gui() {
+fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     tracing::info!("Launching File Converter Slint Fluent GUI Settings Window...");
 
     let window = match SettingsWindow::new() {
@@ -567,6 +827,8 @@ fn run_settings_native_gui() {
     let user_xml_path_rc = Rc::new(user_xml_path);
     let default_xml_path_rc = Rc::new(default_xml_path);
 
+    let pending_files = Rc::new(std::cell::RefCell::new(initial_files.unwrap_or_default()));
+
     // Initial Population
     {
         let s = settings_state.borrow();
@@ -577,9 +839,62 @@ fn run_settings_native_gui() {
         window.set_exit_application_when_conversions_finished(
             s.exit_application_when_conversions_finished,
         );
-        populate_slint_presets(&window, &s, 0);
+        window.set_exit_delay_seconds(s.duration_between_end_of_conversions_and_application_exit);
+
+        let mut default_idx = 0;
+        if let Some(first_file) = pending_files.borrow().first() {
+            if let Some(idx) = s
+                .conversion_presets
+                .iter()
+                .position(|p| is_preset_compatible_with_file(p, first_file))
+            {
+                default_idx = idx;
+            }
+        }
+        populate_slint_presets(&window, &s, default_idx);
     }
     populate_slint_history(&window);
+    update_pending_ui(&window, &pending_files);
+
+    // Setup native Windows Drag & Drop (WM_DROPFILES)
+    let window_weak = window.as_weak();
+    let pending_drop = pending_files.clone();
+    let settings_drop = settings_state.clone();
+    window.on_native_files_dropped(move |slint_files| {
+        if let Some(w) = window_weak.upgrade() {
+            let mut dropped = Vec::new();
+            for f in slint_files.iter() {
+                dropped.push(f.to_string());
+            }
+            let auto_start = settings_drop.borrow().auto_start_on_file_drop;
+            pending_drop.borrow_mut().extend(dropped);
+            update_pending_ui(&w, &pending_drop);
+            if auto_start {
+                let files = pending_drop.borrow().clone();
+                let preset_name = w.get_edit_name().to_string();
+                if !preset_name.is_empty() && !files.is_empty() {
+                    pending_drop.borrow_mut().clear();
+                    update_pending_ui(&w, &pending_drop);
+                    spawn_conversion_process(&preset_name, &files);
+                }
+            }
+        }
+    });
+
+    #[cfg(target_os = "windows")]
+    {
+        let window_weak = window.as_weak();
+        setup_window_drag_and_drop(move |dropped| {
+            let weak = window_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    let model: Vec<slint::SharedString> =
+                        dropped.into_iter().map(|s| s.into()).collect();
+                    w.invoke_native_files_dropped(Rc::new(slint::VecModel::from(model)).into());
+                }
+            });
+        });
+    }
 
     // Callback: Save Settings
     let window_weak = window.as_weak();
@@ -587,7 +902,8 @@ fn run_settings_native_gui() {
     let xml_path_clone = user_xml_path_rc.clone();
     window.on_save_settings(move || {
         if let Some(w) = window_weak.upgrade() {
-            let s = settings_clone.borrow();
+            let mut s = settings_clone.borrow_mut();
+            s.duration_between_end_of_conversions_and_application_exit = w.get_exit_delay_seconds();
             match s.save_to_file(&*xml_path_clone) {
                 Ok(_) => w.set_status_msg("Settings saved successfully!".into()),
                 Err(e) => w.set_status_msg(format!("Failed to save: {:?}", e).into()),
@@ -742,9 +1058,65 @@ fn run_settings_native_gui() {
 
     // Callback: Open Update URL
     window.on_open_update_url(move |url| {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", url.as_str()])
-            .spawn();
+        let url_str = url.as_str();
+        if url_str.starts_with("http://") || url_str.starts_with("https://") {
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::UI::Shell::ShellExecuteW;
+                use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+                use windows::core::PCWSTR;
+                let wide_url: Vec<u16> = url_str.encode_utf16().chain(std::iter::once(0)).collect();
+                let wide_op: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+                unsafe {
+                    let _ = ShellExecuteW(
+                        None,
+                        PCWSTR(wide_op.as_ptr()),
+                        PCWSTR(wide_url.as_ptr()),
+                        None,
+                        None,
+                        SW_SHOWNORMAL,
+                    );
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = std::process::Command::new("xdg-open").arg(url_str).spawn();
+            }
+        }
+    });
+
+    // Callback: Search Query Changed
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_search_query_changed(move |query| {
+        if let Some(w) = window_weak.upgrade() {
+            let s = settings_clone.borrow();
+            let query_str = query.to_lowercase();
+            let filtered: Vec<PresetData> = s
+                .conversion_presets
+                .iter()
+                .filter(|p| {
+                    query_str.is_empty()
+                        || p.name.to_lowercase().contains(&query_str)
+                        || p.input_types
+                            .iter()
+                            .any(|t| t.to_lowercase().contains(&query_str))
+                        || format!("{:?}", p.output_type)
+                            .to_lowercase()
+                            .contains(&query_str)
+                })
+                .map(|p| PresetData {
+                    name: p.name.as_str().into(),
+                    category: get_category_badge(p.output_type).into(),
+                    output_type: format!("{:?}", p.output_type).into(),
+                    input_types: p.input_types.join(", ").into(),
+                    output_file_name_template: p.output_file_name_template.as_str().into(),
+                    input_post_conversion_action: format!("{:?}", p.input_post_conversion_action)
+                        .into(),
+                })
+                .collect();
+            w.set_presets(Rc::new(slint::VecModel::from(filtered)).into());
+        }
     });
 
     // Callback: Preset Field Edited
@@ -764,6 +1136,21 @@ fn run_settings_native_gui() {
                     .filter(|str| !str.is_empty())
                     .collect();
 
+                if let Ok(parsed_type) = w
+                    .get_edit_output_type()
+                    .as_str()
+                    .parse::<file_converter_core::types::OutputType>()
+                {
+                    preset.output_type = parsed_type;
+                }
+                if let Ok(parsed_act) =
+                    w.get_edit_post_action()
+                        .as_str()
+                        .parse::<file_converter_core::types::InputPostConversionAction>()
+                {
+                    preset.input_post_conversion_action = parsed_act;
+                }
+
                 let preview = file_converter_core::path_helpers::generate_file_path_from_template(
                     "C:\\Music\\Album\\sample_track.flac",
                     preset.output_type.extension(),
@@ -776,13 +1163,54 @@ fn run_settings_native_gui() {
         }
     });
 
-    // Callback: Drop Files
+    // Callbacks: File Selection & Conversion Actions
     let window_weak = window.as_weak();
-    window.on_drop_files(move || {
+    let pending_sel = pending_files.clone();
+    let settings_sel = settings_state.clone();
+    let handle_select = move || {
+        let picked = open_file_dialog();
+        if !picked.is_empty() {
+            if let Some(w) = window_weak.upgrade() {
+                let auto_start = settings_sel.borrow().auto_start_on_file_drop;
+                pending_sel.borrow_mut().extend(picked);
+                update_pending_ui(&w, &pending_sel);
+                if auto_start {
+                    let files = pending_sel.borrow().clone();
+                    let preset_name = w.get_edit_name().to_string();
+                    if !preset_name.is_empty() && !files.is_empty() {
+                        pending_sel.borrow_mut().clear();
+                        update_pending_ui(&w, &pending_sel);
+                        spawn_conversion_process(&preset_name, &files);
+                    }
+                }
+            }
+        }
+    };
+
+    let pick_fn = handle_select.clone();
+    window.on_select_files(pick_fn);
+    window.on_drop_files(handle_select);
+
+    let window_weak = window.as_weak();
+    let pending_conv = pending_files.clone();
+    window.on_start_pending_conversion(move || {
         if let Some(w) = window_weak.upgrade() {
-            w.set_status_msg(
-                "Drop files directly into the window or select a preset to convert.".into(),
-            );
+            let files = pending_conv.borrow().clone();
+            let preset_name = w.get_edit_name().to_string();
+            if !files.is_empty() && !preset_name.is_empty() {
+                pending_conv.borrow_mut().clear();
+                update_pending_ui(&w, &pending_conv);
+                spawn_conversion_process(&preset_name, &files);
+            }
+        }
+    });
+
+    let window_weak = window.as_weak();
+    let pending_clr = pending_files.clone();
+    window.on_clear_pending_files(move || {
+        if let Some(w) = window_weak.upgrade() {
+            pending_clr.borrow_mut().clear();
+            update_pending_ui(&w, &pending_clr);
         }
     });
 

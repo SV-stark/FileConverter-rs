@@ -59,6 +59,10 @@ export component SettingsWindow inherits Window {
     in-out property <bool> exit_application_when_conversions_finished: true;
     in-out property <float> exit_delay_seconds: 2.0;
 
+    // Fast file selection & drag-and-drop properties
+    in-out property <int> pending_files_count: 0;
+    in-out property <string> pending_files_summary: "";
+
     callback save_settings();
     callback register_shell();
     callback new_preset();
@@ -69,10 +73,15 @@ export component SettingsWindow inherits Window {
     callback select_preset(int);
     callback preset_field_changed();
     callback drop_files();
+    callback select_files();
+    callback native_files_dropped([string]);
+    callback start_pending_conversion();
+    callback clear_pending_files();
     callback toggle_auto_start(bool);
     callback toggle_copy_clipboard(bool);
     callback toggle_auto_close(bool);
     callback open_update_url(string);
+    callback search_query_changed(string);
 
     VerticalLayout {
         padding: 16px;
@@ -121,6 +130,11 @@ export component SettingsWindow inherits Window {
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: end;
+
+                    Button {
+                        text: "📂 Select Files...";
+                        clicked => { root.select_files(); }
+                    }
 
                     Button {
                         text: "⚙️ Register Shell Extension";
@@ -183,6 +197,50 @@ export component SettingsWindow inherits Window {
             }
         }
 
+        // Pending Files Ready for Conversion Banner
+        if root.pending_files_count > 0 : Rectangle {
+            height: 48px;
+            background: #ecfdf5;
+            border-radius: 8px;
+            border-width: 1.5px;
+            border-color: #10b981;
+
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    Text {
+                        text: "📄 " + root.pending_files_count + " file(s) selected: " + root.pending_files_summary;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: #065f46;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Button {
+                        text: "🚀 Convert with " + root.edit_name;
+                        primary: true;
+                        clicked => { root.start_pending_conversion(); }
+                    }
+
+                    Button {
+                        text: "✕ Clear";
+                        clicked => { root.clear_pending_files(); }
+                    }
+                }
+            }
+        }
+
         // Main Tab Content Area
         if root.active_tab == 0 : HorizontalLayout {
             spacing: 16px;
@@ -202,6 +260,7 @@ export component SettingsWindow inherits Window {
                     LineEdit {
                         placeholder-text: "🔍 Search presets...";
                         text <=> root.search_query;
+                        edited(text) => { root.search_query_changed(text); }
                     }
 
                     Text {
@@ -387,28 +446,32 @@ export component SettingsWindow inherits Window {
 
                     // Interactive Dropzone Box
                     Rectangle {
-                        background: #f0fdf4;
+                        background: root.pending_files_count > 0 ? #ecfdf5 : #f0fdf4;
                         border-radius: 8px;
                         border-width: 2px;
-                        border-color: #86efac;
-                        height: 90px;
+                        border-color: root.pending_files_count > 0 ? #10b981 : #86efac;
+                        height: 96px;
 
                         TouchArea {
-                            clicked => { root.drop_files(); }
+                            clicked => { root.select_files(); }
                         }
 
                         VerticalLayout {
                             alignment: center;
                             spacing: 4px;
                             Text {
-                                text: "📂 Drag & Drop Dropzone";
+                                text: root.pending_files_count > 0
+                                    ? "✅ " + root.pending_files_count + " File(s) Selected & Ready"
+                                    : "📂 Click to Choose Files or Drag & Drop Here";
                                 font-size: 16px;
                                 font-weight: 700;
                                 color: #166534;
                                 horizontal-alignment: center;
                             }
                             Text {
-                                text: "Drop or click here to convert files using " + root.edit_name;
+                                text: root.pending_files_count > 0
+                                    ? root.pending_files_summary + " • Click here to add more"
+                                    : "Click to browse files or drop files anywhere in this window to convert using " + root.edit_name;
                                 font-size: 13px;
                                 color: #15803d;
                                 horizontal-alignment: center;

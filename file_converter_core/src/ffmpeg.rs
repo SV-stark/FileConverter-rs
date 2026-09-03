@@ -97,6 +97,37 @@ pub fn compute_audio_filter_args(preset: &ConversionPreset) -> Option<String> {
     }
 }
 
+pub fn tokenize_command(cmd: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for c in cmd.chars() {
+        match c {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = c;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 pub fn get_ffmpeg_passes(
     preset: &ConversionPreset,
     input_path: &str,
@@ -104,7 +135,7 @@ pub fn get_ffmpeg_passes(
     hw_accel: HardwareAccelerationMode,
 ) -> Result<Vec<FfmpegPass>> {
     let mut passes = Vec::new();
-    let base_args = vec!["-n".to_string()];
+    let mut base_args = vec!["-n".to_string()];
 
     let resolved_hw_accel = match hw_accel {
         HardwareAccelerationMode::Auto => detect_best_hardware_acceleration(),
@@ -128,6 +159,15 @@ pub fn get_ffmpeg_passes(
         _ => {}
     }
 
+    // Attach hardware acceleration before input file for video targets
+    let is_video_output = matches!(
+        preset.output_type,
+        OutputType::Mp4 | OutputType::Avi | OutputType::Mkv | OutputType::Webm | OutputType::Ogv
+    );
+    if is_video_output {
+        base_args.extend(hw_input_args);
+    }
+
     // Helper to check custom command
     let custom_cmd_enabled = preset
         .get_setting_value("EnableFFMPEGCustomCommand")
@@ -138,14 +178,12 @@ pub fn get_ffmpeg_passes(
         let custom_cmd = preset
             .get_setting_value("FFMPEGCustomCommand")
             .unwrap_or("");
-        // Simple token split for custom command parameters
         let mut arguments = base_args.clone();
         arguments.push("-i".to_string());
         arguments.push(input_path.to_string());
 
-        // Split by whitespace, respecting quotes if needed. For 100% parity, simple whitespace split is standard.
-        for token in custom_cmd.split_whitespace() {
-            arguments.push(token.to_string());
+        for token in tokenize_command(custom_cmd) {
+            arguments.push(token);
         }
 
         arguments.push(output_path.to_string());
@@ -270,15 +308,13 @@ pub fn get_ffmpeg_passes(
         }
         OutputType::Gif => {
             // High-quality palette generation and utilization (2 passes)
-            let temp_dir = std::env::temp_dir();
-            let file_name = Path::new(input_path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("temp");
-            let palette_path = path_helpers::generate_unique_path(
-                temp_dir.join(format!("{} - palette.png", file_name)),
-                &[],
-            );
+            let palette_path = tempfile::Builder::new()
+                .prefix("fc_palette_")
+                .suffix(".png")
+                .tempfile()
+                .map_err(FileConverterError::Io)?
+                .into_temp_path()
+                .to_path_buf();
 
             let transform = compute_transform_args(preset, resolved_hw_accel);
             let fps = preset
@@ -848,44 +884,38 @@ pub(crate) fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
 }
 
 pub(crate) fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
-    match bitrate {
-        245 => Ok(0),
-        225 => Ok(1),
-        190 => Ok(2),
-        175 => Ok(3),
-        165 => Ok(4),
-        130 => Ok(5),
-        115 => Ok(6),
-        100 => Ok(7),
-        85 => Ok(8),
-        65 => Ok(9),
-        _ => Err(FileConverterError::Ffmpeg(format!(
-            "Unknown MP3 VBR bitrate: {}",
-            bitrate
-        ))),
-    }
+    let q = match bitrate {
+        b if b >= 235 => 0,
+        b if b >= 210 => 1,
+        b if b >= 185 => 2,
+        b if b >= 170 => 3,
+        b if b >= 150 => 4,
+        b if b >= 125 => 5,
+        b if b >= 110 => 6,
+        b if b >= 95 => 7,
+        b if b >= 75 => 8,
+        _ => 9,
+    };
+    Ok(q)
 }
 
 pub(crate) fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
-    match bitrate {
-        500 => Ok(10),
-        320 => Ok(9),
-        256 => Ok(8),
-        224 => Ok(7),
-        192 => Ok(6),
-        160 => Ok(5),
-        128 => Ok(4),
-        112 => Ok(3),
-        96 => Ok(2),
-        80 => Ok(1),
-        64 => Ok(0),
-        48 => Ok(-1),
-        32 => Ok(-2),
-        _ => Err(FileConverterError::Ffmpeg(format!(
-            "Unknown Ogg VBR bitrate: {}",
-            bitrate
-        ))),
-    }
+    let q = match bitrate {
+        b if b >= 450 => 10,
+        b if b >= 300 => 9,
+        b if b >= 240 => 8,
+        b if b >= 210 => 7,
+        b if b >= 180 => 6,
+        b if b >= 150 => 5,
+        b if b >= 120 => 4,
+        b if b >= 105 => 3,
+        b if b >= 90 => 2,
+        b if b >= 75 => 1,
+        b if b >= 60 => 0,
+        b if b >= 40 => -1,
+        _ => -2,
+    };
+    Ok(q)
 }
 
 pub(crate) fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
@@ -982,6 +1012,7 @@ pub fn run_ffmpeg_pass(
     loop {
         if start_time.elapsed() > max_duration {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(FileConverterError::Timeout(
                 "FFMpeg process timed out (exceeded 1 hour)".to_string(),
             ));

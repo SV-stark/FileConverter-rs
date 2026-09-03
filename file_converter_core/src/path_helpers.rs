@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 static RE_DRIVE_LETTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]:\\").unwrap());
 static RE_VALID_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\)(?:[^\\/:*?<>|\r\n]+\\)*[^\.\\/:*?<>|\r\n][^\\/:*?<>|\r\n]*$").unwrap()
+    Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\|(?:[^\\/:*?<>|\r\n]+[\\/])+)?(?:[^\\/:*?<>|\r\n]+[\\/])*[^\\/:*?<>|\r\n]+$").unwrap()
 });
 static RE_DATE_FMT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(d:(?P<format>[^)]*)\)").unwrap());
@@ -151,12 +151,16 @@ pub fn generate_file_path_from_template(
     let path_buf = Path::new(input_file_path);
     let input_extension = path_buf.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Path without extension
-    let input_path_str = input_file_path;
-    let input_path_without_ext = if !input_extension.is_empty() {
-        &input_path_str[..input_path_str.len() - input_extension.len() - 1]
+    // Path without extension - safe against multi-byte UTF-8
+    let input_path_without_ext = if let Some(dot_idx) = input_file_path.rfind('.') {
+        let last_slash = input_file_path.rfind(['/', '\\']).unwrap_or(0);
+        if dot_idx > last_slash {
+            &input_file_path[..dot_idx]
+        } else {
+            input_file_path
+        }
     } else {
-        input_path_str
+        input_file_path
     };
 
     let output_extension = output_extension.to_lowercase();

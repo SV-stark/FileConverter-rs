@@ -35,8 +35,8 @@ This project modernizes and accelerates the core conversion pipelines, Windows E
 | Feature / Subsystem | Original C# FileConverter | Rust Rewrite (`FileConverter-rs`) |
 | :--- | :--- | :--- |
 | **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | **100% XML schema parity** via `quick-xml` & `serde` |
-| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit`, `IContextMenu`, `IShellPropSheetExt`, & Windows 11 `ExplorerCommandHandler` |
-| **Windows Explorer Integration** | Legacy *"Show more options"* only | Native COM `shellex` + **Direct Windows 11 Top-Level Context Menu** + **Property Sheet inspection tab** |
+| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit`, `IContextMenu`, & Windows 11 `IExplorerCommand` |
+| **Windows Explorer Integration** | Legacy *"Show more options"* only | Native COM `shellex` + **Direct Windows 11 Context Menu** |
 | **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
 | **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** with per-job live progress, cancel controls, dropzone actions & dynamic status indicators |
 | **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` multi-level lossless PNG compression |

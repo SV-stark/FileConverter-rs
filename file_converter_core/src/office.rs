@@ -34,39 +34,91 @@ pub fn is_office_app_available(_app_name: &str) -> bool {
     false
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+
+        result.push(CHARSET[(b0 >> 2) as usize] as char);
+        result.push(CHARSET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARSET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARSET[(b2 & 0x3f) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn encode_powershell_script(script: &str) -> String {
+    let utf16_bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    base64_encode(&utf16_bytes)
+}
+
 pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> Result<()> {
     let script = match app.to_lowercase().as_str() {
         "word" | "winword.exe" => {
             format!(
-                "$word = New-Object -ComObject Word.Application; \
-                 $word.Visible = $false; \
-                 $doc = $word.Documents.Open('{}'); \
-                 $doc.ExportAsFixedFormat('{}', 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true); \
-                 $doc.Close(0); \
-                 $word.Quit();",
+                "$word = $null; $doc = $null; \
+                 try {{ \
+                     $word = New-Object -ComObject Word.Application; \
+                     $word.Visible = $false; \
+                     $word.DisplayAlerts = 0; \
+                     $doc = $word.Documents.Open('{}'); \
+                     $doc.ExportAsFixedFormat('{}', 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true); \
+                 }} finally {{ \
+                     if ($doc) {{ $doc.Close(0); }} \
+                     if ($word) {{ $word.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 input_path.replace('\'', "''"),
                 output_path.replace('\'', "''")
             )
         }
         "excel" | "excel.exe" => {
             format!(
-                "$excel = New-Object -ComObject Excel.Application; \
-                 $excel.Visible = $false; \
-                 $wb = $excel.Workbooks.Open('{}', [System.Type]::Missing, $true); \
-                 $wb.ExportAsFixedFormat(0, '{}'); \
-                 $wb.Close($false); \
-                 $excel.Quit();",
+                "$excel = $null; $wb = $null; \
+                 try {{ \
+                     $excel = New-Object -ComObject Excel.Application; \
+                     $excel.Visible = $false; \
+                     $excel.DisplayAlerts = $false; \
+                     $wb = $excel.Workbooks.Open('{}', [System.Type]::Missing, $true); \
+                     $wb.ExportAsFixedFormat(0, '{}'); \
+                 }} finally {{ \
+                     if ($wb) {{ $wb.Close($false); }} \
+                     if ($excel) {{ $excel.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 input_path.replace('\'', "''"),
                 output_path.replace('\'', "''")
             )
         }
         "powerpoint" | "powerpnt.exe" => {
             format!(
-                "$ppt = New-Object -ComObject PowerPoint.Application; \
-                 $doc = $ppt.Presentations.Open('{}', $true, $true, $false); \
-                 $doc.ExportAsFixedFormat('{}', 2); \
-                 $doc.Close(); \
-                 $ppt.Quit();",
+                "$ppt = $null; $doc = $null; \
+                 try {{ \
+                     $ppt = New-Object -ComObject PowerPoint.Application; \
+                     $doc = $ppt.Presentations.Open('{}', $true, $true, $false); \
+                     $doc.ExportAsFixedFormat('{}', 2); \
+                 }} finally {{ \
+                     if ($doc) {{ $doc.Close(); }} \
+                     if ($ppt) {{ $ppt.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 input_path.replace('\'', "''"),
                 output_path.replace('\'', "''")
             )
@@ -83,8 +135,9 @@ pub fn convert_office_to_pdf(app: &str, input_path: &str, output_path: &str) -> 
 }
 
 fn execute_powershell_with_timeout(script: &str, timeout_secs: u64) -> Result<()> {
+    let encoded = encode_powershell_script(script);
     let mut child = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -121,6 +174,7 @@ fn execute_powershell_with_timeout(script: &str, timeout_secs: u64) -> Result<()
             Ok(None) => {
                 if start.elapsed() > max_dur {
                     let _ = child.kill();
+                    let _ = child.wait();
                     return Err(FileConverterError::Timeout(format!(
                         "Office conversion timed out after {}s",
                         timeout_secs
@@ -130,6 +184,7 @@ fn execute_powershell_with_timeout(script: &str, timeout_secs: u64) -> Result<()
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 return Err(FileConverterError::Office(format!(
                     "Failed waiting for PowerShell process: {:?}",
                     e
@@ -155,16 +210,24 @@ pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)
                 pair_code.push_str(&format!(
                     "$doc = $word.Documents.Open('{}'); \
                      $doc.ExportAsFixedFormat('{}', 17, $false, 0, 0, 1, 1, 0, $true, $true, 1, $true); \
-                     $doc.Close(0); ",
+                     $doc.Close(0); $doc = $null; ",
                     inp.replace('\'', "''"),
                     out.replace('\'', "''")
                 ));
             }
             format!(
-                "$word = New-Object -ComObject Word.Application; \
-                 $word.Visible = $false; \
-                 {} \
-                 $word.Quit();",
+                "$word = $null; $doc = $null; \
+                 try {{ \
+                     $word = New-Object -ComObject Word.Application; \
+                     $word.Visible = $false; \
+                     $word.DisplayAlerts = 0; \
+                     {} \
+                 }} finally {{ \
+                     if ($doc) {{ $doc.Close(0); }} \
+                     if ($word) {{ $word.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 pair_code
             )
         }
@@ -174,16 +237,24 @@ pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)
                 pair_code.push_str(&format!(
                     "$wb = $excel.Workbooks.Open('{}', [System.Type]::Missing, $true); \
                      $wb.ExportAsFixedFormat(0, '{}'); \
-                     $wb.Close($false); ",
+                     $wb.Close($false); $wb = $null; ",
                     inp.replace('\'', "''"),
                     out.replace('\'', "''")
                 ));
             }
             format!(
-                "$excel = New-Object -ComObject Excel.Application; \
-                 $excel.Visible = $false; \
-                 {} \
-                 $excel.Quit();",
+                "$excel = $null; $wb = $null; \
+                 try {{ \
+                     $excel = New-Object -ComObject Excel.Application; \
+                     $excel.Visible = $false; \
+                     $excel.DisplayAlerts = $false; \
+                     {} \
+                 }} finally {{ \
+                     if ($wb) {{ $wb.Close($false); }} \
+                     if ($excel) {{ $excel.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 pair_code
             )
         }
@@ -193,15 +264,22 @@ pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)
                 pair_code.push_str(&format!(
                     "$doc = $ppt.Presentations.Open('{}', $true, $true, $false); \
                      $doc.ExportAsFixedFormat('{}', 2); \
-                     $doc.Close(); ",
+                     $doc.Close(); $doc = $null; ",
                     inp.replace('\'', "''"),
                     out.replace('\'', "''")
                 ));
             }
             format!(
-                "$ppt = New-Object -ComObject PowerPoint.Application; \
-                 {} \
-                 $ppt.Quit();",
+                "$ppt = $null; $doc = $null; \
+                 try {{ \
+                     $ppt = New-Object -ComObject PowerPoint.Application; \
+                     {} \
+                 }} finally {{ \
+                     if ($doc) {{ $doc.Close(); }} \
+                     if ($ppt) {{ $ppt.Quit(); }} \
+                     [System.GC]::Collect(); \
+                     [System.GC]::WaitForPendingFinalizers(); \
+                 }}",
                 pair_code
             )
         }

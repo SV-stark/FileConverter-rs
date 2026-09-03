@@ -44,7 +44,18 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
         "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.0.2-essentials_build.zip",
     ];
 
-    let temp_zip_path = parent.join("ffmpeg_temp.zip");
+    let temp_zip_file = tempfile::Builder::new()
+        .prefix("fc_ffmpeg_")
+        .suffix(".zip")
+        .tempfile_in(parent)
+        .or_else(|_| {
+            tempfile::Builder::new()
+                .prefix("fc_ffmpeg_")
+                .suffix(".zip")
+                .tempfile()
+        })
+        .map_err(FileConverterError::Io)?;
+    let temp_zip_path = temp_zip_file.path().to_path_buf();
     let mut downloaded = false;
 
     let config = ureq::config::Config::builder()

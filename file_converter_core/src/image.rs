@@ -10,7 +10,13 @@ use crate::types::OutputType;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use rayon::prelude::*;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+static SHARED_FONTDB: LazyLock<Arc<resvg::usvg::fontdb::Database>> = LazyLock::new(|| {
+    let mut fontdb = resvg::usvg::fontdb::Database::new();
+    fontdb.load_system_fonts();
+    Arc::new(fontdb)
+});
 
 use hayro::hayro_syntax::Pdf;
 use hayro::{RenderCache, RenderSettings, render};
@@ -50,10 +56,8 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
         .map_err(|e| FileConverterError::Image(format!("Failed to memory map image: {:?}", e)))?;
 
     if ext == "svg" {
-        let mut fontdb = resvg::usvg::fontdb::Database::new();
-        fontdb.load_system_fonts();
         let opt = resvg::usvg::Options {
-            fontdb: Arc::new(fontdb),
+            fontdb: SHARED_FONTDB.clone(),
             ..Default::default()
         };
         let tree = resvg::usvg::Tree::from_data(&mmap, &opt)
@@ -279,10 +283,8 @@ pub fn run_image_conversion(
         })?;
 
         let mut img = if ext == "svg" {
-            let mut fontdb = resvg::usvg::fontdb::Database::new();
-            fontdb.load_system_fonts();
             let opt = resvg::usvg::Options {
-                fontdb: Arc::new(fontdb),
+                fontdb: SHARED_FONTDB.clone(),
                 ..Default::default()
             };
 

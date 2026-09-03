@@ -691,4 +691,82 @@ mod tests {
         let _ = std::fs::remove_file(svg_path);
         let _ = std::fs::remove_file(png_path);
     }
+
+    #[test]
+    fn test_utf8_path_template_and_extension_stripping() {
+        let input = "C:\\Music\\café_résumé_🎉.flac";
+        let out =
+            super::path_helpers::generate_file_path_from_template(input, "mp3", "(p)(f)", 1, 1);
+        assert_eq!(out, "C:\\Music\\café_résumé_🎉.mp3");
+
+        let default_template =
+            super::path_helpers::generate_file_path_from_template(input, "wav", "", 1, 1);
+        assert_eq!(default_template, "C:\\Music\\café_résumé_🎉.wav");
+    }
+
+    #[test]
+    fn test_ffmpeg_tokenize_command() {
+        let cmd = r#"-vf "scale=1920:1080,fps=30" -c:v libx264 -preset veryfast"#;
+        let tokens = super::ffmpeg::tokenize_command(cmd);
+        assert_eq!(
+            tokens,
+            vec![
+                "-vf",
+                "scale=1920:1080,fps=30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mp3_and_ogg_vbr_continuous_ranges() {
+        assert_eq!(
+            super::ffmpeg::mp3_vbr_bitrate_to_quality_index(320).unwrap(),
+            0
+        );
+        assert_eq!(
+            super::ffmpeg::mp3_vbr_bitrate_to_quality_index(245).unwrap(),
+            0
+        );
+        assert_eq!(
+            super::ffmpeg::mp3_vbr_bitrate_to_quality_index(190).unwrap(),
+            2
+        );
+        assert_eq!(
+            super::ffmpeg::mp3_vbr_bitrate_to_quality_index(64).unwrap(),
+            9
+        );
+
+        assert_eq!(
+            super::ffmpeg::ogg_vbr_bitrate_to_quality_index(500).unwrap(),
+            10
+        );
+        assert_eq!(
+            super::ffmpeg::ogg_vbr_bitrate_to_quality_index(320).unwrap(),
+            9
+        );
+        assert_eq!(
+            super::ffmpeg::ogg_vbr_bitrate_to_quality_index(128).unwrap(),
+            4
+        );
+        assert_eq!(
+            super::ffmpeg::ogg_vbr_bitrate_to_quality_index(32).unwrap(),
+            -2
+        );
+    }
+
+    #[test]
+    fn test_relative_path_regex_validation() {
+        assert!(super::path_helpers::is_path_valid("relative/path/file.txt"));
+        assert!(super::path_helpers::is_path_valid("file.txt"));
+        assert!(super::path_helpers::is_path_valid(
+            "C:\\Program Files\\app.exe"
+        ));
+        assert!(super::path_helpers::is_path_valid(
+            "\\\\server\\share\\doc.pdf"
+        ));
+    }
 }

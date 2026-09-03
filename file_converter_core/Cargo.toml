@@ -1,7 +1,10 @@
 [package]
 name = "file_converter_core"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2024"
+description = "Core conversion library for FileConverter-rs"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/SV-stark/FileConverter-rs"
 
 [dependencies]
 thiserror.workspace = true

@@ -28,15 +28,21 @@ pub fn compress_pdf<P: AsRef<Path>>(
     options: &PdfCompressOptions,
 ) -> Result<()> {
     let file = std::fs::File::open(input_path.as_ref()).map_err(FileConverterError::Io)?;
-
     let mmap = unsafe { Mmap::map(&file) }.map_err(FileConverterError::Io)?;
 
     let mut doc = Document::load_mem(&mmap).map_err(|e| {
         FileConverterError::Invalid(format!("Failed to load PDF document: {:?}", e))
     })?;
 
+    if doc.is_encrypted() {
+        return Err(FileConverterError::Invalid(
+            "Cannot compress password-protected or encrypted PDF".to_string(),
+        ));
+    }
+
     // Target max dimensions for a standard 8.5x11 inch page at target DPI
-    let max_dimension = ((11.0 * options.target_dpi as f32) as u32).max(600);
+    let max_w = ((8.5 * options.target_dpi as f32) as u32).max(600);
+    let max_h = ((11.0 * options.target_dpi as f32) as u32).max(600);
 
     use rayon::prelude::*;
 
@@ -53,7 +59,13 @@ pub fn compress_pdf<P: AsRef<Path>>(
                 .map(|name| name == b"Image")
                 .unwrap_or(false);
 
-            if is_image {
+            let has_mask = stream.dict.has(b"SMask") || stream.dict.has(b"Mask");
+            let is_supported_colorspace = match stream.dict.get(b"ColorSpace") {
+                Ok(Object::Name(name)) => name == b"DeviceRGB",
+                _ => false, // Preserve CMYK, Gray, and indexed color spaces without corrupting
+            };
+
+            if is_image && !has_mask && is_supported_colorspace {
                 let width = stream
                     .dict
                     .get(b"Width")
@@ -66,7 +78,7 @@ pub fn compress_pdf<P: AsRef<Path>>(
                     .and_then(|obj| obj.as_i64())
                     .unwrap_or(0) as u32;
 
-                if (width > max_dimension || height > max_dimension)
+                if (width > max_w || height > max_h)
                     && let Ok(decompressed) = stream.decompressed_content()
                 {
                     image_tasks.push((*id, decompressed, width, height));
@@ -96,8 +108,7 @@ pub fn compress_pdf<P: AsRef<Path>>(
                     return None;
                 }
 
-                let scale = (max_dimension as f32 / orig_w as f32)
-                    .min(max_dimension as f32 / orig_h as f32);
+                let scale = (max_w as f32 / orig_w as f32).min(max_h as f32 / orig_h as f32);
                 if scale >= 1.0 {
                     return None;
                 }
@@ -181,13 +192,49 @@ pub fn compress_pdf<P: AsRef<Path>>(
         }
     }
 
+    let is_same_file = input_path.as_ref() == output_path.as_ref();
+    let temp_save_path = if is_same_file {
+        let parent = output_path
+            .as_ref()
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let temp_file = tempfile::Builder::new()
+            .prefix("fc_pdf_")
+            .suffix(".pdf")
+            .tempfile_in(parent)
+            .map_err(FileConverterError::Io)?;
+        Some(temp_file.into_temp_path())
+    } else {
+        None
+    };
+
+    let save_target = if let Some(ref tp) = temp_save_path {
+        tp.as_ref()
+    } else {
+        output_path.as_ref()
+    };
+
     doc.prune_objects();
-    doc.save(output_path.as_ref()).map_err(|e| {
+    doc.save(save_target).map_err(|e| {
         FileConverterError::Io(std::io::Error::other(format!(
             "Failed to save PDF: {:?}",
             e
         )))
     })?;
+
+    // Drop mmap & file before atomic rename
+    drop(doc);
+    drop(mmap);
+    drop(file);
+
+    if let Some(tp) = temp_save_path {
+        tp.persist(output_path.as_ref()).map_err(|e| {
+            FileConverterError::Io(std::io::Error::other(format!(
+                "Failed to persist compressed PDF: {:?}",
+                e
+            )))
+        })?;
+    }
 
     Ok(())
 }

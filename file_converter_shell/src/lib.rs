@@ -27,16 +27,15 @@ mod windows_core {
     pub use windows::core::*;
 }
 use windows::Win32::Foundation::{
-    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HINSTANCE, HMODULE, HWND,
-    LPARAM, S_FALSE, S_OK, WPARAM,
+    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HMODULE, LPARAM, S_FALSE, S_OK,
 };
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP};
 use windows::Win32::System::Com::{
-    DVASPECT_CONTENT, FORMATETC, IClassFactory, IClassFactory_Impl, IDataObject, STGMEDIUM,
-    TYMED_HGLOBAL,
+    CoTaskMemAlloc, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IBindCtx, IClassFactory,
+    IClassFactory_Impl, IDataObject, STGMEDIUM, TYMED_HGLOBAL,
 };
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
-use windows::core::{GUID, HRESULT, Interface, PCWSTR, PSTR, Result, implement};
+use windows::core::{GUID, HRESULT, Interface, PCWSTR, PSTR, PWSTR, Result, implement};
 
 #[link(name = "ole32")]
 unsafe extern "system" {
@@ -57,14 +56,13 @@ macro_rules! dbg_log {
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Registry::HKEY;
-use windows::Win32::UI::Controls::{
-    CreatePropertySheetPageW, HPROPSHEETPAGE, PROPSHEETPAGEW, PSP_DEFAULT,
-};
+use windows::Win32::UI::Controls::HPROPSHEETPAGE;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMINVOKECOMMANDINFO, DragQueryFileW, HDROP, IContextMenu, IContextMenu_Impl, IShellExtInit,
-    IShellExtInit_Impl, IShellPropSheetExt, IShellPropSheetExt_Impl, SHCNE_ASSOCCHANGED,
-    SHCNF_IDLIST, SHChangeNotify,
+    CMINVOKECOMMANDINFO, DragQueryFileW, ECF_DEFAULT, ECS_ENABLED, HDROP, IContextMenu,
+    IContextMenu_Impl, IEnumExplorerCommand, IExplorerCommand, IExplorerCommand_Impl,
+    IShellExtInit, IShellExtInit_Impl, IShellItemArray, IShellPropSheetExt,
+    IShellPropSheetExt_Impl, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SIGDN_FILESYSPATH,
 };
 
 type LPFNADDPROPSHEETPAGE = Option<unsafe extern "system" fn(HPROPSHEETPAGE, LPARAM) -> BOOL>;
@@ -180,7 +178,7 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
     files
 }
 
-#[implement(IShellExtInit, IContextMenu, IShellPropSheetExt)]
+#[implement(IShellExtInit, IContextMenu, IShellPropSheetExt, IExplorerCommand)]
 struct FileConverterShellExt {
     selected_files: RwLock<Vec<String>>,
     active_presets: RwLock<Vec<String>>,
@@ -332,6 +330,16 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         }
 
         let presets_count = compatible_presets.len();
+        let needed_count = if presets_count <= 5 {
+            presets_count as u32
+        } else {
+            (presets_count + 2) as u32
+        };
+
+        if _idcmdlast >= idcmdfirst && (idcmdfirst + needed_count > _idcmdlast) {
+            return Ok(());
+        }
+
         let cmd_id = idcmdfirst;
         let configure_cmd_id = cmd_id + presets_count as u32;
 
@@ -368,7 +376,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     }
                 }
 
-                HRESULT(presets_count as i32).ok()
+                Err(windows::core::Error::from_hresult(HRESULT(
+                    presets_count as i32,
+                )))
             } else {
                 let h_sub_menu = CreatePopupMenu()?;
 
@@ -436,7 +446,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                 };
 
                 let _ = InsertMenuItemW(hmenu, indexmenu, true, &parent_mii);
-                HRESULT((presets_count + 2) as i32).ok()
+                Err(windows::core::Error::from_hresult(HRESULT(
+                    (presets_count + 2) as i32,
+                )))
             }
         }
     }
@@ -562,22 +574,8 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
 }
 
 impl IShellPropSheetExt_Impl for FileConverterShellExt_Impl {
-    fn AddPages(&self, lpfnaddpage: LPFNADDPROPSHEETPAGE, lparam: LPARAM) -> Result<()> {
-        if let Some(add_page_fn) = lpfnaddpage {
-            let mut psp = PROPSHEETPAGEW {
-                dwSize: std::mem::size_of::<PROPSHEETPAGEW>() as u32,
-                dwFlags: PSP_DEFAULT,
-                hInstance: HINSTANCE(G_DLL_INSTANCE.load(Ordering::Relaxed) as *mut c_void),
-                pfnDlgProc: Some(file_converter_prop_page_proc),
-                ..Default::default()
-            };
-            unsafe {
-                let hpage = CreatePropertySheetPageW(&mut psp);
-                if !hpage.is_invalid() {
-                    let _ = add_page_fn(hpage, lparam);
-                }
-            }
-        }
+    fn AddPages(&self, _lpfnaddpage: LPFNADDPROPSHEETPAGE, _lparam: LPARAM) -> Result<()> {
+        // Do not inject an unconfigured blank property sheet tab into Explorer
         Ok(())
     }
 
@@ -591,13 +589,115 @@ impl IShellPropSheetExt_Impl for FileConverterShellExt_Impl {
     }
 }
 
-unsafe extern "system" fn file_converter_prop_page_proc(
-    _hwnd: HWND,
-    _msg: u32,
-    _wparam: WPARAM,
-    _lparam: LPARAM,
-) -> isize {
-    0
+fn string_to_cotaskmem_pwstr(s: &str) -> Result<PWSTR> {
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = wide.len() * std::mem::size_of::<u16>();
+    unsafe {
+        let ptr = CoTaskMemAlloc(bytes) as *mut u16;
+        if ptr.is_null() {
+            return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+        Ok(PWSTR(ptr))
+    }
+}
+
+impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
+    fn GetTitle(&self, _psiitemarray: Option<&IShellItemArray>) -> Result<PWSTR> {
+        string_to_cotaskmem_pwstr("File Converter")
+    }
+
+    fn GetIcon(&self, _psiitemarray: Option<&IShellItemArray>) -> Result<PWSTR> {
+        let bin_path = get_bin_path();
+        string_to_cotaskmem_pwstr(&bin_path.to_string_lossy())
+    }
+
+    fn GetToolTip(&self, _psiitemarray: Option<&IShellItemArray>) -> Result<PWSTR> {
+        string_to_cotaskmem_pwstr("Convert files with File Converter")
+    }
+
+    fn GetCanonicalName(&self) -> Result<GUID> {
+        Ok(CLSID_FILE_CONVERTER)
+    }
+
+    fn GetState(
+        &self,
+        psiitemarray: Option<&IShellItemArray>,
+        _foktousecache: BOOL,
+    ) -> Result<u32> {
+        let mut has_files = false;
+        if let Some(item_array) = psiitemarray {
+            unsafe {
+                if let Ok(count) = item_array.GetCount() {
+                    has_files = count > 0;
+                }
+            }
+        }
+        if !has_files {
+            if let Ok(lock) = self.selected_files.read() {
+                has_files = !lock.is_empty();
+            }
+        }
+
+        if has_files {
+            Ok(ECS_ENABLED.0 as u32)
+        } else {
+            Ok(windows::Win32::UI::Shell::ECS_HIDDEN.0 as u32)
+        }
+    }
+
+    fn Invoke(
+        &self,
+        psiitemarray: Option<&IShellItemArray>,
+        _pbc: Option<&IBindCtx>,
+    ) -> Result<()> {
+        let mut files = Vec::new();
+        if let Some(item_array) = psiitemarray {
+            unsafe {
+                if let Ok(count) = item_array.GetCount() {
+                    for i in 0..count {
+                        if let Ok(item) = item_array.GetItemAt(i) {
+                            if let Ok(path_pwstr) = item.GetDisplayName(SIGDN_FILESYSPATH) {
+                                if !path_pwstr.is_null() {
+                                    let path_str = path_pwstr.to_string().unwrap_or_default();
+                                    CoTaskMemFree(Some(path_pwstr.0 as *const c_void));
+                                    if !path_str.is_empty() {
+                                        files.push(path_str);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if files.is_empty() {
+            if let Ok(lock) = self.selected_files.read() {
+                files = lock.clone();
+            }
+        }
+
+        let bin_path = get_bin_path();
+        if !bin_path.exists() {
+            return Err(E_FAIL.into());
+        }
+
+        let mut cmd = Command::new(&bin_path);
+        for file in files {
+            cmd.arg(file);
+        }
+        let _ = cmd.spawn();
+        Ok(())
+    }
+
+    fn GetFlags(&self) -> Result<u32> {
+        Ok(ECF_DEFAULT.0 as u32)
+    }
+
+    fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
+        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+    }
 }
 
 fn create_default_settings() -> Settings {
@@ -818,8 +918,8 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let _ = key.set_value("ThreadingModel", &"Apartment");
     }
 
-    // Register handlers cleanly on files and folders
-    let associations = ["*", "Directory"];
+    // Register handlers cleanly on files, folders, and all objects
+    let associations = ["*", "Directory", "AllFilesystemObjects"];
 
     let bin_exe = if let Some(parent) = module_path.parent() {
         parent.join("file_converter_bin.exe")
@@ -839,13 +939,18 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
             let _ = key.set_value("", &clsid_str);
         }
 
-        // Modern Windows 11 Explorer Command Handler
+        // Modern Windows 11 Explorer Command & Shell Verb Handler
         let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
         if let Ok((key, _)) = root_classes.create_subkey(&shell_verb_path) {
             let _ = key.set_value("", &"File Converter");
             let _ = key.set_value("MUIVerb", &"File Converter");
             let _ = key.set_value("Icon", &bin_exe_str);
             let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
+        }
+        let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
+        if let Ok((key, _)) = root_classes.create_subkey(&shell_verb_cmd_path) {
+            let cmd_str = format!("\"{}\" \"%1\"", bin_exe_str);
+            let _ = key.set_value("", &cmd_str);
         }
     }
 

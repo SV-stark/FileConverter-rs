@@ -7,6 +7,39 @@ use std::process::Command;
 
 use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str};
 
+fn write_output_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
+    if let Some(parent) = path.as_ref().parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(path, content).map_err(FileConverterError::Io)
+}
+
+fn sanitize_text_for_pdf(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '\n' || c == '\r' || c == '\t' {
+            bytes.push(b' ');
+        } else if (c as u32) < 128 && !c.is_control() {
+            bytes.push(c as u8);
+        } else if (160..=255).contains(&(c as u32)) {
+            // ISO-8859-1 / Latin-1 accented characters (é, ü, ñ, à, ç, etc.)
+            bytes.push(c as u8);
+        } else {
+            match c {
+                '“' | '”' => bytes.push(b'"'),
+                '‘' | '’' => bytes.push(b'\''),
+                '—' | '–' => bytes.push(b'-'),
+                '…' => bytes.extend_from_slice(b"..."),
+                '\u{00A0}' => bytes.push(b' '),
+                _ => bytes.push(b' '),
+            }
+        }
+    }
+    bytes
+}
+
 /// Creates a multi-page vector PDF document from plain text or extracted markup.
 pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Result<()> {
     let mut pdf = Pdf::new();
@@ -71,33 +104,15 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
 
         if page_idx == 0 && !title.is_empty() {
             content.set_font(Name(b"F2"), 14.0);
-            let sanitized_title: String = title
-                .chars()
-                .map(|c| {
-                    if (c as u32) < 128 && !c.is_control() {
-                        c
-                    } else {
-                        ' '
-                    }
-                })
-                .collect();
-            content.show(Str(sanitized_title.as_bytes()));
+            let sanitized_title = sanitize_text_for_pdf(title);
+            content.show(Str(&sanitized_title));
             content.next_line(0.0, -20.0);
             content.set_font(Name(b"F1"), 10.0);
         }
 
         for line in *chunk {
-            let sanitized: String = line
-                .chars()
-                .map(|c| {
-                    if (c as u32) < 128 && !c.is_control() {
-                        c
-                    } else {
-                        ' '
-                    }
-                })
-                .collect();
-            content.show(Str(sanitized.as_bytes()));
+            let sanitized = sanitize_text_for_pdf(line);
+            content.show(Str(&sanitized));
             content.next_line(0.0, -line_height);
         }
         content.end_text();
@@ -130,7 +145,7 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
         .base_font(Name(b"Helvetica-Bold"));
     pdf.catalog(catalog_id).pages(pages_id);
 
-    fs::write(output_path, pdf.finish()).map_err(FileConverterError::Io)?;
+    write_output_file(output_path, pdf.finish())?;
     Ok(())
 }
 
@@ -195,10 +210,10 @@ pub fn run_ebook_conversion(
             if is_pdf {
                 create_pdf_from_text(&title, &text_body, output_path)?;
             } else if is_txt {
-                fs::write(output_path, text_body)?;
+                write_output_file(output_path, text_body)?;
             } else {
                 let full_html = wrap_html(&title, &html_body);
-                fs::write(output_path, full_html)?;
+                write_output_file(output_path, full_html)?;
             }
 
             progress_cb(1.0, "Complete");
@@ -250,10 +265,10 @@ pub fn run_markdown_conversion(
         create_pdf_from_text(file_stem, &plain_text, output_path)?;
     } else if is_txt {
         let plain_text = strip_html_tags(&html_output);
-        fs::write(output_path, plain_text)?;
+        write_output_file(output_path, plain_text)?;
     } else {
         let styled_html = wrap_html(file_stem, &html_output);
-        fs::write(output_path, styled_html)?;
+        write_output_file(output_path, styled_html)?;
     }
 
     progress_cb(1.0, "Complete");
@@ -271,32 +286,61 @@ pub fn run_typst_conversion(
 
     let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
 
-    if crate::path_helpers::find_in_path("typst").is_some() {
+    if let Some(typst_exe) = crate::path_helpers::find_in_path("typst") {
         progress_cb(0.5, "Compiling document with Typst");
-        let output = Command::new("typst")
+        if let Some(parent) = Path::new(output_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let mut child = Command::new(&typst_exe)
             .arg("compile")
             .arg(input_path)
             .arg(output_path)
-            .output();
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                FileConverterError::Invalid(format!("Failed to execute typst CLI: {:?}", e))
+            })?;
 
-        match output {
-            Ok(out) if out.status.success() => {
-                progress_cb(1.0, "Complete");
-                return Ok(());
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(60);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(FileConverterError::Timeout(
+                            "Typst compilation timed out after 60s".to_string(),
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(FileConverterError::Invalid(format!(
+                        "Error waiting for typst CLI: {:?}",
+                        e
+                    )));
+                }
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return Err(FileConverterError::Invalid(format!(
-                    "Typst compilation failed: {}",
-                    stderr
-                )));
+        };
+
+        if status.success() {
+            progress_cb(1.0, "Complete");
+            return Ok(());
+        } else {
+            let mut stderr_str = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr_str);
             }
-            Err(e) => {
-                return Err(FileConverterError::Invalid(format!(
-                    "Failed to execute typst CLI: {}",
-                    e
-                )));
-            }
+            return Err(FileConverterError::Invalid(format!(
+                "Typst compilation failed: {}",
+                stderr_str
+            )));
         }
     }
 
@@ -317,7 +361,7 @@ pub fn run_typst_conversion(
         create_pdf_from_text(file_stem, &plain, output_path)?;
     } else {
         let styled_html = wrap_html(file_stem, &html_output);
-        fs::write(output_path, styled_html)?;
+        write_output_file(output_path, styled_html)?;
     }
 
     progress_cb(1.0, "Complete (Fallback)");

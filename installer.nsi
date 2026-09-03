@@ -1,5 +1,5 @@
 !define APP_NAME "FileConverter"
-!define APP_VERSION "0.9.4"
+!define APP_VERSION "0.9.5"
 !define APP_PUBLISHER "FileConverter Authors"
 !define APP_WEBSITE "https://github.com/SV-stark/FileConverter-rs"
 
@@ -61,6 +61,9 @@ Section "Install"
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\file_converter_bin.exe" "" "$INSTDIR\file_converter_bin.exe" 0
     CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
+
+    ; Refresh Shell icon and association cache
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd
 
 Section "Uninstall"
@@ -73,15 +76,26 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk"
     RMDir "$SMPROGRAMS\${APP_NAME}"
 
-    ; Delete files
+    ; Delete files including icons and assets
+    Delete "$INSTDIR\icon.ico"
+    Delete "$INSTDIR\icon.png"
     Delete "$INSTDIR\file_converter_bin.exe"
-    Delete "$INSTDIR\file_converter_shell.dll"
+    Delete /REBOOTOK "$INSTDIR\file_converter_shell.dll"
     Delete "$INSTDIR\Settings.default.xml"
     Delete "$INSTDIR\uninstall.exe"
     
-    RMDir "$INSTDIR"
+    RMDir /REBOOTOK "$INSTDIR"
     
     ; Remove registry keys
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
     DeleteRegKey HKLM "Software\${APP_NAME}"
+    DeleteRegKey HKCR "*\shell\${APP_NAME}"
+    DeleteRegKey HKCR "*\shellex\ContextMenuHandlers\${APP_NAME}"
+    DeleteRegKey HKCR "Directory\shell\${APP_NAME}"
+    DeleteRegKey HKCR "Directory\shellex\ContextMenuHandlers\${APP_NAME}"
+    DeleteRegKey HKCR "AllFilesystemObjects\shell\${APP_NAME}"
+    DeleteRegKey HKCR "AllFilesystemObjects\shellex\ContextMenuHandlers\${APP_NAME}"
+
+    ; Refresh Shell icon and association cache
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

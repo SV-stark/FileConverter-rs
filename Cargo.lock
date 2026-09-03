@@ -1863,7 +1863,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_bin"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "clap",
  "file_converter_core",
@@ -1874,12 +1874,13 @@ dependencies = [
  "slint-build",
  "tracing",
  "tracing-subscriber",
+ "windows 0.58.0",
  "winres",
 ]
 
 [[package]]
 name = "file_converter_core"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1923,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_shell"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "file_converter_core",
  "scopeguard",
