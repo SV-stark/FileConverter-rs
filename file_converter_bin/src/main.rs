@@ -243,10 +243,12 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
 fn is_windows_dark_mode() -> bool {
     #[cfg(target_os = "windows")]
     {
-        use winreg::enums::HKEY_CURRENT_USER;
         use winreg::RegKey;
+        use winreg::enums::HKEY_CURRENT_USER;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") {
+        if let Ok(key) =
+            hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        {
             if let Ok(val) = key.get_value::<u32, _>("AppsUseLightTheme") {
                 return val == 0;
             }
@@ -830,9 +832,16 @@ fn refresh_filtered_presets(
 
             let text_match = query_str.is_empty()
                 || p.name.to_lowercase().contains(&query_str)
-                || p.input_types.iter().any(|t| t.to_lowercase().contains(&query_str))
-                || format!("{:?}", p.output_type).to_lowercase().contains(&query_str)
-                || p.output_type.extension().to_lowercase().contains(&query_str);
+                || p.input_types
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_str))
+                || format!("{:?}", p.output_type)
+                    .to_lowercase()
+                    .contains(&query_str)
+                || p.output_type
+                    .extension()
+                    .to_lowercase()
+                    .contains(&query_str);
 
             cat_match && text_match
         })
@@ -1191,13 +1200,14 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
             if let Some(preset) = s.conversion_presets.get_mut(idx) {
                 if let Ok(parsed) = out_type_str.as_str().parse::<OutputType>() {
                     preset.output_type = parsed;
-                    let preview = file_converter_core::path_helpers::generate_file_path_from_template(
-                        "C:\\Music\\Album\\sample_track.flac",
-                        preset.output_type.extension(),
-                        &preset.output_file_name_template,
-                        1,
-                        1,
-                    );
+                    let preview =
+                        file_converter_core::path_helpers::generate_file_path_from_template(
+                            "C:\\Music\\Album\\sample_track.flac",
+                            preset.output_type.extension(),
+                            &preset.output_file_name_template,
+                            1,
+                            1,
+                        );
                     w.set_preview_path(preview.into());
                 }
             }
@@ -1214,7 +1224,10 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
             let mut s = settings_clone.borrow_mut();
             let idx = w.get_selected_preset_index() as usize;
             if let Some(preset) = s.conversion_presets.get_mut(idx) {
-                if let Ok(parsed) = act_str.as_str().parse::<file_converter_core::types::InputPostConversionAction>() {
+                if let Ok(parsed) = act_str
+                    .as_str()
+                    .parse::<file_converter_core::types::InputPostConversionAction>(
+                ) {
                     preset.input_post_conversion_action = parsed;
                 }
             }
