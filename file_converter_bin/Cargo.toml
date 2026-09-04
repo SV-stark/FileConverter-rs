@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_bin"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 description = "Desktop application and CLI for FileConverter-rs"
 license = "GPL-3.0-or-later"
