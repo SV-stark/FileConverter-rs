@@ -84,7 +84,7 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     // Verify package integrity against the pinned SHA-256 before extraction.
     let mut file_for_hash = fs::File::open(&temp_zip_path)?;
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 64 * 1024];
+    let mut buf = [0u8; 64 * 1024];
     loop {
         let n = file_for_hash.read(&mut buf)?;
         if n == 0 {
@@ -122,11 +122,18 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
     let _ = fs::remove_file(&temp_zip_path);
 
     if found {
-        // Validate executable integrity (must be non-empty and start with MZ header)
-        if let Ok(header) = fs::read(&final_target)
-            && header.len() > 1024
-            && header.starts_with(b"MZ")
+        // Validate executable integrity without reading entire ~100MB binary into memory
+        let is_valid_pe = if let Ok(meta) = fs::metadata(&final_target)
+            && meta.len() > 1024
+            && let Ok(mut f) = fs::File::open(&final_target)
         {
+            let mut magic = [0u8; 2];
+            f.read_exact(&mut magic).is_ok() && &magic == b"MZ"
+        } else {
+            false
+        };
+
+        if is_valid_pe {
             return Ok(final_target);
         }
         let _ = fs::remove_file(&final_target);

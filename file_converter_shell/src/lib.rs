@@ -98,7 +98,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
 }
 
-unsafe fn create_category_icon(output_type: OutputType) -> HBITMAP {
+fn create_category_icon(output_type: OutputType) -> HBITMAP {
     // 32bpp GDI Bitmap memory layout: Byte 0 = B, Byte 1 = G, Byte 2 = R, Byte 3 = 0
     let color: u32 = match output_type {
         OutputType::Aac
@@ -131,7 +131,8 @@ unsafe fn create_category_icon(output_type: OutputType) -> HBITMAP {
             }
         }
     }
-    CreateBitmap(16, 16, 1, 32, Some(pixels.as_ptr() as *const c_void))
+    // SAFETY: pixels is a valid 16x16 32bpp buffer that remains alive during CreateBitmap.
+    unsafe { CreateBitmap(16, 16, 1, 32, Some(pixels.as_ptr() as *const c_void)) }
 }
 
 fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
@@ -143,6 +144,7 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
         lindex: -1,
         tymed: TYMED_HGLOBAL.0 as u32,
     };
+    // SAFETY: Interrogating IDataObject for CF_HDROP and reading wide file paths with RAII cleanup.
     unsafe {
         if let Ok(mut medium) = data_obj.GetData(&fmt) {
             let h_drop = medium.u.hGlobal;

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.7] - 2026-09-12
+
+### ⚡ Performance & Memory Optimization
+- **Zero-Copy SIMD Image Resizing (`image.rs`):**
+  - Eliminated full-image bitmap cloning (`buf.as_raw().clone()`) by passing borrowed slice references through `fast_image_resize::images::ImageRef`.
+  - Used `dst_image.into_vec()` to transfer ownership of output image buffers directly without copying.
+- **Header-Only Download Verification (`ffmpeg_download.rs`):**
+  - Eliminated reading the entire ~100MB `ffmpeg.exe` binary into memory during integrity validation, replacing it with filesystem metadata size check and a 2-byte stream read of `b"MZ"`.
+  - Replaced heap-allocated 64KB vector with a fixed stack buffer for SHA-256 computation.
+- **Fast Path Template Formatting (`path_helpers.rs`):**
+  - Guarded all token replacements (`(path)`, `(p)`, `(F)`, `(O)`, `(I)`, `(d:)`, `(n:i)`, etc.), eliminating redundant Windows Registry queries and uppercase string allocations unless the respective tokens are present in the template.
+- **Rayon Global Thread Pool Reuse (`scheduler.rs`):**
+  - Reused Rayon's global thread pool whenever job concurrency matches the system thread pool, avoiding thread pool construction and teardown overhead per conversion batch.
+- **Zero-Allocation Version Comparison & Document Streaming (`update_check.rs`, `doc_convert.rs`):**
+  - Replaced heap-allocated `Vec<u32>` version vectors with an iterator-based comparison pipeline.
+  - Eliminated intermediate vector allocations during plain text wrapping and page chunking.
+
+### 🛡️ Safety & Reliability
+- **Rust 2024 Safety Invariants & Annotations:**
+  - Added comprehensive `// SAFETY:` rationale above all `Mmap::map` memory-mapped I/O blocks across PDF and image rasterization (`image.rs`, `pdf_compress.rs`).
+  - Added safety invariant annotations for Win32 API calls (`ShellExecuteW`, `MessageBeep`, `CreateBitmap`, `DragQueryFileW`).
+  - Encapsulated GDI category icon generation within a safe function with internal safety comments.
+- **Windows COM RAII Cleanup (`main.rs`):**
+  - Wrapped `CoInitializeEx` with `scopeguard::guard` to guarantee `CoUninitialize()` is invoked on all return paths in file dialogs.
+  - Converted runtime wide-string allocations to compile-time `windows::core::w!` literals.
+- **Standardized Error Casing (`error.rs`):**
+  - Updated all `FileConverterError` messages to lowercase without trailing punctuation according to standard Rust conventions.
+
+---
+
+## [0.9.6] - 2026-09-08
+
+### 🎨 GUI & Architecture
+- **Slint GUI Overhaul & Theme Support:**
+  - Redesigned user interface with Fluent Design styling, dark/light theme switching, and live format studio controls.
+  - Embedded local `Settings.default.xml` and refined package metadata for crate distribution.
+
+---
+
 ## [0.9.5] - 2026-09-03
 
 ### 🛡️ Security, Reliability & Critical Fixes

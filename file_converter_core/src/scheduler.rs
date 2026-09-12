@@ -595,11 +595,15 @@ impl ConversionScheduler {
             self.max_threads
         };
 
-        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+        use rayon::prelude::*;
+        if max_concurrency == rayon::current_num_threads() {
+            self.jobs.par_iter().for_each(|job| {
+                job.run(self.hw_accel);
+            });
+        } else if let Ok(pool) = rayon::ThreadPoolBuilder::new()
             .num_threads(max_concurrency)
             .build()
         {
-            use rayon::prelude::*;
             pool.install(|| {
                 self.jobs.par_iter().for_each(|job| {
                     job.run(self.hw_accel);

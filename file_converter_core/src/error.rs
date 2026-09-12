@@ -2,28 +2,28 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum FileConverterError {
-    #[error("I/O error: {0}")]
+    #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("XML parsing error: {0}")]
+    #[error("xml parsing error: {0}")]
     Xml(#[from] quick_xml::DeError),
 
-    #[error("FFmpeg error: {0}")]
+    #[error("ffmpeg error: {0}")]
     Ffmpeg(String),
 
-    #[error("Office conversion error: {0}")]
+    #[error("office conversion error: {0}")]
     Office(String),
 
-    #[error("Image processing error: {0}")]
+    #[error("image processing error: {0}")]
     Image(String),
 
-    #[error("Invalid preset or path: {0}")]
+    #[error("invalid preset or path: {0}")]
     Invalid(String),
 
-    #[error("Job failed: {0}")]
+    #[error("job failed: {0}")]
     JobFailed(String),
 
-    #[error("Process timeout: {0}")]
+    #[error("process timeout: {0}")]
     Timeout(String),
 }
 

@@ -206,55 +206,104 @@ pub fn generate_file_path_from_template(
     let mut output_path = output_file_path_template.to_string();
 
     // Standard replacements
-    output_path = output_path.replace("(path)", &parent_dir_with_slash);
-    output_path = output_path.replace("(p)", &parent_dir_with_slash);
+    if output_path.contains("(path)") {
+        output_path = output_path.replace("(path)", &parent_dir_with_slash);
+    }
+    if output_path.contains("(p)") {
+        output_path = output_path.replace("(p)", &parent_dir_with_slash);
+    }
 
-    output_path = output_path.replace("(filename)", file_name);
-    output_path = output_path.replace("(f)", file_name);
-    output_path = output_path.replace("(F)", &file_name.to_uppercase());
+    if output_path.contains("(filename)") {
+        output_path = output_path.replace("(filename)", file_name);
+    }
+    if output_path.contains("(f)") {
+        output_path = output_path.replace("(f)", file_name);
+    }
+    if output_path.contains("(F)") {
+        output_path = output_path.replace("(F)", &file_name.to_uppercase());
+    }
 
-    output_path = output_path.replace("(outputext)", &output_extension);
-    output_path = output_path.replace("(o)", &output_extension);
-    output_path = output_path.replace("(O)", &output_extension.to_uppercase());
+    if output_path.contains("(outputext)") {
+        output_path = output_path.replace("(outputext)", &output_extension);
+    }
+    if output_path.contains("(o)") {
+        output_path = output_path.replace("(o)", &output_extension);
+    }
+    if output_path.contains("(O)") {
+        output_path = output_path.replace("(O)", &output_extension.to_uppercase());
+    }
 
-    output_path = output_path.replace("(inputext)", input_extension);
-    output_path = output_path.replace("(i)", input_extension);
-    output_path = output_path.replace("(I)", &input_extension.to_uppercase());
+    if output_path.contains("(inputext)") {
+        output_path = output_path.replace("(inputext)", input_extension);
+    }
+    if output_path.contains("(i)") {
+        output_path = output_path.replace("(i)", input_extension);
+    }
+    if output_path.contains("(I)") {
+        output_path = output_path.replace("(I)", &input_extension.to_uppercase());
+    }
 
-    // Special folder paths
-    output_path = output_path.replace("(p:d)", &get_special_folder_path("documents"));
-    output_path = output_path.replace("(p:documents)", &get_special_folder_path("documents"));
-    output_path = output_path.replace("(p:m)", &get_special_folder_path("music"));
-    output_path = output_path.replace("(p:music)", &get_special_folder_path("music"));
-    output_path = output_path.replace("(p:v)", &get_special_folder_path("videos"));
-    output_path = output_path.replace("(p:videos)", &get_special_folder_path("videos"));
-    output_path = output_path.replace("(p:p)", &get_special_folder_path("pictures"));
-    output_path = output_path.replace("(p:pictures)", &get_special_folder_path("pictures"));
+    // Special folder paths - only query registry if template requests them
+    if output_path.contains("(p:") {
+        if output_path.contains("(p:d)") || output_path.contains("(p:documents)") {
+            let doc_path = get_special_folder_path("documents");
+            output_path = output_path.replace("(p:d)", &doc_path);
+            output_path = output_path.replace("(p:documents)", &doc_path);
+        }
+        if output_path.contains("(p:m)") || output_path.contains("(p:music)") {
+            let music_path = get_special_folder_path("music");
+            output_path = output_path.replace("(p:m)", &music_path);
+            output_path = output_path.replace("(p:music)", &music_path);
+        }
+        if output_path.contains("(p:v)") || output_path.contains("(p:videos)") {
+            let video_path = get_special_folder_path("videos");
+            output_path = output_path.replace("(p:v)", &video_path);
+            output_path = output_path.replace("(p:videos)", &video_path);
+        }
+        if output_path.contains("(p:p)") || output_path.contains("(p:pictures)") {
+            let pic_path = get_special_folder_path("pictures");
+            output_path = output_path.replace("(p:p)", &pic_path);
+            output_path = output_path.replace("(p:pictures)", &pic_path);
+        }
+    }
 
     // Directory nesting placeholders (d0), (d1), etc.
-    let folder_len = folders.len();
-    for (i, &val) in folders.iter().enumerate().take(folder_len) {
-        let d_index = folder_len - i - 1;
-        output_path = output_path.replace(&format!("(d{})", d_index), val);
-        output_path = output_path.replace(&format!("(D{})", d_index), &val.to_uppercase());
+    if output_path.contains("(d") || output_path.contains("(D") {
+        let folder_len = folders.len();
+        for (i, &val) in folders.iter().enumerate().take(folder_len) {
+            let d_index = folder_len - i - 1;
+            let tag = format!("(d{})", d_index);
+            if output_path.contains(&tag) {
+                output_path = output_path.replace(&tag, val);
+            }
+            let upper_tag = format!("(D{})", d_index);
+            if output_path.contains(&upper_tag) {
+                output_path = output_path.replace(&upper_tag, &val.to_uppercase());
+            }
+        }
     }
 
     // Number index / count
-    output_path = output_path.replace("(n:i)", &number_index.to_string());
-    output_path = output_path.replace("(n:c)", &number_max.to_string());
+    if output_path.contains("(n:i)") {
+        output_path = output_path.replace("(n:i)", &number_index.to_string());
+    }
+    if output_path.contains("(n:c)") {
+        output_path = output_path.replace("(n:c)", &number_max.to_string());
+    }
 
     // Date formatting (d:format)
-    let now = Zoned::now();
-
-    output_path = RE_DATE_FMT
-        .replace_all(&output_path, |caps: &regex::Captures| {
-            let fmt_str = translate_csharp_date_format(&caps["format"]);
-            now.strftime(&fmt_str)
-                .to_string()
-                .replace('/', "-")
-                .replace(':', "'")
-        })
-        .to_string();
+    if output_path.contains("(d:") {
+        let now = Zoned::now();
+        output_path = RE_DATE_FMT
+            .replace_all(&output_path, |caps: &regex::Captures| {
+                let fmt_str = translate_csharp_date_format(&caps["format"]);
+                now.strftime(&fmt_str)
+                    .to_string()
+                    .replace('/', "-")
+                    .replace(':', "'")
+            })
+            .to_string();
+    }
 
     format!("{}.{}", output_path, output_extension)
 }

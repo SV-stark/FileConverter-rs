@@ -62,9 +62,8 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
             lines.push(String::new());
             continue;
         }
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
         let mut cur_line = String::new();
-        for word in words {
+        for word in trimmed.split_whitespace() {
             if cur_line.is_empty() {
                 cur_line.push_str(word);
             } else if cur_line.len() + 1 + word.len() <= 80 {
@@ -84,11 +83,10 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
         lines.push(String::new());
     }
 
-    let chunks: Vec<&[String]> = lines.chunks(max_lines_per_page.max(1)).collect();
     let mut page_ids = Vec::new();
     let mut current_ref_num = 5;
 
-    for (page_idx, chunk) in chunks.iter().enumerate() {
+    for (page_idx, chunk) in lines.chunks(max_lines_per_page.max(1)).enumerate() {
         let page_id = Ref::new(current_ref_num);
         current_ref_num += 1;
         let content_id = Ref::new(current_ref_num);
@@ -110,7 +108,7 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
             content.set_font(Name(b"F1"), 10.0);
         }
 
-        for line in *chunk {
+        for line in chunk {
             let sanitized = sanitize_text_for_pdf(line);
             content.show(Str(&sanitized));
             content.next_line(0.0, -line_height);

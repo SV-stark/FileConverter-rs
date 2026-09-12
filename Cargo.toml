@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # Workspace internal crate
-file_converter_core = { path = "file_converter_core", version = "0.9.6" }
+file_converter_core = { path = "file_converter_core", version = "0.9.7" }
 
 # Serialization & Error handling
 serde = { version = "1.0", features = ["derive"] }

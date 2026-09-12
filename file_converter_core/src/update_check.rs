@@ -46,15 +46,12 @@ pub fn check_for_updates(current_version: &str) -> Option<UpdateInfo> {
 }
 
 pub fn is_version_newer(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
+    fn parse_version(v: &str) -> impl Iterator<Item = u32> + '_ {
         v.trim_start_matches('v')
             .split('.')
             .filter_map(|s| s.parse::<u32>().ok())
-            .collect()
-    };
-    let c = parse(current);
-    let l = parse(latest);
-    l > c
+    }
+    parse_version(latest).gt(parse_version(current))
 }
 
 #[cfg(test)]

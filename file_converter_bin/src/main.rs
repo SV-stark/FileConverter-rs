@@ -59,6 +59,7 @@ fn register_shell_extension_dll() -> String {
     }
 
     #[cfg(target_os = "windows")]
+    // SAFETY: ShellExecuteW is called with valid null-terminated strings and null pointers for optional parameters.
     unsafe {
         unsafe extern "system" {
             fn ShellExecuteW(
@@ -71,8 +72,8 @@ fn register_shell_extension_dll() -> String {
             ) -> *mut std::ffi::c_void;
         }
 
-        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-        let file: Vec<u16> = "regsvr32.exe\0".encode_utf16().collect();
+        let verb = windows::core::w!("runas");
+        let file = windows::core::w!("regsvr32.exe");
         let params: Vec<u16> = format!("/s \"{}\"\0", dll_path.to_string_lossy())
             .encode_utf16()
             .collect();
@@ -111,6 +112,7 @@ fn unregister_shell_extension_dll() -> String {
     }
 
     #[cfg(target_os = "windows")]
+    // SAFETY: ShellExecuteW is called with valid null-terminated strings and null pointers for optional parameters.
     unsafe {
         unsafe extern "system" {
             fn ShellExecuteW(
@@ -123,8 +125,8 @@ fn unregister_shell_extension_dll() -> String {
             ) -> *mut std::ffi::c_void;
         }
 
-        let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-        let file: Vec<u16> = "regsvr32.exe\0".encode_utf16().collect();
+        let verb = windows::core::w!("runas");
+        let file = windows::core::w!("regsvr32.exe");
         let params: Vec<u16> = format!("/u /s \"{}\"\0", dll_path.to_string_lossy())
             .encode_utf16()
             .collect();
@@ -154,6 +156,7 @@ fn unregister_shell_extension_dll() -> String {
 
 fn play_completion_sound() {
     #[cfg(target_os = "windows")]
+    // SAFETY: MessageBeep is a benign Win32 notification audio API.
     unsafe {
         unsafe extern "system" {
             fn MessageBeep(uType: u32) -> i32;
@@ -294,8 +297,14 @@ fn open_file_dialog() -> Vec<String> {
         FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
     };
 
+    // SAFETY: COM is initialized on the UI thread for FileOpenDialog and cleaned up via scopeguard.
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let coinit = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _guard = scopeguard::guard((), |_| {
+            if coinit.is_ok() {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+        });
         let dialog_res: windows::core::Result<IFileOpenDialog> =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL);
         if let Ok(dialog) = dialog_res {

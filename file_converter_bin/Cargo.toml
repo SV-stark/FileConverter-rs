@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_bin"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2024"
 description = "Desktop application and CLI for FileConverter-rs"
 license = "GPL-3.0-or-later"
@@ -15,6 +15,7 @@ jiff.workspace = true
 clap.workspace = true
 tracing = "0.1"
 tracing-subscriber = "0.3"
+scopeguard.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

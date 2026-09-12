@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_shell"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2024"
 description = "Windows Explorer context menu shell extension for FileConverter-rs"
 license = "GPL-3.0-or-later"

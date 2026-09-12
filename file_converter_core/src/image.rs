@@ -23,7 +23,10 @@ use hayro::{RenderCache, RenderSettings, render};
 use hayro_interpret::InterpreterSettings;
 use hayro_interpret::font::FontQuery;
 
-use fast_image_resize::{PixelType, Resizer, images::Image};
+use fast_image_resize::{
+    PixelType, Resizer,
+    images::{Image, ImageRef},
+};
 use heic::{DecoderConfig, PixelLayout};
 use memmap2::Mmap;
 
@@ -32,6 +35,8 @@ pub fn get_pdf_page_count(input_path: &str) -> Result<usize> {
     let file = std::fs::File::open(input_path)
         .map_err(|e| FileConverterError::Image(format!("Failed to open PDF file: {:?}", e)))?;
 
+    // SAFETY: The file was opened in read-only mode and is not modified or
+    // truncated concurrently during PDF document parsing.
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| FileConverterError::Image(format!("Failed to memory map PDF: {:?}", e)))?;
 
@@ -52,6 +57,8 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
     let file = std::fs::File::open(input_path)
         .map_err(|e| FileConverterError::Image(format!("Failed to open image file: {:?}", e)))?;
 
+    // SAFETY: The image file was opened in read-only mode and remains unmodified
+    // during header dimension reading.
     let mmap = unsafe { Mmap::map(&file) }
         .map_err(|e| FileConverterError::Image(format!("Failed to memory map image: {:?}", e)))?;
 
@@ -110,20 +117,15 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
 
     match img {
         DynamicImage::ImageRgb8(buf) => {
-            let src_image = Image::from_vec_u8(
-                buf.width(),
-                buf.height(),
-                buf.as_raw().clone(),
-                PixelType::U8x3,
-            )
-            .map_err(|e| {
-                FileConverterError::Image(format!("Failed to create SIMD RGB image: {:?}", e))
-            })?;
+            let src_image = ImageRef::new(buf.width(), buf.height(), buf.as_raw(), PixelType::U8x3)
+                .map_err(|e| {
+                    FileConverterError::Image(format!("Failed to create SIMD RGB image: {:?}", e))
+                })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8x3);
             resizer
                 .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
-            let buffer = dst_image.buffer().to_vec();
+            let buffer = dst_image.into_vec();
             let rgb_buf =
                 image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
                     FileConverterError::Image(
@@ -133,20 +135,15 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
             Ok(DynamicImage::ImageRgb8(rgb_buf))
         }
         DynamicImage::ImageLuma8(buf) => {
-            let src_image = Image::from_vec_u8(
-                buf.width(),
-                buf.height(),
-                buf.as_raw().clone(),
-                PixelType::U8,
-            )
-            .map_err(|e| {
+            let src_image = ImageRef::new(buf.width(), buf.height(), buf.as_raw(), PixelType::U8)
+                .map_err(|e| {
                 FileConverterError::Image(format!("Failed to create SIMD Luma image: {:?}", e))
             })?;
             let mut dst_image = Image::new(target_w, target_h, PixelType::U8);
             resizer
                 .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
-            let buffer = dst_image.buffer().to_vec();
+            let buffer = dst_image.into_vec();
             let luma_buf =
                 image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
                     FileConverterError::Image(
@@ -173,7 +170,7 @@ fn resize_simd(img: &DynamicImage, target_w: u32, target_h: u32) -> Result<Dynam
                 .resize(&src_image, &mut dst_image, Some(&resize_options))
                 .map_err(|e| FileConverterError::Image(format!("SIMD resize failed: {:?}", e)))?;
 
-            let buffer = dst_image.buffer().to_vec();
+            let buffer = dst_image.into_vec();
             let rgba_buf =
                 image::ImageBuffer::from_raw(target_w, target_h, buffer).ok_or_else(|| {
                     FileConverterError::Image(
@@ -204,6 +201,8 @@ pub fn run_image_conversion(
         let pdf_file = std::fs::File::open(input_path)
             .map_err(|e| FileConverterError::Image(format!("Failed to open PDF file: {:?}", e)))?;
 
+        // SAFETY: The PDF file is opened with read-only access and remains unchanged
+        // during page rasterization.
         let mmap = unsafe { Mmap::map(&pdf_file) }.map_err(|e| {
             FileConverterError::Image(format!("Failed to memory map PDF file: {:?}", e))
         })?;
@@ -278,6 +277,7 @@ pub fn run_image_conversion(
             FileConverterError::Image(format!("Failed to open image file: {:?}", e))
         })?;
 
+        // SAFETY: The image file is opened in read-only mode and is not modified concurrently.
         let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
             FileConverterError::Image(format!("Failed to memory map input: {:?}", e))
         })?;
