@@ -741,9 +741,13 @@ fn main() {
             if list_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(list_path) {
                     for line in content.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            input_files.push(trimmed.to_string());
+                        // Only the line terminator may be stripped. `trim()` would
+                        // also eat leading/trailing spaces, which are legal in
+                        // Windows paths ("C:\My Files\ a.png") and would silently
+                        // convert a different (usually non-existent) file.
+                        let path = line.trim_end_matches(['\r', '\n']);
+                        if !path.is_empty() {
+                            input_files.push(path.to_string());
                         }
                     }
                 }
@@ -1618,7 +1622,9 @@ fn run_conversion_gui(
                         if let Some(start) = *close_time_timer.borrow() {
                             let elapsed = start.elapsed().as_secs_f32();
                             if elapsed >= exit_delay {
-                                slint::quit_event_loop().unwrap();
+                                // Must not panic: this runs inside the Slint timer
+                                // callback, where a panic would abort the process.
+                                let _ = slint::quit_event_loop();
                             }
                         }
                     }

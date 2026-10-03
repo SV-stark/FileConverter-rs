@@ -51,7 +51,10 @@ macro_rules! dbg_log {
         }
     }};
 }
-use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+
+use windows::Win32::System::LibraryLoader::{
+    DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleW,
+};
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Registry::HKEY;
 use windows::Win32::UI::Controls::HPROPSHEETPAGE;
@@ -65,8 +68,8 @@ use windows::Win32::UI::Shell::{
 
 type LPFNADDPROPSHEETPAGE = Option<unsafe extern "system" fn(HPROPSHEETPAGE, LPARAM) -> BOOL>;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, HMENU, InsertMenuItemW, MENUITEMINFOW, MFT_SEPARATOR, MFT_STRING, MIIM_BITMAP,
-    MIIM_FTYPE, MIIM_ID, MIIM_STRING, MIIM_SUBMENU,
+    CreatePopupMenu, DestroyMenu, HMENU, InsertMenuItemW, MENUITEMINFOW, MFT_SEPARATOR, MFT_STRING,
+    MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STRING, MIIM_SUBMENU,
 };
 
 const CLSID_FILE_CONVERTER: GUID = GUID::from_u128(0xAF9B72B5_F4E4_44B0_A3D9_B55B748EFE90);
@@ -85,7 +88,15 @@ pub unsafe extern "system" fn DllMain(
     if fdw_reason == 1 {
         // DLL_PROCESS_ATTACH
         G_DLL_INSTANCE.store(hinst_dll.0 as usize, Ordering::Relaxed);
-        dbg_log!("FileConverter shell DLL attached");
+
+        // No allocation, no formatting and no locking here: `DllMain` runs under
+        // the loader lock, where a panic cannot unwind across the `extern
+        // "system"` boundary and would abort the host process (explorer.exe).
+        // Diagnostic output is emitted lazily, outside of DllMain.
+        //
+        // Also skip per-thread notifications: this is an in-process COM server
+        // and Explorer can attach thousands of threads over a session.
+        let _ = DisableThreadLibraryCalls(hinst_dll);
     }
     1
 }
@@ -166,11 +177,22 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
                     for i in 0..file_count {
                         let size = DragQueryFileW(HDROP(ptr), i, None);
                         if size > 0 {
-                            let mut buf = vec![0u16; (size + 1) as usize];
-                            DragQueryFileW(HDROP(ptr), i, Some(&mut buf));
-                            if let Some(null_pos) = buf.iter().position(|&x| x == 0) {
+                            let mut buf = vec![0u16; size as usize + 1];
+                            let written = DragQueryFileW(HDROP(ptr), i, Some(&mut buf));
+                            // The fill must actually happen: otherwise `buf` stays
+                            // zeroed and yields an empty path, which would make
+                            // every preset look compatible with the selection.
+                            if written == 0 {
+                                continue;
+                            }
+                            let len = (written as usize).min(buf.len() - 1);
+                            if let Some(null_pos) = buf[..len].iter().position(|&x| x == 0) {
                                 let os_str = OsString::from_wide(&buf[..null_pos]);
-                                if let Ok(path_str) = os_str.into_string() {
+                                if let Ok(path_str) = os_str.into_string()
+                                    // Folders and other non-file items have no
+                                    // extension, so they would match every preset.
+                                    && Path::new(&path_str).is_file()
+                                {
                                     files.push(path_str);
                                 }
                             }
@@ -269,6 +291,72 @@ fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) ->
     is_preset_applicable_to_file(preset.output_type, &declared, file_path)
 }
 
+/// Writes the selection to a uniquely named temp file and returns its path.
+///
+/// This DLL runs *inside* `explorer.exe`, so `std::process::id()` is the same for
+/// every context-menu invocation. Keying the file on it alone made two concurrent
+/// right-clicks overwrite each other's list, so the wrong files were converted
+/// with the wrong preset. The name is now unique per invocation and the file is
+/// created exclusively (never truncating a pre-existing file).
+fn write_selection_to_temp_list(
+    preset_name: &str,
+    selected_files: &[String],
+) -> Option<std::path::PathBuf> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let temp_dir = std::env::temp_dir();
+    for _ in 0..8 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = temp_dir.join(format!(
+            "file-converter-input-list-{}-{}-{}.txt",
+            std::process::id(),
+            nanos,
+            seq
+        ));
+
+        // `create_new` fails if the path already exists, so an attacker-planted
+        // file (or a concurrent invocation) is never truncated or followed.
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        else {
+            continue;
+        };
+
+        let mut ok = true;
+        for path in selected_files {
+            if writeln!(file, "{}", path).is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if file.flush().is_err() {
+            ok = false;
+        }
+        drop(file);
+
+        if ok {
+            return Some(candidate);
+        }
+
+        let _ = std::fs::remove_file(&candidate);
+    }
+
+    dbg_log!(
+        "Failed to write temporary input list for preset '{}'",
+        preset_name
+    );
+    None
+}
+
 impl IContextMenu_Impl for FileConverterShellExt_Impl {
     fn QueryContextMenu(
         &self,
@@ -324,7 +412,17 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             (presets_count + 2) as u32
         };
 
-        if _idcmdlast >= idcmdfirst && (idcmdfirst + needed_count > _idcmdlast) {
+        // The shell reserves the command-id range `[idcmdfirst, _idcmdlast]` for
+        // this handler. If it is not large enough we must add nothing at all:
+        // emitting ids outside the range collides with the next handler and
+        // dispatches `lpVerb` offsets that were never displayed.
+        //
+        // The previous guard `if _idcmdlast >= idcmdfirst && (...)` short-circuited
+        // to *false* when no range was reserved, letting the fall-through path run.
+        let fits = idcmdfirst
+            .checked_add(needed_count)
+            .is_some_and(|end| end <= _idcmdlast);
+        if !fits {
             return Ok(());
         }
 
@@ -335,6 +433,8 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
 
         unsafe {
             if presets_count <= 5 {
+                // Count only the items Explorer was actually told about.
+                let mut inserted_count: u32 = 0;
                 for (i, preset) in compatible_presets.iter().enumerate() {
                     let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
                     name_wide.push(0);
@@ -361,15 +461,24 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     let inserted = InsertMenuItemW(hmenu, indexmenu + i as u32, true, &mii);
                     if inserted.is_ok() {
                         scopeguard::ScopeGuard::into_inner(bitmap_guard);
+                        inserted_count += 1;
                     }
                 }
 
                 Err(windows::core::Error::from_hresult(HRESULT(
-                    presets_count as i32,
+                    inserted_count as i32,
                 )))
             } else {
                 let h_sub_menu = CreatePopupMenu()?;
 
+                // `DestroyMenu` on the error path: without this the USER handle
+                // leaked on every failed insertion (a per-right-click leak inside
+                // the long-lived explorer.exe process).
+                let sub_menu_guard = scopeguard::guard(h_sub_menu, |h| {
+                    let _ = DestroyMenu(h);
+                });
+
+                let mut inserted_count: u32 = 0;
                 for (i, preset) in compatible_presets.iter().enumerate() {
                     let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
                     name_wide.push(0);
@@ -394,6 +503,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     let inserted = InsertMenuItemW(h_sub_menu, i as u32, true, &mii);
                     if inserted.is_ok() {
                         scopeguard::ScopeGuard::into_inner(bitmap_guard);
+                        inserted_count += 1;
                     }
                 }
 
@@ -403,7 +513,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     fType: MFT_SEPARATOR,
                     ..Default::default()
                 };
-                let _ = InsertMenuItemW(h_sub_menu, presets_count as u32, true, &sep_mii);
+                if InsertMenuItemW(h_sub_menu, inserted_count, true, &sep_mii).is_ok() {
+                    inserted_count += 1;
+                }
 
                 let mut config_text_wide: Vec<u16> = "Configure...\0".encode_utf16().collect();
                 let config_mii = MENUITEMINFOW {
@@ -415,7 +527,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     cch: (config_text_wide.len() - 1) as u32,
                     ..Default::default()
                 };
-                let _ = InsertMenuItemW(h_sub_menu, (presets_count + 1) as u32, true, &config_mii);
+                if InsertMenuItemW(h_sub_menu, inserted_count, true, &config_mii).is_ok() {
+                    inserted_count += 1;
+                }
 
                 if let Ok(mut lock) = self.configure_cmd_offset.write() {
                     *lock = Some(presets_count);
@@ -433,9 +547,15 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     ..Default::default()
                 };
 
-                let _ = InsertMenuItemW(hmenu, indexmenu, true, &parent_mii);
+                if InsertMenuItemW(hmenu, indexmenu, true, &parent_mii).is_ok() {
+                    // The menu now owns the popup, so drop the destruction guard.
+                    let h_sub_menu = scopeguard::ScopeGuard::into_inner(sub_menu_guard);
+                    let _ = h_sub_menu;
+                    inserted_count += 1;
+                }
+
                 Err(windows::core::Error::from_hresult(HRESULT(
-                    (presets_count + 2) as i32,
+                    inserted_count as i32,
                 )))
             }
         }
@@ -471,9 +591,12 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                 .conversion_presets
                 .into_iter()
                 .filter(|preset| {
-                    selected_files
-                        .iter()
-                        .all(|file| is_preset_compatible_with_file(preset, file))
+                    // An empty selection would make `.all()` vacuously true and
+                    // offer every preset, so bail out instead of guessing.
+                    !selected_files.is_empty()
+                        && selected_files
+                            .iter()
+                            .all(|file| is_preset_compatible_with_file(preset, file))
                 })
                 .map(|p| p.name)
                 .collect();
@@ -504,20 +627,14 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             }
 
             if total_len >= 8000 {
-                let temp_dir = std::env::temp_dir();
-                let pid = std::process::id();
-                let temp_file_path =
-                    temp_dir.join(format!("file-converter-input-list-{}.txt", pid));
-
-                if let Ok(mut file) = std::fs::File::create(&temp_file_path) {
-                    use std::io::Write;
-                    for path in &selected_files {
-                        let _ = writeln!(file, "{}", path);
+                match write_selection_to_temp_list(preset_name, &selected_files) {
+                    Some(temp_file_path) => {
+                        cmd.arg("--input-files").arg(&temp_file_path);
                     }
-                    cmd.arg("--input-files").arg(&temp_file_path);
-                } else {
-                    for file in &selected_files {
-                        cmd.arg(file);
+                    None => {
+                        for file in &selected_files {
+                            cmd.arg(file);
+                        }
                     }
                 }
             } else {
@@ -535,8 +652,13 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         } else if verb_offset == presets_count {
             let bin_path = get_bin_path();
             if bin_path.exists() {
-                let _ = Command::new(&bin_path).arg("-settings").spawn();
-                Ok(())
+                match Command::new(&bin_path).arg("-settings").spawn() {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        dbg_log!("Failed to open settings window: {:?}", e);
+                        Err(E_FAIL.into())
+                    }
+                }
             } else {
                 dbg_log!(
                     "Converter binary not found for settings: {}",
@@ -627,6 +749,13 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
             }
         }
 
+        // Only advertise the verb when it can actually do something. Without this
+        // the entry is offered as enabled and then silently does nothing.
+        if has_files && !get_bin_path().exists() {
+            dbg_log!("Converter binary not found; hiding context menu verb");
+            has_files = false;
+        }
+
         if has_files {
             Ok(ECS_ENABLED.0 as u32)
         } else {
@@ -675,8 +804,19 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
         for file in files {
             cmd.arg(file);
         }
-        let _ = cmd.spawn();
-        Ok(())
+        // Report the real outcome: swallowing the spawn error made the verb look
+        // successful while nothing happened at all.
+        match cmd.spawn() {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                dbg_log!(
+                    "Failed to spawn converter process {}: {:?}",
+                    bin_path.display(),
+                    e
+                );
+                Err(E_FAIL.into())
+            }
+        }
     }
 
     fn GetFlags(&self) -> Result<u32> {
@@ -701,6 +841,16 @@ fn create_default_settings() -> Settings {
         auto_start_on_file_drop: false,
         conversion_presets: vec![],
     })
+}
+
+/// Reads the module file path, truncating at the first NUL.
+///
+/// `GetModuleFileNameW` returns `nSize` on overflow, and `OsString::from_wide`
+/// does **not** stop at interior NULs, so a truncated path would embed a U+0000
+/// and make every downstream `exists()` check fail.
+fn wide_to_path(buf: &[u16]) -> PathBuf {
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    PathBuf::from(OsString::from_wide(&buf[..len]))
 }
 
 fn get_bin_path() -> PathBuf {
@@ -730,8 +880,7 @@ fn get_bin_path() -> PathBuf {
         let mut buf = vec![0u16; 512];
         let len = unsafe { GetModuleFileNameW(HMODULE(dll_hinst as *mut c_void), &mut buf) };
         if len > 0 {
-            let os_str = OsString::from_wide(&buf[..len as usize]);
-            let dll_path = PathBuf::from(os_str);
+            let dll_path = wide_to_path(&buf);
             if let Some(parent) = dll_path.parent() {
                 let path = parent.join("file_converter_bin.exe");
                 if path.exists() {
@@ -782,6 +931,12 @@ impl IClassFactory_Impl for FileConverterClassFactory_Impl {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
 
+        // COM requires the out-parameter to be NULL on failure; `query` only
+        // writes it on success, so clear it up front.
+        if !ppvobject.is_null() {
+            unsafe { *ppvobject = std::ptr::null_mut() };
+        }
+
         let obj: IShellExtInit = FileConverterShellExt::new().into();
         unsafe { obj.query(riid, ppvobject).ok() }
     }
@@ -790,7 +945,11 @@ impl IClassFactory_Impl for FileConverterClassFactory_Impl {
         if flock.as_bool() {
             G_LOCK_COUNT.fetch_add(1, Ordering::Relaxed);
         } else {
-            G_LOCK_COUNT.fetch_sub(1, Ordering::Relaxed);
+            // `fetch_sub` wraps: an unbalanced LockServer(FALSE) would pin the
+            // count at u32::MAX and `DllCanUnloadNow` would return S_FALSE forever.
+            let _ = G_LOCK_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
         }
         Ok(())
     }
@@ -837,8 +996,7 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         let mut buf = vec![0u16; 512];
         let len = GetModuleFileNameW(HMODULE(hmodule as *mut c_void), &mut buf);
         if len > 0 {
-            let os_str = OsString::from_wide(&buf[..len as usize]);
-            module_path = PathBuf::from(os_str);
+            module_path = wide_to_path(&buf);
         }
     }
 
@@ -848,8 +1006,7 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
             let mut buf = vec![0u16; 512];
             let len = GetModuleFileNameW(h, &mut buf);
             if len > 0 {
-                let os_str = OsString::from_wide(&buf[..len as usize]);
-                module_path = PathBuf::from(os_str);
+                module_path = wide_to_path(&buf);
             }
         }
     }
@@ -885,71 +1042,150 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     let clsid_key_path = format!("CLSID\\{}", clsid_str);
     let clsid_inproc_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
 
+    // A local mutable flag rather than discarding every write error: regsvr32
+    // previously reported success even when nothing could be written.
+    let mut write_failed = false;
+
     let _ = hkcr.delete_subkey_all(&clsid_key_path);
     if let Ok(ref root) = hklm_classes {
         let _ = root.delete_subkey_all(&clsid_key_path);
     }
-    // Target HKLM\Software\Classes if writable (system-wide), otherwise fallback to HKCU\Software\Classes (per-user)
+    if let Ok(ref root) = hkcu_classes {
+        let _ = root.delete_subkey_all(&clsid_key_path);
+    }
+    // Target HKLM\Software\Classes if writable (system-wide), otherwise fall back to
+    // HKCU\Software\Classes (per-user).
     let root_classes = if let Ok(ref root) = hklm_classes {
         root
     } else if let Ok(ref root) = hkcu_classes {
         root
     } else {
+        write_failed = true;
         &hkcr
     };
 
-    if let Ok((key, _)) = root_classes.create_subkey(&clsid_key_path) {
-        let _ = key.set_value("", &"FileConverter Shell Extension");
-    }
-    if let Ok((key, _)) = root_classes.create_subkey(&clsid_inproc_path) {
-        let _ = key.set_value("", &mod_path_str);
-        let _ = key.set_value("ThreadingModel", &"Apartment");
+    if mod_path_str.is_empty() {
+        // Without the DLL's own path there is nothing meaningful to register, and
+        // writing a *relative* `command` value would make Explorer try to launch
+        // `%WINDIR%\file_converter_bin.exe`.
+        dbg_log!("Module path unknown; aborting registration");
+        return E_FAIL;
     }
 
-    // Register handlers cleanly on files, folders, and all objects
-    let associations = ["*", "Directory", "AllFilesystemObjects"];
+    match root_classes.create_subkey(&clsid_key_path) {
+        Ok((key, _)) => {
+            if key.set_value("", &"FileConverter Shell Extension").is_err() {
+                write_failed = true;
+            }
+        }
+        Err(e) => {
+            dbg_log!("Failed to create {}: {:?}", clsid_key_path, e);
+            write_failed = true;
+        }
+    }
+    match root_classes.create_subkey(&clsid_inproc_path) {
+        Ok((key, _)) => {
+            if key.set_value("", &mod_path_str).is_err()
+                || key.set_value("ThreadingModel", &"Apartment").is_err()
+            {
+                write_failed = true;
+            }
+        }
+        Err(e) => {
+            dbg_log!("Failed to create {}: {:?}", clsid_inproc_path, e);
+            write_failed = true;
+        }
+    }
 
-    let bin_exe = if let Some(parent) = module_path.parent() {
-        parent.join("file_converter_bin.exe")
-    } else {
-        PathBuf::from("file_converter_bin.exe")
+    // Register handlers on files and all filesystem objects. Folders are
+    // deliberately not registered: they have no extension, so every preset would
+    // look applicable and the menu would offer conversions that cannot run.
+    let associations = ["*", "AllFilesystemObjects"];
+
+    let Some(parent) = module_path.parent() else {
+        dbg_log!("Module path has no parent directory; aborting registration");
+        return E_FAIL;
     };
+    let bin_exe = parent.join("file_converter_bin.exe");
     let bin_exe_str = bin_exe.to_string_lossy().to_string();
 
     for assoc in &associations {
         let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-        if let Ok((key, _)) = root_classes.create_subkey(&path) {
-            let _ = key.set_value("", &clsid_str);
+        match root_classes.create_subkey(&path) {
+            Ok((key, _)) => {
+                if key.set_value("", &clsid_str).is_err() {
+                    write_failed = true;
+                }
+            }
+            Err(e) => {
+                dbg_log!("Failed to create {}: {:?}", path, e);
+                write_failed = true;
+            }
         }
 
         let prop_path = format!("{}\\shellex\\PropertySheetHandlers\\FileConverter", assoc);
-        if let Ok((key, _)) = root_classes.create_subkey(&prop_path) {
-            let _ = key.set_value("", &clsid_str);
+        match root_classes.create_subkey(&prop_path) {
+            Ok((key, _)) => {
+                if key.set_value("", &clsid_str).is_err() {
+                    write_failed = true;
+                }
+            }
+            Err(e) => {
+                dbg_log!("Failed to create {}: {:?}", prop_path, e);
+                write_failed = true;
+            }
         }
 
         // Modern Windows 11 Explorer Command & Shell Verb Handler
         let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
-        if let Ok((key, _)) = root_classes.create_subkey(&shell_verb_path) {
-            let _ = key.set_value("", &"File Converter");
-            let _ = key.set_value("MUIVerb", &"File Converter");
-            let _ = key.set_value("Icon", &bin_exe_str);
-            let _ = key.set_value("ExplorerCommandHandler", &clsid_str);
+        match root_classes.create_subkey(&shell_verb_path) {
+            Ok((key, _)) => {
+                if key.set_value("", &"File Converter").is_err()
+                    || key.set_value("MUIVerb", &"File Converter").is_err()
+                    || key.set_value("Icon", &bin_exe_str).is_err()
+                    || key.set_value("ExplorerCommandHandler", &clsid_str).is_err()
+                {
+                    write_failed = true;
+                }
+            }
+            Err(e) => {
+                dbg_log!("Failed to create {}: {:?}", shell_verb_path, e);
+                write_failed = true;
+            }
         }
         let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
-        if let Ok((key, _)) = root_classes.create_subkey(&shell_verb_cmd_path) {
-            let cmd_str = format!("\"{}\" \"%1\"", bin_exe_str);
-            let _ = key.set_value("", &cmd_str);
+        match root_classes.create_subkey(&shell_verb_cmd_path) {
+            Ok((key, _)) => {
+                let cmd_str = format!("\"{}\" \"%1\"", bin_exe_str);
+                if key.set_value("", &cmd_str).is_err() {
+                    write_failed = true;
+                }
+            }
+            Err(e) => {
+                dbg_log!("Failed to create {}: {:?}", shell_verb_cmd_path, e);
+                write_failed = true;
+            }
         }
     }
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok((key, _)) = hklm
         .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved")
+        && key
+            .set_value(clsid_str, &"File Converter Context Menu Handler")
+            .is_err()
     {
-        let _ = key.set_value(clsid_str, &"File Converter Context Menu Handler");
+        // Non-elevated registration cannot write HKLM; that is expected and not a
+        // hard failure because the per-user CLSID registration above still works.
+        dbg_log!("Could not write HKLM Approved entry (needs elevation)");
     }
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+
+    if write_failed {
+        dbg_log!("Shell extension registration completed with errors");
+        return E_FAIL;
+    }
 
     S_OK
 }

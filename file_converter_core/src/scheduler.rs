@@ -145,11 +145,15 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
 }
 
 /// Runs a sequence of FFmpeg passes, reporting combined progress.
+///
+/// `is_cancelled` is polled between passes so a long multi-pass job (for example
+/// video -> GIF, which is palettegen + paletteuse) can be aborted promptly.
 fn run_ffmpeg_passes(
     passes: &[ffmpeg::FfmpegPass],
     input_path: &str,
     output_path: &str,
     weight: f32,
+    is_cancelled: &dyn Fn() -> bool,
     progress_cb: &(dyn Fn(f32, &str) + Sync),
 ) -> Result<()> {
     if passes.is_empty() {
@@ -160,6 +164,15 @@ fn run_ffmpeg_passes(
 
     let total_passes = passes.len();
     for (i, pass) in passes.iter().enumerate() {
+        if is_cancelled() {
+            for other in passes {
+                if let Some(path) = &other.file_to_delete {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            return Err(FileConverterError::Invalid("Canceled".to_string()));
+        }
+
         if let Err(e) = ffmpeg::run_ffmpeg_pass(pass, input_path, output_path, &|percent, name| {
             let overall = (i as f32 + percent) / total_passes as f32;
             progress_cb(weight * overall, name);
@@ -312,6 +325,15 @@ impl ConversionJob {
         }
     }
 
+    /// True once `cancel` has been requested.
+    ///
+    /// Engines poll this at their own safe points (between FFmpeg passes, between
+    /// rendered PDF pages) so the Cancel button takes effect promptly instead of
+    /// only after the whole job has finished.
+    pub fn is_cancelled(&self) -> bool {
+        *self.status.lock() == JobStatus::Canceled
+    }
+
     pub fn run(&self, hw_accel: HardwareAccelerationMode) {
         {
             let mut status = self.status.lock();
@@ -381,7 +403,15 @@ impl ConversionJob {
                 let _ = self.apply_post_conversion_action();
             }
             Err(e) => {
-                *status = JobStatus::Failed(e.to_string());
+                // A cancel request that raced the engine is reported as
+                // `Canceled`, not as a failure with a confusing message.
+                // `status` is already locked here, so it must be inspected
+                // directly (`is_cancelled` would re-lock and deadlock).
+                if *status == JobStatus::Canceled {
+                    *status = JobStatus::Canceled;
+                } else {
+                    *status = JobStatus::Failed(e.to_string());
+                }
                 // Delete output files on failure
                 for path in &self.output_file_paths {
                     let _ = std::fs::remove_file(path);
@@ -450,7 +480,14 @@ impl ConversionJob {
                         out_path,
                         hw_accel,
                     )?;
-                    run_ffmpeg_passes(&passes, &self.input_path, out_path, 1.0, progress_cb)
+                    run_ffmpeg_passes(
+                        &passes,
+                        &self.input_path,
+                        out_path,
+                        1.0,
+                        &|| self.is_cancelled(),
+                        progress_cb,
+                    )
                 } else {
                     image::run_still_gif_conversion(
                         &self.preset,
@@ -517,7 +554,14 @@ impl ConversionJob {
             JobEngine::Ffmpeg => {
                 let passes =
                     ffmpeg::get_ffmpeg_passes(&self.preset, &self.input_path, out_path, hw_accel)?;
-                run_ffmpeg_passes(&passes, &self.input_path, out_path, 1.0, progress_cb)
+                run_ffmpeg_passes(
+                    &passes,
+                    &self.input_path,
+                    out_path,
+                    1.0,
+                    &|| self.is_cancelled(),
+                    progress_cb,
+                )
             }
         }
     }

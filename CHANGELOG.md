@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed - Explorer context menu (shell extension)
+
+Found by a line-by-line audit of `file_converter_shell`. The COM extension is
+loaded *inside* `explorer.exe`, which made several bugs far more severe than they
+would be in a standalone process.
+
+- **Concurrent right-clicks converted the wrong files (`lib.rs`).**
+  The large-selection input list was written to
+  `file-converter-input-list-<pid>.txt`. Inside Explorer the PID is always
+  `explorer.exe`'s, so every invocation used the *same* path and `File::create`
+  truncated the previous list — two right-clicks within seconds of each other
+  silently converted the first selection with the second preset. The file is now
+  uniquely named and created with `create_new`, so it is never truncated and a
+  pre-planted file is never followed.
+- **Paths with leading/trailing spaces were corrupted (`main.rs`).** The
+  newline-delimited input list was read back with `line.trim()`, which also ate
+  spaces that are legal in Windows paths (`C:\My Files\ a.png`) and converted a
+  non-existent file. Only the line terminator is stripped now.
+- **Out-of-range menu command IDs (`lib.rs`).** The guard
+  `if _idcmdlast >= idcmdfirst && (idcmdfirst + needed > _idcmdlast)` short-circuited
+  to `false` when the shell had reserved no ID range, so the fall-through path
+  emitted IDs belonging to the next handler. The guard now also uses checked
+  addition, and the reported item count is the number of items actually inserted.
+- **USER menu handle leak (`lib.rs`).** The popup menu handle leaked on the
+  failed-insertion path, on every context-menu display inside explorer.exe. It is
+  now released by a guard unless ownership transfers to the menu.
+- **Registration always reported success (`lib.rs`).** Every
+  `create_subkey`/`set_value` result was discarded and `DllRegisterServer`
+  returned `S_OK`, so `regsvr32` reported success even when nothing was written.
+  Failures are now logged and reported as `E_FAIL`, and a stale `Directory`
+  association that offered all 79 presets for a folder selection was dropped.
+- **A relative path could be written to the registry (`lib.rs`).** If the module
+  path could not be determined, the association loop wrote
+  `"file_converter_bin.exe" "%1"`, which Explorer resolves against
+  `%WINDIR%`. Registration now aborts instead of writing a relative command.
+- **The modern verb silently did nothing (`lib.rs`).** `IExplorerCommand::Invoke`
+  discarded the spawn result and returned `S_OK`, and `GetState` reported
+  `ECS_ENABLED` without checking that the binary exists. Both now surface the
+  real failure and hide the verb when it cannot run.
+- **Empty paths made every preset appear compatible (`lib.rs`).** The
+  `DragQueryFileW` fill result was unchecked, so a failed query pushed an empty
+  path; because extensionless paths are treated as compatible, one such entry
+  made all 79 presets show for an unrelated selection. Fill failures are now
+  skipped, `size + 1` no longer overflows, and non-file items (folders) are
+  filtered out.
+- **Allocations inside `DllMain` (`lib.rs`).** `dbg_log!` (which formats) ran under
+  the loader lock, where a panic would abort `explorer.exe`. Diagnostics were
+  removed from `DllMain` and `DisableThreadLibraryCalls` is now called.
+- **Miscellaneous (`lib.rs`):** `LockServer(FALSE)` no longer underflows the lock
+  count to `u32::MAX` (which pinned `DllCanUnloadNow` at `S_FALSE` forever);
+  `CreateInstance` now nulls its out-parameter on failure as COM requires;
+  `GetModuleFileNameW` results are truncated at the first NUL (a truncated path
+  previously embedded a U+0000 and failed every `exists()` check).
+
+### Fixed - core
+
+- **The Cancel button did nothing until the job finished (`scheduler.rs`).**
+  `cancel` only flipped a status flag; no engine ever polled it, so aborting a
+  long video conversion had no effect until FFmpeg exited. Cancellation is now
+  cooperative — polled between FFmpeg passes (so multi-pass jobs such as video to
+  GIF abort before the second pass) — and a job cancelled mid-run is reported as
+  `Canceled` rather than as a failure with a confusing message.
+- **A panic in the progress timer (`main.rs`):** `slint::quit_event_loop().unwrap()`
+  ran inside a Slint timer callback; it no longer panics.
+
+### Notes
+- `cargo fmt` was not applied before the v0.10.0 tag, so the CI workflow failed on
+  `main` (formatting only - clippy, the build and all tests passed). Fixed in the
+  commit immediately after the tag.
+
+---
+
 ## [0.10.0] - 2026-10-03
 
 ### Fixed - conversions other than PDF

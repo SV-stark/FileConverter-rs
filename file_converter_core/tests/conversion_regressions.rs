@@ -793,6 +793,80 @@ fn test_settings_merge_adopts_only_new_presets() {
 }
 
 #[test]
+fn test_cancelled_job_is_not_reported_as_failed() {
+    use file_converter_core::scheduler::{ConversionJob, JobStatus};
+    use file_converter_core::types::HardwareAccelerationMode;
+
+    // A job cancelled before it runs must end as `Canceled`, and must not leave
+    // output files behind.
+    let png = touch_temp(
+        "cancelled.png",
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+    );
+    let mut job = ConversionJob::new(1, preset("To Png", OutputType::Png, &["png"]), png.clone());
+    job.prepare(0, 1).expect("prepare");
+    job.cancel();
+    assert!(job.is_cancelled());
+
+    job.run(HardwareAccelerationMode::Off);
+    assert_eq!(*job.status.lock(), JobStatus::Canceled);
+
+    for path in &job.output_file_paths {
+        assert!(
+            !std::path::Path::new(path).exists(),
+            "cancelled job must not leave {path}"
+        );
+    }
+    let _ = std::fs::remove_file(png);
+}
+
+#[test]
+fn test_preset_input_types_are_enforced_end_to_end() {
+    use file_converter_core::scheduler::{ConversionJob, JobStatus};
+    use file_converter_core::types::HardwareAccelerationMode;
+
+    // The shell extension filters the menu with exactly this predicate, so a
+    // mismatch here means the menu offers a preset the scheduler rejects.
+    let mut png_compressor = preset("Compress Png (lossless)", OutputType::Png, &["png"]);
+    png_compressor.set_setting_value("OxipngLossless", "True");
+
+    let declared: Vec<String> = png_compressor
+        .input_types
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for file in [
+        "C:\\a\\x.wav",
+        "C:\\a\\x.png",
+        "C:\\a\\x.pdf",
+        "C:\\a\\x.docx",
+    ] {
+        let applicable = file_converter_core::types::is_preset_applicable_to_file(
+            png_compressor.output_type,
+            &declared,
+            file,
+        );
+        // Category compatibility is checked before the declared list, so an
+        // audio file is rejected on category grounds and a pdf on the declared list.
+        assert_eq!(
+            applicable,
+            file.ends_with("png"),
+            "unexpected applicability for {file}"
+        );
+    }
+
+    // A job whose prepare failed must surface the reason, not a generic error.
+    let wav = touch_temp("declared.wav", b"RIFF");
+    let mut job = ConversionJob::new(1, png_compressor, wav.clone());
+    assert!(job.prepare(0, 1).is_err());
+    assert!(job.preparation_error.is_some());
+    job.run(HardwareAccelerationMode::Off);
+    let status = job.status.lock().clone();
+    assert!(matches!(status, JobStatus::Failed(_)), "{status:?}");
+    let _ = std::fs::remove_file(wav);
+}
+
+#[test]
 fn test_version_comparison() {
     use file_converter_core::update_check::is_version_newer;
     assert!(is_version_newer("0.9.1", "v0.9.2"));
