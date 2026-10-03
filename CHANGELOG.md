@@ -74,6 +74,16 @@ would be in a standalone process.
 - **A panic in the progress timer (`main.rs`):** `slint::quit_event_loop().unwrap()`
   ran inside a Slint timer callback; it no longer panics.
 
+### Fixed - CI reliability
+- **A floating `stable` toolchain broke an unchanged tree** (`.github/workflows/`).
+  `dtolnay/rust-toolchain@stable` combined with `RUSTFLAGS: -D warnings` means any
+  new release can fail the build purely through newly added lints. Rust 1.99
+  renamed `Atomic::fetch_update` to `try_update`, so the previous commit's
+  `LockServer` fix became a deprecation warning and therefore a CI failure with no
+  source change at all. Both workflows now pin `1.99.0`, and `LockServer` uses
+  `compare_exchange` so it depends on neither spelling. Verified by running the
+  exact CI sequence (fmt, clippy `-D warnings`, build, tests) on 1.99.0.
+
 ### Notes
 - `cargo fmt` was not applied before the v0.10.0 tag, so the CI workflow failed on
   `main` (formatting only - clippy, the build and all tests passed). Fixed in the

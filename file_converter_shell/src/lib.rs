@@ -945,11 +945,22 @@ impl IClassFactory_Impl for FileConverterClassFactory_Impl {
         if flock.as_bool() {
             G_LOCK_COUNT.fetch_add(1, Ordering::Relaxed);
         } else {
-            // `fetch_sub` wraps: an unbalanced LockServer(FALSE) would pin the
-            // count at u32::MAX and `DllCanUnloadNow` would return S_FALSE forever.
-            let _ = G_LOCK_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(1))
-            });
+            // `fetch_sub` wraps on an unbalanced LockServer(FALSE), which would pin
+            // the count at u32::MAX and make `DllCanUnloadNow` return S_FALSE
+            // forever (the DLL could never unload).
+            //
+            // Implemented with `compare_exchange` rather than `fetch_update`
+            // because that method was renamed in Rust 1.99 and using the old
+            // spelling is a deprecation warning (an error under `-D warnings`).
+            let current = G_LOCK_COUNT.load(Ordering::Relaxed);
+            if current > 0 {
+                let _ = G_LOCK_COUNT.compare_exchange(
+                    current,
+                    current - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
         }
         Ok(())
     }
