@@ -7,7 +7,7 @@ use crate::path_helpers;
 use crate::settings::ConversionPreset;
 use crate::types::{
     FileCategory, HardwareAccelerationMode, InputPostConversionAction, OutputType,
-    get_extension_category, is_output_type_compatible_with_category,
+    get_extension_category, is_preset_applicable_to_file, is_text_document_extension,
 };
 use parking_lot::Mutex;
 use std::path::Path;
@@ -32,6 +32,9 @@ pub struct ConversionJob {
     pub output_file_paths: Vec<String>,
     pub progress: Arc<AtomicU32>,
     pub status: Arc<Mutex<JobStatus>>,
+    /// Set when `prepare` failed so the job can report the reason instead of
+    /// failing later with a generic "no output path" message.
+    pub preparation_error: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -47,6 +50,7 @@ pub enum JobEngine {
     Epub,
     Markdown,
     Typst,
+    TextDocument,
 }
 
 pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobEngine {
@@ -72,6 +76,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         }
     }
 
+    // --- Documents -------------------------------------------------------
     if ext == "docx" || ext == "odt" || ext == "doc" {
         return JobEngine::Word;
     }
@@ -82,10 +87,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
         return JobEngine::PowerPoint;
     }
 
-    if matches!(
-        ext.as_str(),
-        "epub" | "mobi" | "azw" | "azw3" | "kfx" | "fb2" | "cbz" | "kepub" | "lit"
-    ) {
+    if crate::types::is_ebook_extension(&ext) {
         return JobEngine::Epub;
     }
     if ext == "md" || ext == "markdown" {
@@ -94,36 +96,89 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
     if ext == "typ" {
         return JobEngine::Typst;
     }
+    // Plain text / light markup. These used to fall through to the image engine
+    // and fail with "unknown image format" for every conversion.
+    if is_text_document_extension(&ext) {
+        return JobEngine::TextDocument;
+    }
 
+    // --- Audio / video ---------------------------------------------------
     if category == FileCategory::Audio || category == FileCategory::Video {
         return JobEngine::Ffmpeg;
     }
 
+    // --- Image derived outputs ------------------------------------------
+    if preset.output_type == OutputType::Ico {
+        return JobEngine::Ico;
+    }
+
+    if preset.output_type == OutputType::Gif {
+        // Still images are encoded natively; the FFmpeg palettegen recipe
+        // cannot handle single-frame sources reliably (it emits an empty
+        // palette file, and `fps` yields zero frames for a still image).
+        if category == FileCategory::Image || category == FileCategory::AnimatedImage {
+            return JobEngine::Gif;
+        }
+        return JobEngine::Ffmpeg;
+    }
+
+    // OxiPNG only accepts PNG containers, so it is reserved for real PNG input.
     if preset.output_type == OutputType::Png
+        && ext == "png"
         && (preset.get_setting_value("OxipngLossless").is_some()
             || preset.name.to_lowercase().contains("compress"))
     {
         return JobEngine::Oxipng;
     }
 
-    if preset.output_type == OutputType::Ico {
-        return JobEngine::Ico;
-    }
-
-    if preset.output_type == OutputType::Gif {
-        return JobEngine::Gif;
-    }
-
-    if preset.output_type == OutputType::Pdf
-        || preset.output_type == OutputType::Avif
-        || preset.output_type == OutputType::Jpg
-        || preset.output_type == OutputType::Png
-        || preset.output_type == OutputType::Webp
+    if matches!(
+        preset.output_type,
+        OutputType::Pdf
+            | OutputType::Avif
+            | OutputType::Jpg
+            | OutputType::Png
+            | OutputType::Webp
+    ) && (category == FileCategory::Image || ext == "pdf")
     {
         return JobEngine::Image;
     }
 
+    // `jxl-oxide` only decodes, so JPEG XL encoding still goes through FFmpeg's
+    // libjxl encoder.
     JobEngine::Ffmpeg
+}
+
+/// Runs a sequence of FFmpeg passes, reporting combined progress.
+fn run_ffmpeg_passes(
+    passes: &[ffmpeg::FfmpegPass],
+    input_path: &str,
+    output_path: &str,
+    weight: f32,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
+    if passes.is_empty() {
+        return Err(FileConverterError::Invalid(
+            "No FFmpeg pass was generated for this preset".to_string(),
+        ));
+    }
+
+    let total_passes = passes.len();
+    for (i, pass) in passes.iter().enumerate() {
+        if let Err(e) = ffmpeg::run_ffmpeg_pass(pass, input_path, output_path, &|percent, name| {
+            let overall = (i as f32 + percent) / total_passes as f32;
+            progress_cb(weight * overall, name);
+        }) {
+            // Clean up any intermediate file the aborted pass chain owned
+            // (for example a GIF palette that was never consumed).
+            for other in passes {
+                if let Some(path) = &other.file_to_delete {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
 impl ConversionJob {
@@ -135,6 +190,7 @@ impl ConversionJob {
             output_file_paths: Vec::new(),
             progress: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             status: Arc::new(Mutex::new(JobStatus::Queue)),
+            preparation_error: None,
         }
     }
 
@@ -146,22 +202,59 @@ impl ConversionJob {
         self.progress.store(val.to_bits(), Ordering::Relaxed);
     }
 
+    /// Validates that this preset can be applied to the input file.
+    ///
+    /// Previously only the output/input category pair was checked, which meant a
+    /// preset advertising a narrow `InputTypes` list (for example the lossless
+    /// PNG compressor) silently ran on unrelated files and failed deep inside the
+    /// engine.
+    pub fn validate(&self) -> Result<()> {
+        if !Path::new(&self.input_path).is_file() {
+            return Err(FileConverterError::Invalid(format!(
+                "Input file does not exist: {}",
+                self.input_path
+            )));
+        }
+
+        let declared: Vec<String> = self.preset.input_types.iter().map(|s| s.to_string()).collect();
+        if is_preset_applicable_to_file(self.preset.output_type, &declared, &self.input_path) {
+            Ok(())
+        } else {
+            let ext = Path::new(&self.input_path)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            Err(FileConverterError::Invalid(format!(
+                "Preset '{}' does not support '.{}' input (declared inputs: {})",
+                self.preset.name,
+                if ext.is_empty() { "<none>" } else { &ext },
+                if declared.is_empty() {
+                    "any".to_string()
+                } else {
+                    declared.join(", ")
+                }
+            )))
+        }
+    }
+
     pub fn prepare(&mut self, list_index: usize, total_count: usize) -> Result<()> {
+        self.preparation_error = None;
+
+        self.validate()
+            .inspect_err(|e| self.preparation_error = Some(e.to_string()))?;
+
         let ext = Path::new(&self.input_path)
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let category = get_extension_category(&ext.to_lowercase());
 
-        if !is_output_type_compatible_with_category(self.preset.output_type, category) {
-            return Err(FileConverterError::Invalid(
-                "Input file type is incompatible with output file type".to_string(),
-            ));
-        }
-
-        // Determine output files count
+        // Determine output files count.
+        // A PDF input produces one file per page *unless* it is being rewritten
+        // to PDF (the optimisation path emits a single file).
+        let pdf_identity = self.preset.output_type == OutputType::Pdf;
         let count = match determine_job_engine(&self.preset, &self.input_path) {
-            JobEngine::Image if ext.to_lowercase() == "pdf" => {
+            JobEngine::Image if ext.eq_ignore_ascii_case("pdf") && !pdf_identity => {
                 image::get_pdf_page_count(&self.input_path).unwrap_or(1)
             }
             // For Office conversion to images, it will be determined during conversion
@@ -170,6 +263,12 @@ impl ConversionJob {
         };
 
         let mut paths = Vec::new();
+
+        // `(n:c)` should describe the number of files produced for *this* input
+        // (e.g. the page count of a paged PDF conversion), not the number of
+        // input files in the batch.
+        let number_max = if count > 1 { count } else { total_count };
+
         for index in 0..count {
             let out_path = self.preset.output_file_name_template.clone();
 
@@ -179,13 +278,14 @@ impl ConversionJob {
                 self.preset.output_type.extension(),
                 &out_path,
                 list_index + index + 1,
-                total_count,
+                number_max,
             );
 
             if !path_helpers::is_path_valid(&generated) {
-                return Err(FileConverterError::Invalid(
-                    "Generated output path is invalid".to_string(),
-                ));
+                return Err(FileConverterError::Invalid(format!(
+                    "Generated output path is invalid: {}",
+                    generated
+                )));
             }
 
             // Create folders if needed
@@ -220,6 +320,13 @@ impl ConversionJob {
             *status = JobStatus::Converting("Preparing".to_string());
         }
 
+        // A job whose preparation was rejected must not run: it has no output
+        // paths and would otherwise fail with a misleading message.
+        if let Some(err) = &self.preparation_error {
+            *self.status.lock() = JobStatus::Failed(err.clone());
+            return;
+        }
+
         let progress_clone = self.progress.clone();
         let status_clone = self.status.clone();
 
@@ -244,6 +351,25 @@ impl ConversionJob {
 
         match result {
             Ok(_) => {
+                // Only report success for outputs that actually exist. Multi-pass
+                // engines (or page-count guesses) can leave gaps.
+                let missing: Vec<&String> = self
+                    .output_file_paths
+                    .iter()
+                    .filter(|p| !Path::new(p).is_file())
+                    .collect();
+
+                if !missing.is_empty() {
+                    *status = JobStatus::Failed(format!(
+                        "Conversion reported success but {} output file(s) are missing",
+                        missing.len()
+                    ));
+                    for path in &self.output_file_paths {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    return;
+                }
+
                 *status = JobStatus::Done;
                 self.progress.store(1.0f32.to_bits(), Ordering::Relaxed);
 
@@ -292,6 +418,12 @@ impl ConversionJob {
                 self.preset.output_type,
                 progress_cb,
             ),
+            JobEngine::TextDocument => doc_convert::run_text_document_conversion(
+                &self.input_path,
+                out_path,
+                self.preset.output_type,
+                progress_cb,
+            ),
             JobEngine::Oxipng => image::run_oxipng_compression(
                 Some(&self.preset),
                 &self.input_path,
@@ -299,122 +431,33 @@ impl ConversionJob {
                 progress_cb,
             ),
             JobEngine::Ico => {
-                let temp_dir = tempfile::tempdir()?;
-                let file_name = Path::new(&self.input_path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("temp");
-                let temp_png = path_helpers::generate_unique_path(
-                    temp_dir.path().join(format!("{}_ico_temp.png", file_name)),
-                    &[],
-                );
-                let temp_png_str = temp_png.to_string_lossy().to_string();
-
-                // 1. Convert input to intermediate clamped PNG
-                let mut png_preset = self.preset.clone();
-                png_preset.output_type = OutputType::Png;
-                png_preset.set_setting_value("ImageClampSizePowerOf2", "True");
-                png_preset.set_setting_value("ImageMaximumSize", "256");
-
+                // ICO is written natively (multi-resolution, aspect preserved).
                 image::run_image_conversion(
-                    &png_preset,
+                    &self.preset,
                     &self.input_path,
-                    std::slice::from_ref(&temp_png_str),
-                    &|percent, _| {
-                        progress_cb(percent * 0.5, "Resizing");
-                    },
-                )?;
-
-                // 2. Convert PNG to ICO
-                let passes =
-                    ffmpeg::get_ffmpeg_passes(&self.preset, &temp_png_str, out_path, hw_accel)?;
-                let res = ffmpeg::run_ffmpeg_pass(
-                    &passes[0],
-                    &temp_png_str,
-                    out_path,
-                    &|percent, name| {
-                        progress_cb(0.5 + percent * 0.5, name);
-                    },
-                );
-
-                let _ = std::fs::remove_file(temp_png);
-                res
+                    std::slice::from_ref(out_path),
+                    progress_cb,
+                )
             }
             JobEngine::Gif => {
-                let ext = Path::new(&self.input_path)
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let is_image = get_extension_category(&ext) == FileCategory::Image;
-
-                if is_image && ext != "png" {
-                    // Convert to PNG first
-                    let temp_dir = tempfile::tempdir()?;
-                    let file_name = Path::new(&self.input_path)
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("temp");
-                    let temp_png = path_helpers::generate_unique_path(
-                        temp_dir.path().join(format!("{}_gif_temp.png", file_name)),
-                        &[],
-                    );
-                    let temp_png_str = temp_png.to_string_lossy().to_string();
-
-                    let mut png_preset = self.preset.clone();
-                    png_preset.output_type = OutputType::Png;
-
-                    image::run_image_conversion(
-                        &png_preset,
-                        &self.input_path,
-                        std::slice::from_ref(&temp_png_str),
-                        &|percent, _| {
-                            progress_cb(percent * 0.3, "Pre-processing");
-                        },
-                    )?;
-
-                    let passes =
-                        ffmpeg::get_ffmpeg_passes(&self.preset, &temp_png_str, out_path, hw_accel)?;
-                    let total_passes = passes.len();
-                    for (i, pass) in passes.iter().enumerate() {
-                        let step_res = ffmpeg::run_ffmpeg_pass(
-                            pass,
-                            &temp_png_str,
-                            out_path,
-                            &|percent, name| {
-                                let overall =
-                                    0.3 + (i as f32 + percent) / total_passes as f32 * 0.7;
-                                progress_cb(overall, name);
-                            },
-                        );
-
-                        if step_res.is_err() {
-                            let _ = std::fs::remove_file(&temp_png);
-                            return step_res;
-                        }
-                    }
-                    let _ = std::fs::remove_file(temp_png);
-                } else {
+                if image::source_is_animated(&self.input_path) {
+                    // Animated images keep the two-pass palettegen/paletteuse
+                    // recipe, which needs real frame timing to work.
                     let passes = ffmpeg::get_ffmpeg_passes(
                         &self.preset,
                         &self.input_path,
                         out_path,
                         hw_accel,
                     )?;
-                    let total_passes = passes.len();
-                    for (i, pass) in passes.iter().enumerate() {
-                        ffmpeg::run_ffmpeg_pass(
-                            pass,
-                            &self.input_path,
-                            out_path,
-                            &|percent, name| {
-                                let overall = (i as f32 + percent) / total_passes as f32;
-                                progress_cb(overall, name);
-                            },
-                        )?;
-                    }
+                    run_ffmpeg_passes(&passes, &self.input_path, out_path, 1.0, progress_cb)
+                } else {
+                    image::run_still_gif_conversion(
+                        &self.preset,
+                        &self.input_path,
+                        out_path,
+                        progress_cb,
+                    )
                 }
-                Ok(())
             }
             JobEngine::Image => {
                 if self.preset.output_type == OutputType::Pdf
@@ -424,11 +467,17 @@ impl ConversionJob {
                     let dpi = self
                         .preset
                         .get_setting_value("PdfTargetDpi")
-                        .and_then(|v| v.parse::<u32>().ok())
+                        .and_then(|v| v.trim().parse::<u32>().ok())
+                        .filter(|d| *d > 0)
                         .unwrap_or(150);
                     let options = crate::pdf_compress::PdfCompressOptions {
                         target_dpi: dpi,
-                        jpeg_quality: 75,
+                        jpeg_quality: self
+                            .preset
+                            .get_setting_value("PdfJpegQuality")
+                            .and_then(|v| v.trim().parse::<u8>().ok())
+                            .filter(|q| *q > 0)
+                            .unwrap_or(75),
                     };
                     let res =
                         crate::pdf_compress::compress_pdf(&self.input_path, out_path, &options);
@@ -467,23 +516,15 @@ impl ConversionJob {
             JobEngine::Ffmpeg => {
                 let passes =
                     ffmpeg::get_ffmpeg_passes(&self.preset, &self.input_path, out_path, hw_accel)?;
-                let total_passes = passes.len();
-                for (i, pass) in passes.iter().enumerate() {
-                    ffmpeg::run_ffmpeg_pass(pass, &self.input_path, out_path, &|percent, name| {
-                        let overall = (i as f32 + percent) / total_passes as f32;
-                        progress_cb(overall, name);
-                    })?;
-                }
-                Ok(())
+                run_ffmpeg_passes(&passes, &self.input_path, out_path, 1.0, progress_cb)
             }
         }
     }
 
     fn sync_file_timestamps(&self) {
         if let Ok(metadata) = std::fs::metadata(&self.input_path) {
-            let _creation_time = metadata
-                .created()
-                .unwrap_or_else(|_| std::time::SystemTime::now());
+            // Windows cannot portably set the creation time, so only the
+            // access/modified stamps are propagated.
             let accessed_time = metadata
                 .accessed()
                 .unwrap_or_else(|_| std::time::SystemTime::now());
@@ -544,14 +585,34 @@ impl ConversionJob {
 
 #[cfg(target_os = "windows")]
 pub fn copy_files_to_clipboard(paths: &[String]) -> Result<()> {
-    use clipboard_win::raw::set_file_list;
-    set_file_list(paths).map_err(|e| {
-        FileConverterError::Io(std::io::Error::other(format!(
-            "Failed to copy to clipboard: {:?}",
-            e
-        )))
-    })?;
-    Ok(())
+    use clipboard_win::raw;
+
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    // `clipboard_win::raw::set_file_list` deliberately uses `NoClear`, so the
+    // clipboard must be opened (and closed) by the caller - otherwise
+    // `SetClipboardData` fails with ERROR_CLIPBOARD_NOT_OPEN and nothing is
+    // ever copied.
+    raw::open().map_err(|e| clipboard_error("Failed to open clipboard", e))?;
+
+    let set_result = raw::empty()
+        .and_then(|_| raw::set_file_list(paths))
+        .map_err(|e| clipboard_error("Failed to copy to clipboard", e));
+
+    // Always release the clipboard, even when setting the data failed.
+    let _ = raw::close();
+
+    set_result
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_error(context: &str, err: impl std::fmt::Debug) -> FileConverterError {
+    FileConverterError::Io(std::io::Error::other(format!(
+        "{}: {:?}",
+        context, err
+    )))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -615,19 +676,24 @@ impl ConversionScheduler {
             }
         }
 
-        // Copy files to clipboard on completion
+        // Copy files to clipboard on completion.
+        // Only files that actually exist are offered.
         if self.copy_clipboard {
             let mut successful_files = Vec::new();
             for job in &self.jobs {
-                let status = job.status.lock();
-                if *status == JobStatus::Done {
+                let is_done = matches!(*job.status.lock(), JobStatus::Done);
+                if is_done {
                     for path in &job.output_file_paths {
-                        successful_files.push(path.clone());
+                        if Path::new(path).is_file() {
+                            successful_files.push(path.clone());
+                        }
                     }
                 }
             }
-            if !successful_files.is_empty() {
-                let _ = copy_files_to_clipboard(&successful_files);
+            if !successful_files.is_empty()
+                && let Err(e) = copy_files_to_clipboard(&successful_files)
+            {
+                tracing::warn!("Failed to copy results to the clipboard: {}", e);
             }
         }
     }

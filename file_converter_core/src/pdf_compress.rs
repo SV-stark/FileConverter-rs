@@ -20,19 +20,16 @@ impl Default for PdfCompressOptions {
     }
 }
 
-use memmap2::Mmap;
-
 pub fn compress_pdf<P: AsRef<Path>>(
     input_path: P,
     output_path: P,
     options: &PdfCompressOptions,
 ) -> Result<()> {
-    let file = std::fs::File::open(input_path.as_ref()).map_err(FileConverterError::Io)?;
-    // SAFETY: The input PDF file was opened in read-only mode and is not modified or
-    // truncated concurrently during PDF compression parsing.
-    let mmap = unsafe { Mmap::map(&file) }.map_err(FileConverterError::Io)?;
+    // Read the document into an owned buffer: no memory mapping (and therefore
+    // no `unsafe`) is required.
+    let bytes = std::fs::read(input_path.as_ref()).map_err(FileConverterError::Io)?;
 
-    let mut doc = Document::load_mem(&mmap).map_err(|e| {
+    let mut doc = Document::load_mem(&bytes).map_err(|e| {
         FileConverterError::Invalid(format!("Failed to load PDF document: {:?}", e))
     })?;
 
@@ -224,10 +221,9 @@ pub fn compress_pdf<P: AsRef<Path>>(
         )))
     })?;
 
-    // Drop mmap & file before atomic rename
+    // Release the input buffer before the atomic rename on Windows.
     drop(doc);
-    drop(mmap);
-    drop(file);
+    drop(bytes);
 
     if let Some(tp) = temp_save_path {
         tp.persist(output_path.as_ref()).map_err(|e| {

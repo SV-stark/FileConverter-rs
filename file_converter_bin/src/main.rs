@@ -29,7 +29,12 @@ fn get_settings_paths() -> (PathBuf, PathBuf) {
     (default_xml, user_xml)
 }
 
-const DEFAULT_SETTINGS_XML: &str = include_str!("../Settings.default.xml");
+/// The single canonical copy of the default presets, embedded at build time.
+///
+/// It lives at the repository root (shared with `file_converter_shell`, the
+/// installer and the release packaging). Do **not** add a crate-local copy: the
+/// duplicates that used to exist here silently shipped stale presets.
+const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
 
 fn initialize_user_settings_if_needed() -> Result<Settings, String> {
     let (default_xml, user_xml) = get_settings_paths();
@@ -46,122 +51,101 @@ fn initialize_user_settings_if_needed() -> Result<Settings, String> {
         }
     }
 
-    Settings::load_from_file(&user_xml).map_err(|e| format!("Failed to load settings: {:?}", e))
+    let mut settings = Settings::load_from_file(&user_xml)
+        .map_err(|e| format!("Failed to load settings: {:?}", e))?;
+
+    // Adopt presets that were added to the shipped defaults after this user's
+    // settings file was created. Without this, preset fixes shipped in a new
+    // version would never reach existing installations (the "Import Presets"
+    // button used to be the only way, and it is easy to miss).
+    if let Ok(defaults) = Settings::load_from_str(DEFAULT_SETTINGS_XML) {
+        let before = settings.conversion_presets.len();
+        settings.merge(defaults);
+        if settings.conversion_presets.len() != before {
+            let _ = settings.save_to_file(&user_xml);
+        }
+    }
+
+    Ok(settings)
+}
+
+/// Runs `regsvr32.exe` on the shell extension DLL, optionally elevated.
+fn register_shell_extension(elevated: bool) -> std::io::Result<()> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::PCWSTR;
+
+    let mut exe_dir = env::current_exe().unwrap_or_default();
+    exe_dir.pop();
+    let dll_path = exe_dir.join("file_converter_shell.dll");
+
+    if !dll_path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Shell DLL not found at {}", dll_path.display()),
+        ));
+    }
+
+    let verb = if elevated { "runas" } else { "open" };
+    let params: Vec<u16> = if elevated {
+        format!("/s \"{}\"\0", dll_path.display()).encode_utf16().collect()
+    } else {
+        format!("/u /s \"{}\"\0", dll_path.display())
+            .encode_utf16()
+            .collect()
+    };
+    let verb: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = "regsvr32.exe".encode_utf16().chain(std::iter::once(0)).collect();
+
+    // SAFETY: `ShellExecuteW` is a Win32 shim; all pointers reference
+    // null-terminated buffers that live until the call returns, and no
+    // caller-owned memory is aliased.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(params.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if (result.0 as usize) > 32 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "Registration request failed or was canceled (code {}).",
+            result.0 as usize
+        )))
+    }
 }
 
 fn register_shell_extension_dll() -> String {
-    let mut exe_dir = env::current_exe().unwrap_or_default();
-    exe_dir.pop();
-    let dll_path = exe_dir.join("file_converter_shell.dll");
-
-    if !dll_path.exists() {
-        return format!("Shell DLL not found at {:?}", dll_path);
-    }
-
-    #[cfg(target_os = "windows")]
-    // SAFETY: ShellExecuteW is called with valid null-terminated strings and null pointers for optional parameters.
-    unsafe {
-        unsafe extern "system" {
-            fn ShellExecuteW(
-                hwnd: *mut std::ffi::c_void,
-                lpOperation: *const u16,
-                lpFile: *const u16,
-                lpParameters: *const u16,
-                lpDirectory: *const u16,
-                nShowCmd: i32,
-            ) -> *mut std::ffi::c_void;
-        }
-
-        let verb = windows::core::w!("runas");
-        let file = windows::core::w!("regsvr32.exe");
-        let params: Vec<u16> = format!("/s \"{}\"\0", dll_path.to_string_lossy())
-            .encode_utf16()
-            .collect();
-
-        let res = ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            file.as_ptr(),
-            params.as_ptr(),
-            std::ptr::null(),
-            1,
-        );
-
-        if (res as usize) > 32 {
+    match register_shell_extension(true) {
+        Ok(()) => {
             "Shell extension context menu registered successfully with administrator privileges!"
                 .to_string()
-        } else {
-            format!(
-                "Registration request failed or was canceled (Code: {}).",
-                res as usize
-            )
         }
+        Err(e) => e.to_string(),
     }
-
-    #[cfg(not(target_os = "windows"))]
-    "Shell extension registration is only supported on Windows.".to_string()
 }
 
 fn unregister_shell_extension_dll() -> String {
-    let mut exe_dir = env::current_exe().unwrap_or_default();
-    exe_dir.pop();
-    let dll_path = exe_dir.join("file_converter_shell.dll");
-
-    if !dll_path.exists() {
-        return format!("Shell DLL not found at {:?}", dll_path);
+    match register_shell_extension(false) {
+        Ok(()) => "Shell extension context menu unregistered successfully!".to_string(),
+        Err(e) => e.to_string(),
     }
-
-    #[cfg(target_os = "windows")]
-    // SAFETY: ShellExecuteW is called with valid null-terminated strings and null pointers for optional parameters.
-    unsafe {
-        unsafe extern "system" {
-            fn ShellExecuteW(
-                hwnd: *mut std::ffi::c_void,
-                lpOperation: *const u16,
-                lpFile: *const u16,
-                lpParameters: *const u16,
-                lpDirectory: *const u16,
-                nShowCmd: i32,
-            ) -> *mut std::ffi::c_void;
-        }
-
-        let verb = windows::core::w!("runas");
-        let file = windows::core::w!("regsvr32.exe");
-        let params: Vec<u16> = format!("/u /s \"{}\"\0", dll_path.to_string_lossy())
-            .encode_utf16()
-            .collect();
-
-        let res = ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            file.as_ptr(),
-            params.as_ptr(),
-            std::ptr::null(),
-            1,
-        );
-
-        if (res as usize) > 32 {
-            "Shell extension context menu unregistered successfully!".to_string()
-        } else {
-            format!(
-                "Unregistration request failed or was canceled (Code: {}).",
-                res as usize
-            )
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    "Shell extension unregistration is only supported on Windows.".to_string()
 }
 
 fn play_completion_sound() {
-    #[cfg(target_os = "windows")]
-    // SAFETY: MessageBeep is a benign Win32 notification audio API.
+    use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE;
+
+    // SAFETY: `MessageBeep` only plays a system notification sound and takes no
+    // pointers or caller-owned memory.
     unsafe {
-        unsafe extern "system" {
-            fn MessageBeep(uType: u32) -> i32;
-        }
-        let _ = MessageBeep(0x00000040);
+        let _ = MessageBeep(MESSAGEBOX_STYLE(0x00000040));
     }
 }
 
@@ -235,10 +219,11 @@ fn get_category_badge(output_type: OutputType) -> &'static str {
         OutputType::Avif
         | OutputType::Ico
         | OutputType::Jpg
+        | OutputType::Jxl
         | OutputType::Png
         | OutputType::Webp
         | OutputType::Gif => "🖼️ Image",
-        OutputType::Pdf => "📄 Document",
+        OutputType::Pdf | OutputType::Epub | OutputType::Txt | OutputType::Html => "📄 Document",
         _ => "📁 Misc",
     }
 }
@@ -264,27 +249,12 @@ fn is_preset_compatible_with_file(
     preset: &file_converter_core::settings::ConversionPreset,
     file_path: &str,
 ) -> bool {
-    let ext = Path::new(file_path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if ext.is_empty() {
-        return true;
-    }
-
-    if !preset.input_types.is_empty() {
-        if preset.input_types.iter().any(|it| {
-            let clean_it = it.trim().trim_start_matches('.').to_lowercase();
-            clean_it == "*" || clean_it == ext
-        }) {
-            return true;
-        }
-    }
-
-    let cat = file_converter_core::types::get_extension_category(&ext);
-    file_converter_core::types::is_output_type_compatible_with_category(preset.output_type, cat)
+    let declared: Vec<String> = preset.input_types.iter().map(|s| s.to_string()).collect();
+    file_converter_core::types::is_preset_applicable_to_file(
+        preset.output_type,
+        &declared,
+        file_path,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -508,7 +478,8 @@ use clap::{Parser, Subcommand};
 #[command(name = "file_converter_bin")]
 #[command(
     author = "File Converter Team",
-    version = "0.9.4",
+    // Derived from the crate version so `--version` can never drift again.
+    version = env!("CARGO_PKG_VERSION"),
     about = "File Converter CLI & Explorer Context Menu Utility",
     long_about = None
 )]
@@ -564,10 +535,12 @@ fn create_conversion_jobs(
     input_files: &[String],
 ) -> Vec<ConversionJob> {
     let total_input_files = input_files.len();
-    let mut jobs = Vec::new();
+    let mut jobs = Vec::with_capacity(total_input_files);
     for (idx, file) in input_files.iter().enumerate() {
         let mut job = ConversionJob::new(idx + 1, preset.clone(), file.clone());
         if let Err(e) = job.prepare(idx, total_input_files) {
+            // `prepare` records the reason, so the job reports it verbatim
+            // instead of failing later with "no output path specified".
             tracing::error!("Failed to prepare job for file {}: {}", job.input_path, e);
         }
         jobs.push(job);
@@ -654,7 +627,33 @@ fn main() {
 
     let cli = match Cli::try_parse_from(&normalized) {
         Ok(c) => c,
-        Err(_) => {
+        Err(err) => {
+            // `--help`, `--version` and usage errors must be printed, not
+            // swallowed into a GUI launch (the binary is `windows_subsystem =
+            // "windows"`, so a silent launch looks like a hang to the user).
+            use clap::error::ErrorKind;
+
+            match err.kind() {
+                ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                    print!("{}", err);
+                    return;
+                }
+                ErrorKind::InvalidSubcommand
+                | ErrorKind::UnknownArgument
+                | ErrorKind::MissingRequiredArgument
+                | ErrorKind::InvalidValue => {
+                    eprintln!("{}", err.render().ansi());
+                    eprintln!(
+                        "Run with no arguments to open the settings window, or pass file paths \
+                         to convert."
+                    );
+                    return;
+                }
+                _ => {}
+            }
+
             if raw_args.len() <= 1 {
                 run_settings_native_gui(None);
             } else {
@@ -772,41 +771,68 @@ fn spawn_conversion_process(preset_name: &str, files: &[String]) {
     }
 }
 
+/// Maps a row index in the (possibly filtered) preset model back to the index in
+/// the full settings list. Falls back to the row index when the model is stale.
+fn resolve_original_index(window: &SettingsWindow, row: usize) -> usize {
+    let model = window.get_presets();
+    for i in 0..model.row_count() {
+        if i == row
+            && let Some(item) = model.row_data(i)
+            && item.original_index >= 0
+        {
+            return item.original_index as usize;
+        }
+    }
+    row
+}
+
+fn preset_to_slint_data(preset: &file_converter_core::settings::ConversionPreset, i: usize) -> PresetData {
+    PresetData {
+        original_index: i as i32,
+        name: preset.name.as_str().into(),
+        category: get_category_badge(preset.output_type).into(),
+        output_type: format!("{:?}", preset.output_type).into(),
+        output_ext: preset.output_type.extension().into(),
+        input_types: preset.input_types.join(", ").into(),
+        output_file_name_template: preset.output_file_name_template.as_str().into(),
+        input_post_conversion_action: format!("{:?}", preset.input_post_conversion_action).into(),
+    }
+}
+
+fn refresh_preview(window: &SettingsWindow, preset: &file_converter_core::settings::ConversionPreset) {
+    let preview = file_converter_core::path_helpers::generate_file_path_from_template(
+        "C:\\Music\\Album\\sample_track.flac",
+        preset.output_type.extension(),
+        &preset.output_file_name_template,
+        1,
+        1,
+    );
+    window.set_preview_path(preview.into());
+}
+
+/// Fills the editor pane for a preset without touching the preset list model.
+fn populate_slint_editor(window: &SettingsWindow, preset: &file_converter_core::settings::ConversionPreset) {
+    window.set_edit_name(preset.name.as_str().into());
+    window.set_edit_output_type(format!("{:?}", preset.output_type).into());
+    window.set_edit_input_types(preset.input_types.join(", ").into());
+    window.set_edit_template(preset.output_file_name_template.as_str().into());
+    window.set_edit_post_action(format!("{:?}", preset.input_post_conversion_action).into());
+    refresh_preview(window, preset);
+}
+
 fn populate_slint_presets(window: &SettingsWindow, settings: &Settings, selected_idx: usize) {
     let slint_presets: Vec<PresetData> = settings
         .conversion_presets
         .iter()
         .enumerate()
-        .map(|(i, p)| PresetData {
-            original_index: i as i32,
-            name: p.name.as_str().into(),
-            category: get_category_badge(p.output_type).into(),
-            output_type: format!("{:?}", p.output_type).into(),
-            output_ext: p.output_type.extension().into(),
-            input_types: p.input_types.join(", ").into(),
-            output_file_name_template: p.output_file_name_template.as_str().into(),
-            input_post_conversion_action: format!("{:?}", p.input_post_conversion_action).into(),
-        })
+        .map(|(i, p)| preset_to_slint_data(p, i))
         .collect();
 
     window.set_presets(Rc::new(slint::VecModel::from(slint_presets)).into());
     window.set_selected_preset_index(selected_idx as i32);
 
     if let Some(preset) = settings.conversion_presets.get(selected_idx) {
-        window.set_edit_name(preset.name.as_str().into());
-        window.set_edit_output_type(format!("{:?}", preset.output_type).into());
-        window.set_edit_input_types(preset.input_types.join(", ").into());
-        window.set_edit_template(preset.output_file_name_template.as_str().into());
-        window.set_edit_post_action(format!("{:?}", preset.input_post_conversion_action).into());
-
-        let preview = file_converter_core::path_helpers::generate_file_path_from_template(
-            "C:\\Music\\Album\\sample_track.flac",
-            preset.output_type.extension(),
-            &preset.output_file_name_template,
-            1,
-            1,
-        );
-        window.set_preview_path(preview.into());
+        populate_slint_editor(window, preset);
     }
 }
 
@@ -825,7 +851,7 @@ fn refresh_filtered_presets(
         .enumerate()
         .filter(|(_, p)| {
             let badge = get_category_badge(p.output_type);
-            let cat_match = if cat_filter == "all" {
+            let cat_match = if cat_filter == "all" || cat_filter.is_empty() {
                 true
             } else if cat_filter.contains("audio") {
                 badge.contains("Audio")
@@ -854,16 +880,7 @@ fn refresh_filtered_presets(
 
             cat_match && text_match
         })
-        .map(|(i, p)| PresetData {
-            original_index: i as i32,
-            name: p.name.as_str().into(),
-            category: get_category_badge(p.output_type).into(),
-            output_type: format!("{:?}", p.output_type).into(),
-            output_ext: p.output_type.extension().into(),
-            input_types: p.input_types.join(", ").into(),
-            output_file_name_template: p.output_file_name_template.as_str().into(),
-            input_post_conversion_action: format!("{:?}", p.input_post_conversion_action).into(),
-        })
+        .map(|(i, p)| preset_to_slint_data(p, i))
         .collect();
 
     window.set_presets(Rc::new(slint::VecModel::from(filtered)).into());
@@ -987,13 +1004,23 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     }
 
     // Callback: Save Settings
+    //
+    // Every mutable field must be copied back out of the UI here, otherwise the
+    // toggles and preset edits are silently discarded when the window closes.
     let window_weak = window.as_weak();
     let settings_clone = settings_state.clone();
     let xml_path_clone = user_xml_path_rc.clone();
     window.on_save_settings(move || {
         if let Some(w) = window_weak.upgrade() {
             let mut s = settings_clone.borrow_mut();
-            s.duration_between_end_of_conversions_and_application_exit = w.get_exit_delay_seconds();
+            s.auto_start_on_file_drop = w.get_auto_start_on_file_drop();
+            s.copy_files_in_clipboard_after_conversion =
+                w.get_copy_files_in_clipboard_after_conversion();
+            s.exit_application_when_conversions_finished =
+                w.get_exit_application_when_conversions_finished();
+            s.duration_between_end_of_conversions_and_application_exit =
+                w.get_exit_delay_seconds();
+
             match s.save_to_file(&*xml_path_clone) {
                 Ok(_) => w.set_status_msg("Settings saved successfully!".into()),
                 Err(e) => w.set_status_msg(format!("Failed to save: {:?}", e).into()),
@@ -1001,7 +1028,9 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
         }
     });
 
-    // Callbacks: Fast UX Toggles
+    // Fast UX toggles. Each one mirrors the value into the in-memory settings
+    // *and* into the window property so an explicit "Save" always persists the
+    // complete current state.
     let settings_clone = settings_state.clone();
     window.on_toggle_auto_start(move |val| {
         settings_clone.borrow_mut().auto_start_on_file_drop = val;
@@ -1016,11 +1045,9 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
 
     let settings_clone = settings_state.clone();
     window.on_toggle_auto_close(move |val| {
-        let mut s = settings_clone.borrow_mut();
-        s.exit_application_when_conversions_finished = val;
-        if val {
-            s.duration_between_end_of_conversions_and_application_exit = 0.0;
-        }
+        settings_clone
+            .borrow_mut()
+            .exit_application_when_conversions_finished = val;
     });
 
     // Callback: Register Shell
@@ -1037,8 +1064,12 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     let settings_clone = settings_state.clone();
     window.on_select_preset(move |index| {
         if let Some(w) = window_weak.upgrade() {
-            let idx = index as usize;
-            populate_slint_presets(&w, &settings_clone.borrow(), idx);
+            let idx = resolve_original_index(&w, index.max(0) as usize);
+            let s = settings_clone.borrow();
+            w.set_selected_preset_index(idx as i32);
+            if let Some(preset) = s.conversion_presets.get(idx) {
+                populate_slint_editor(&w, preset);
+            }
         }
     });
 
@@ -1048,7 +1079,7 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     window.on_duplicate_preset(move |index| {
         if let Some(w) = window_weak.upgrade() {
             let mut s = settings_clone.borrow_mut();
-            let idx = index as usize;
+            let idx = resolve_original_index(&w, index.max(0) as usize);
             if idx < s.conversion_presets.len() {
                 let mut cloned = s.conversion_presets[idx].clone();
                 cloned.name = format!("{} (Copy)", cloned.name);
@@ -1092,7 +1123,7 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     window.on_delete_preset(move |index| {
         if let Some(w) = window_weak.upgrade() {
             let mut s = settings_clone.borrow_mut();
-            let idx = index as usize;
+            let idx = resolve_original_index(&w, index.max(0) as usize);
             if s.conversion_presets.len() > 1 && idx < s.conversion_presets.len() {
                 let deleted_name = s.conversion_presets.remove(idx).name;
                 let new_idx = if idx >= s.conversion_presets.len() {
@@ -1595,33 +1626,69 @@ fn run_conversion_gui(
 
     let scheduler_folder = scheduler_rc.clone();
     window.on_open_output_folder(move || {
-        if let Some(first_job) = scheduler_folder.jobs.first() {
-            if let Some(first_out) = first_job.output_file_paths.first() {
-                let parent = Path::new(first_out)
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."));
-                let _ = std::process::Command::new("explorer").arg(parent).spawn();
-            }
+        // Open the folder of the first *successful* output, falling back to the
+        // first job's folder.
+        let first_existing = scheduler_folder
+            .jobs
+            .iter()
+            .filter(|job| matches!(*job.status.lock(), JobStatus::Done))
+            .flat_map(|job| job.output_file_paths.iter())
+            .find(|p| Path::new(p).is_file())
+            .cloned()
+            .or_else(|| {
+                scheduler_folder
+                    .jobs
+                    .first()
+                    .and_then(|j| j.output_file_paths.first().cloned())
+            });
+
+        if let Some(path) = first_existing {
+            let parent = Path::new(&path).parent().unwrap_or_else(|| Path::new("."));
+            let _ = std::process::Command::new("explorer").arg(parent).spawn();
         }
     });
 
     let scheduler_copy = scheduler_rc.clone();
     window.on_copy_output_paths(move || {
-        let mut all_outs = Vec::new();
-        for job in &scheduler_copy.jobs {
-            for out in &job.output_file_paths {
-                all_outs.push(out.clone());
-            }
-        }
+        // Only copy paths that actually exist.
+        let all_outs: Vec<String> = scheduler_copy
+            .jobs
+            .iter()
+            .flat_map(|job| job.output_file_paths.iter())
+            .filter(|p| Path::new(p).is_file())
+            .cloned()
+            .collect();
         if !all_outs.is_empty() {
             let _ = file_converter_core::scheduler::copy_files_to_clipboard(&all_outs);
         }
     });
 
+    // Closing mid-conversion would terminate the detached worker thread and
+    // truncate outputs, so the window is kept open until the batch settles.
     let window_close_cb = window.as_weak();
+    let scheduler_close = scheduler_rc.clone();
     window.on_close_window(move || {
-        if window_close_cb.upgrade().is_some() {
-            slint::quit_event_loop().unwrap();
+        if let Some(w) = window_close_cb.upgrade() {
+            let still_running = scheduler_close
+                .jobs
+                .iter()
+                .any(|job| {
+                    matches!(
+                        *job.status.lock(),
+                        JobStatus::Queue | JobStatus::Converting(_)
+                    )
+                });
+
+            if still_running {
+                w.set_overall_status_text(
+                    "Conversions are still running - cancel them or wait for completion \
+                     before closing."
+                        .into(),
+                );
+                return;
+            }
+
+            let _ = slint::quit_event_loop();
         }
     });
 

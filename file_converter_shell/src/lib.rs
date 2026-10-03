@@ -18,9 +18,8 @@ use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
 
 use file_converter_core::settings::{ConversionPreset, Settings};
-use file_converter_core::types::{
-    OutputType, get_extension_category, is_output_type_compatible_with_category,
-};
+use file_converter_core::types::{OutputType, is_preset_applicable_to_file};
+
 
 #[allow(unused_imports)]
 mod windows_core {
@@ -92,7 +91,12 @@ pub unsafe extern "system" fn DllMain(
     1
 }
 
-const DEFAULT_SETTINGS_XML: &str = include_str!("../Settings.default.xml");
+/// The single canonical copy of the default presets, embedded at build time.
+///
+/// It lives at the repository root (shared with `file_converter_bin`, the
+/// installer and the release packaging). Do **not** add a crate-local copy: the
+/// duplicates that used to exist here silently shipped stale presets.
+const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
 
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
@@ -260,27 +264,10 @@ fn get_cached_settings() -> Settings {
 }
 
 fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) -> bool {
-    let ext = Path::new(file_path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if ext.is_empty() {
-        return true;
-    }
-
-    if !preset.input_types.is_empty() {
-        if preset.input_types.iter().any(|it| {
-            let clean_it = it.trim().trim_start_matches('.').to_lowercase();
-            clean_it == "*" || clean_it == ext
-        }) {
-            return true;
-        }
-    }
-
-    let cat = get_extension_category(&ext);
-    is_output_type_compatible_with_category(preset.output_type, cat)
+    // Single source of truth: the same check the scheduler uses before queueing
+    // a job, so the context menu can never offer a preset that would be rejected.
+    let declared: Vec<String> = preset.input_types.iter().map(|s| s.to_string()).collect();
+    is_preset_applicable_to_file(preset.output_type, &declared, file_path)
 }
 
 impl IContextMenu_Impl for FileConverterShellExt_Impl {
@@ -1073,18 +1060,16 @@ mod tests {
 
     #[test]
     fn test_shell_category_icon_creation() {
-        unsafe {
-            let hbmp_audio = create_category_icon(OutputType::Mp3);
-            assert!(!hbmp_audio.is_invalid());
+        let hbmp_audio = create_category_icon(OutputType::Mp3);
+        assert!(!hbmp_audio.is_invalid());
 
-            let hbmp_video = create_category_icon(OutputType::Mp4);
-            assert!(!hbmp_video.is_invalid());
+        let hbmp_video = create_category_icon(OutputType::Mp4);
+        assert!(!hbmp_video.is_invalid());
 
-            let hbmp_image = create_category_icon(OutputType::Png);
-            assert!(!hbmp_image.is_invalid());
+        let hbmp_image = create_category_icon(OutputType::Png);
+        assert!(!hbmp_image.is_invalid());
 
-            let hbmp_pdf = create_category_icon(OutputType::Pdf);
-            assert!(!hbmp_pdf.is_invalid());
-        }
+        let hbmp_pdf = create_category_icon(OutputType::Pdf);
+        assert!(!hbmp_pdf.is_invalid());
     }
 }

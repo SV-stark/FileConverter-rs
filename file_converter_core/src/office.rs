@@ -294,6 +294,16 @@ pub fn convert_office_batch_to_pdf(app: &str, input_output_pairs: &[(&str, &str)
     execute_powershell_with_timeout(&script, 300)
 }
 
+/// Human-readable application name for error messages.
+fn friendly_app_name(app_name: &str) -> &'static str {
+    match app_name.to_lowercase().as_str() {
+        "word" | "winword.exe" => "Microsoft Word",
+        "excel" | "excel.exe" => "Microsoft Excel",
+        "powerpoint" | "powerpnt.exe" => "Microsoft PowerPoint",
+        _ => "Microsoft Office",
+    }
+}
+
 pub fn run_office_conversion(
     preset: &ConversionPreset,
     app_name: &str,
@@ -307,6 +317,20 @@ pub fn run_office_conversion(
         return Err(FileConverterError::Invalid(
             "No output file paths specified".to_string(),
         ));
+    }
+
+    // Fail fast (and clearly) when the required Office application is missing,
+    // instead of surfacing an opaque PowerShell exit code.
+    if !is_office_app_available(app_name) {
+        return Err(FileConverterError::Office(format!(
+            "Microsoft Office ('{}') was not found, so '{}' cannot be converted. \
+             Install Office, or pre-export the file to PDF and convert that instead.",
+            friendly_app_name(app_name),
+            Path::new(input_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| input_path.to_string()),
+        )));
     }
 
     let is_pdf_output = preset.output_type == crate::types::OutputType::Pdf;
@@ -341,6 +365,7 @@ pub fn run_office_conversion(
                     preset.output_type.extension(),
                     &preset.output_file_name_template,
                     i + 1,
+                    // `(n:c)` is the real page count, not the batch size.
                     page_count,
                 );
                 let _ = crate::path_helpers::create_folders(&out_path);

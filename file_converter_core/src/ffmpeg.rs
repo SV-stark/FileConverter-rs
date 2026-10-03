@@ -18,6 +18,7 @@ static PROGRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+#[derive(Debug, Clone)]
 pub struct FfmpegPass {
     pub name: String,
     pub arguments: Vec<String>,
@@ -95,6 +96,28 @@ pub fn compute_audio_filter_args(preset: &ConversionPreset) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Builds a collision-free path inside the system temp directory without
+/// creating the file (FFmpeg needs to create it itself).
+fn unique_temp_path(extension: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    std::env::temp_dir().join(format!(
+        "fc_{}_{}_{}.{}",
+        std::process::id(),
+        nanos,
+        seq,
+        extension
+    ))
 }
 
 pub fn tokenize_command(cmd: &str) -> Vec<String> {
@@ -259,6 +282,8 @@ pub fn get_ffmpeg_passes(
             arguments.push("xvid".to_string());
             arguments.push("-qscale:v".to_string());
             arguments.push((31 - quality).to_string());
+            arguments.push("-pix_fmt".to_string());
+            arguments.push("yuv420p".to_string());
 
             if enable_audio {
                 arguments.push("-c:a".to_string());
@@ -307,33 +332,32 @@ pub fn get_ffmpeg_passes(
             });
         }
         OutputType::Gif => {
-            // High-quality palette generation and utilization (2 passes)
-            let palette_path = tempfile::Builder::new()
-                .prefix("fc_palette_")
-                .suffix(".png")
-                .tempfile()
-                .map_err(FileConverterError::Io)?
-                .into_temp_path()
-                .to_path_buf();
+            // Two-pass palette generation. The palette pass deliberately omits
+            // `fps`: a single-frame source combined with `scale` + `fps` can
+            // emit an empty palette file, which then breaks the second pass.
+            let palette_path = unique_temp_path("png");
 
-            let transform = compute_transform_args(preset, resolved_hw_accel);
+            let base_transform = compute_transform_args(preset, resolved_hw_accel);
             let fps = preset
                 .get_setting_value("VideoFramesPerSecond")
-                .and_then(|v| v.parse::<i32>().ok())
+                .and_then(|v| v.trim().parse::<i32>().ok())
                 .unwrap_or(15);
-
-            let vf_palettegen = if transform.is_empty() {
-                format!("fps={}", fps)
-            } else {
-                format!("{},fps={}", transform, fps)
-            };
 
             // Pass 1: PaletteGen
             let mut args1 = base_args.clone();
             args1.push("-i".to_string());
             args1.push(input_path.to_string());
             args1.push("-vf".to_string());
-            args1.push(format!("{},palettegen", vf_palettegen));
+            args1.push(if base_transform.is_empty() {
+                "palettegen".to_string()
+            } else {
+                format!("{},palettegen", base_transform)
+            });
+            // Force exactly one palette frame to be written.
+            args1.push("-frames:v".to_string());
+            args1.push("1".to_string());
+            args1.push("-update".to_string());
+            args1.push("1".to_string());
             args1.push(palette_path.to_string_lossy().to_string());
 
             passes.push(FfmpegPass {
@@ -343,18 +367,29 @@ pub fn get_ffmpeg_passes(
             });
 
             // Pass 2: PaletteUse
+            let video_chain = if base_transform.is_empty() {
+                format!("fps={}", fps)
+            } else {
+                format!("{},fps={}", base_transform, fps)
+            };
             let mut args2 = base_args.clone();
             args2.push("-i".to_string());
             args2.push(input_path.to_string());
             args2.push("-i".to_string());
             args2.push(palette_path.to_string_lossy().to_string());
-            args2.push("-lavfi".to_string());
-            args2.push(format!("{},paletteuse", vf_palettegen));
+            // The palette frame must not be rescaled, so an explicit
+            // filter_complex graph is used instead of the blanket `-lavfi`.
+            args2.push("-filter_complex".to_string());
+            args2.push(format!(
+                "[0:v]{}[x];[x][1:v]paletteuse",
+                video_chain
+            ));
             args2.push(output_path.to_string());
 
             passes.push(FfmpegPass {
                 name: "Conversion".to_string(),
                 arguments: args2,
+                // The palette is deleted only after the final pass consumed it.
                 file_to_delete: Some(palette_path.clone()),
             });
         }
@@ -612,6 +647,15 @@ pub fn get_ffmpeg_passes(
                 .and_then(|v| v.parse::<bool>().ok())
                 .unwrap_or(true);
 
+            if !ffmpeg_has_encoder("libtheora") {
+                return Err(FileConverterError::Ffmpeg(
+                    "The available FFmpeg build does not include the 'libtheora' encoder, so OGV \
+                     (Theora) output is unavailable. Use a full FFmpeg build (for example the \
+                     'essentials' release the app can download automatically)."
+                        .to_string(),
+                ));
+            }
+
             let mut arguments = base_args.clone();
             arguments.push("-i".to_string());
             arguments.push(input_path.to_string());
@@ -619,6 +663,8 @@ pub fn get_ffmpeg_passes(
             arguments.push("libtheora".to_string());
             arguments.push("-qscale:v".to_string());
             arguments.push(quality.to_string());
+            arguments.push("-pix_fmt".to_string());
+            arguments.push("yuv420p".to_string());
 
             if enable_audio {
                 arguments.push("-codec:a".to_string());
@@ -722,6 +768,11 @@ pub fn get_ffmpeg_passes(
             arguments.push("-c:v".to_string());
             arguments.push("libvpx-vp9".to_string());
 
+            // VP9/VP8 in WebM only accepts yuv420p (and even dimensions), which
+            // the encoder otherwise refuses for e.g. GIF or odd-sized sources.
+            arguments.push("-pix_fmt".to_string());
+            arguments.push("yuv420p".to_string());
+
             if quality == 63 {
                 arguments.push("-lossless".to_string());
                 arguments.push("1".to_string());
@@ -800,16 +851,21 @@ fn compute_audio_channel_args(preset: &ConversionPreset) -> String {
 fn compute_transform_args(preset: &ConversionPreset, hw_accel: HardwareAccelerationMode) -> String {
     let scale_factor = preset
         .get_setting_value("VideoScale")
-        .and_then(|v| v.parse::<f32>().ok())
+        .and_then(|v| v.trim().replace(',', ".").parse::<f32>().ok())
         .unwrap_or(1.0);
     let rotation = preset
         .get_setting_value("VideoRotation")
-        .and_then(|v| v.parse::<f32>().ok())
+        .and_then(|v| v.trim().replace(',', ".").parse::<f32>().ok())
         .unwrap_or(0.0);
 
-    let mut scale_args = String::new();
     let is_h264 = preset.output_type == OutputType::Mkv || preset.output_type == OutputType::Mp4;
+    let is_video = is_h264
+        || matches!(
+            preset.output_type,
+            OutputType::Avi | OutputType::Webm | OutputType::Ogv
+        );
 
+    let mut scale_args = String::new();
     if is_h264 {
         match hw_accel {
             HardwareAccelerationMode::Cuda => {
@@ -825,18 +881,27 @@ fn compute_transform_args(preset: &ConversionPreset, hw_accel: HardwareAccelerat
                 );
             }
         }
+    } else if is_video {
+        // mpeg4, VP9 and Theora all require even dimensions, so the
+        // even-dimension form is emitted even at 100% scale.
+        scale_args = format!(
+            "scale=trunc(iw*{:.2}/2)*2:trunc(ih*{:.2}/2)*2",
+            scale_factor, scale_factor
+        );
     } else if (scale_factor - 1.0).abs() >= 0.005 {
         scale_args = format!("scale=iw*{:.2}:ih*{:.2}", scale_factor, scale_factor);
     }
 
     let mut rotation_args = String::new();
-    if (rotation - 0.0).abs() >= 0.05 {
-        if (rotation - 90.0).abs() <= 0.05 {
-            rotation_args = "transpose=2".to_string(); // 90 counterclockwise
-        } else if (rotation - 180.0).abs() <= 0.05 {
-            rotation_args = "vflip,hflip".to_string();
-        } else if (rotation - 270.0).abs() <= 0.05 {
-            rotation_args = "transpose=1".to_string(); // 90 clockwise
+    let normalized = rotation.rem_euclid(360.0);
+    if normalized >= 45.0 {
+        match ((normalized / 90.0).round() as u32) % 4 {
+            // 90 clockwise
+            1 => rotation_args = "transpose=1".to_string(),
+            2 => rotation_args = "vflip,hflip".to_string(),
+            // 90 counter clockwise
+            3 => rotation_args = "transpose=2".to_string(),
+            _ => {}
         }
     }
 
@@ -862,7 +927,7 @@ fn compute_transform_args(preset: &ConversionPreset, hw_accel: HardwareAccelerat
     transform
 }
 
-pub(crate) fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
+pub fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
     let q = match bitrate {
         460 => "3.9",
         340 => "3",
@@ -883,7 +948,7 @@ pub(crate) fn aac_bitrate_to_quality_index(bitrate: i32) -> String {
     q.to_string()
 }
 
-pub(crate) fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
+pub fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     let q = match bitrate {
         b if b >= 235 => 0,
         b if b >= 210 => 1,
@@ -899,7 +964,7 @@ pub(crate) fn mp3_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     Ok(q)
 }
 
-pub(crate) fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
+pub fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     let q = match bitrate {
         b if b >= 450 => 10,
         b if b >= 300 => 9,
@@ -918,7 +983,7 @@ pub(crate) fn ogg_vbr_bitrate_to_quality_index(bitrate: i32) -> Result<i32> {
     Ok(q)
 }
 
-pub(crate) fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
+pub fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast => "ultrafast",
         VideoEncodingSpeed::SuperFast => "superfast",
@@ -932,7 +997,7 @@ pub(crate) fn h264_encoding_speed_to_preset(speed: VideoEncodingSpeed) -> &'stat
     }
 }
 
-pub(crate) fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> &'static str {
+pub fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast => "p1",
         VideoEncodingSpeed::SuperFast => "p2",
@@ -944,7 +1009,7 @@ pub(crate) fn h264_encoding_speed_to_nvenc_preset(speed: VideoEncodingSpeed) -> 
     }
 }
 
-pub(crate) fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &'static str {
+pub fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &'static str {
     match speed {
         VideoEncodingSpeed::UltraFast
         | VideoEncodingSpeed::SuperFast
@@ -956,17 +1021,61 @@ pub(crate) fn h264_encoding_speed_to_amf_quality(speed: VideoEncodingSpeed) -> &
     }
 }
 
+/// Checks whether the resolved FFmpeg binary exposes a given encoder.
+///
+/// Lets the caller produce an actionable error instead of FFmpeg's terse
+/// "Error selecting an encoder" when a build lacks e.g. `libtheora`.
+pub fn ffmpeg_has_encoder(encoder: &str) -> bool {
+    static ENCODER_CACHE: LazyLock<parking_lot::Mutex<std::collections::HashMap<String, bool>>> =
+        LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+    if let Some(cached) = ENCODER_CACHE.lock().get(encoder) {
+        return *cached;
+    }
+
+    let path = resolve_ffmpeg_path();
+    let available = match Command::new(&path).args(["-hide_banner", "-encoders"]).output() {
+        Ok(output) => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| {
+                let mut fields = line.split_whitespace();
+                // Format: " V....D libtheora           libtheora ..."
+                fields.any(|f| f == encoder)
+            }),
+        Err(_) => false,
+    };
+
+    ENCODER_CACHE
+        .lock()
+        .insert(encoder.to_string(), available);
+    available
+}
+
+/// Locates a usable FFmpeg binary, downloading it on first use.
+fn resolve_ffmpeg_path() -> PathBuf {
+    let existing = get_ffmpeg_path();
+    if existing.exists() {
+        return existing;
+    }
+    if let Ok(downloaded) = crate::ffmpeg_download::ensure_ffmpeg_available() {
+        return downloaded;
+    }
+    existing
+}
+
 pub fn run_ffmpeg_pass(
     pass: &FfmpegPass,
     _input_path: &str,
     _output_path: &str,
     progress_callback: &dyn Fn(f32, &str),
 ) -> Result<()> {
-    let mut ffmpeg_path = get_ffmpeg_path();
-    if !ffmpeg_path.exists()
-        && let Ok(downloaded) = crate::ffmpeg_download::ensure_ffmpeg_available()
-    {
-        ffmpeg_path = downloaded;
+    let ffmpeg_path = resolve_ffmpeg_path();
+    if !ffmpeg_path.exists() {
+        return Err(FileConverterError::Ffmpeg(
+            "FFmpeg is not available. Install ffmpeg.exe next to the application, add it to \
+             PATH, or allow the automatic download to complete."
+                .to_string(),
+        ));
     }
 
     struct FileCleanupGuard<'a>(&'a Option<PathBuf>);
@@ -994,111 +1103,158 @@ pub fn run_ffmpeg_pass(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            FileConverterError::Ffmpeg(format!("Failed to start FFMpeg process: {:?}", e))
+            FileConverterError::Ffmpeg(format!("Failed to start FFmpeg process: {:?}", e))
         })?;
 
     let mut stderr = child.stderr.take().ok_or_else(|| {
-        FileConverterError::Ffmpeg("Failed to open stderr pipe of FFMpeg".to_string())
+        FileConverterError::Ffmpeg("Failed to open stderr pipe of FFmpeg".to_string())
     })?;
+
+    // stderr is drained on a dedicated thread so the watchdog below can actually
+    // fire; reading inline would block forever if FFmpeg stopped emitting output.
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        let mut line_buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    for &b in &chunk[..n] {
+                        if b == b'\r' || b == b'\n' {
+                            if !line_buf.is_empty() {
+                                if line_tx
+                                    .send(String::from_utf8_lossy(&line_buf).into_owned())
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                line_buf.clear();
+                            }
+                        } else {
+                            line_buf.push(b);
+                        }
+                    }
+                }
+            }
+        }
+        if !line_buf.is_empty() {
+            let _ = line_tx.send(String::from_utf8_lossy(&line_buf).into_owned());
+        }
+    });
 
     let start_time = std::time::Instant::now();
     let max_duration = Duration::from_secs(3600); // 1 hour maximum execution per pass
 
     let mut total_duration = Duration::ZERO;
-    let mut line_buf = Vec::new();
-    let mut chunk = [0u8; 1024];
     let mut recent_error_lines: Vec<String> = Vec::new();
 
     loop {
         if start_time.elapsed() > max_duration {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = reader.join();
             return Err(FileConverterError::Timeout(
-                "FFMpeg process timed out (exceeded 1 hour)".to_string(),
+                "FFmpeg process timed out (exceeded 1 hour)".to_string(),
             ));
         }
 
-        let n = match stderr.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
-        };
-
-        for &b in &chunk[..n] {
-            if b == b'\r' || b == b'\n' {
-                if !line_buf.is_empty() {
-                    let line = String::from_utf8_lossy(&line_buf);
-
-                    // Parse duration to know the total length
-                    if total_duration.is_zero()
-                        && let Some(caps) = DURATION_RE.captures(&line)
-                    {
-                        let h: u64 = caps["h"].parse().unwrap_or(0);
-                        let m: u64 = caps["m"].parse().unwrap_or(0);
-                        let s: u64 = caps["s"].parse().unwrap_or(0);
-                        let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-                        total_duration =
-                            Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
-                    }
-
-                    // Parse time to compute progress percent
-                    if !total_duration.is_zero()
-                        && let Some(caps) = PROGRESS_RE.captures(&line)
-                    {
-                        let h: u64 = caps["h"].parse().unwrap_or(0);
-                        let m: u64 = caps["m"].parse().unwrap_or(0);
-                        let s: u64 = caps["s"].parse().unwrap_or(0);
-                        let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
-                        let current_time =
-                            Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms);
-
-                        let percent =
-                            (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
-                        progress_callback(percent.clamp(0.0, 1.0), &pass.name);
-                    } else if !line.starts_with("size=") && !line.starts_with("frame=") {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty()
-                            && (trimmed.contains("Error")
-                                || trimmed.contains("Invalid")
-                                || trimmed.contains("failed")
-                                || trimmed.contains("Option")
-                                || trimmed.contains("Exiting"))
-                        {
-                            if recent_error_lines.len() >= 8 {
-                                recent_error_lines.remove(0);
-                            }
-                            recent_error_lines.push(trimmed.to_string());
-                        }
-                    }
-
-                    line_buf.clear();
+        match line_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(line) => {
+                // Parse duration to know the total length
+                if total_duration.is_zero()
+                    && let Some(caps) = DURATION_RE.captures(&line)
+                {
+                    total_duration = parse_ffmpeg_timestamp(&caps);
                 }
-            } else {
-                line_buf.push(b);
+
+                // Parse time to compute progress percent
+                if !total_duration.is_zero()
+                    && let Some(caps) = PROGRESS_RE.captures(&line)
+                {
+                    let current_time = parse_ffmpeg_timestamp(&caps);
+                    let percent =
+                        (current_time.as_secs_f64() / total_duration.as_secs_f64()) as f32;
+                    progress_callback(percent.clamp(0.0, 1.0), &pass.name);
+                } else if !line.starts_with("size=") && !line.starts_with("frame=") {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && is_probable_ffmpeg_error(trimmed) {
+                        if recent_error_lines.len() >= 8 {
+                            recent_error_lines.remove(0);
+                        }
+                        recent_error_lines.push(trimmed.to_string());
+                    }
+                }
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // No output for a while - check whether the process finished.
+                match child.try_wait() {
+                    Ok(Some(status)) => return finish_pass(status, &recent_error_lines, &ffmpeg_path, &pass.arguments, &pass.name),
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
+    let _ = reader.join();
     let status = child.wait().map_err(|e| {
-        FileConverterError::Ffmpeg(format!("Failed to wait for FFMpeg process: {:?}", e))
+        FileConverterError::Ffmpeg(format!("Failed to wait for FFmpeg process: {:?}", e))
     })?;
-    if !status.success() {
-        let error_msg = if !recent_error_lines.is_empty() {
-            recent_error_lines.join(" | ")
-        } else {
-            format!("exit code: {:?}", status.code())
-        };
-        tracing::error!(path = %ffmpeg_path.display(), args = ?pass.arguments, error = %error_msg, "ffmpeg pass failed");
-        return Err(FileConverterError::Ffmpeg(format!(
-            "FFMpeg process failed ({}): {}",
-            status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "terminated".to_string()),
-            error_msg
-        )));
+
+    finish_pass(
+        status,
+        &recent_error_lines,
+        &ffmpeg_path,
+        &pass.arguments,
+        &pass.name,
+    )
+}
+
+fn parse_ffmpeg_timestamp(caps: &regex::Captures<'_>) -> Duration {
+    let h: u64 = caps["h"].parse().unwrap_or(0);
+    let m: u64 = caps["m"].parse().unwrap_or(0);
+    let s: u64 = caps["s"].parse().unwrap_or(0);
+    let ms: u64 = caps["ms"].parse().unwrap_or(0) * 10;
+    Duration::from_secs(h * 3600 + m * 60 + s) + Duration::from_millis(ms)
+}
+
+fn is_probable_ffmpeg_error(line: &str) -> bool {
+    line.contains("Error")
+        || line.contains("Invalid")
+        || line.contains("failed")
+        || line.contains("Option")
+        || line.contains("Exiting")
+        || line.contains("not found")
+        || line.contains("Could not")
+        || line.contains("Unable")
+}
+
+fn finish_pass(
+    status: std::process::ExitStatus,
+    recent_error_lines: &[String],
+    ffmpeg_path: &Path,
+    arguments: &[String],
+    pass_name: &str,
+) -> Result<()> {
+    if status.success() {
+        return Ok(());
     }
 
-    Ok(())
+    let error_msg = if !recent_error_lines.is_empty() {
+        recent_error_lines.join(" | ")
+    } else {
+        format!("exit code: {:?}", status.code())
+    };
+    tracing::error!(path = %ffmpeg_path.display(), args = ?arguments, error = %error_msg, "ffmpeg pass failed");
+    Err(FileConverterError::Ffmpeg(format!(
+        "FFmpeg '{}' pass failed ({}): {}",
+        pass_name,
+        status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "terminated".to_string()),
+        error_msg
+    )))
 }

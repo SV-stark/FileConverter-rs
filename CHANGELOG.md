@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-10-03
+
+### Fixed - conversions other than PDF
+
+A full preset x input-type matrix was used to drive these fixes. Every case now
+passes except `To Ogv`, which requires the `libtheora` encoder (absent from
+minimal FFmpeg builds; the app now reports that explicitly instead of failing
+with `Error selecting an encoder`).
+
+- **Text/markup documents were routed to the image engine** (`scheduler.rs`, `doc_convert.rs`):
+  `.txt`, `.html`, `.csv`, `.json`, `.log` and `.rtf` fell through to the raster
+  pipeline and failed with `Failed to load image from memory map ... Format(Unknown)`
+  for every output type. They now have a dedicated `JobEngine::TextDocument`
+  engine that produces PDF, plain text, HTML, or a rasterised A4 document page.
+- **Document engines ignored the requested output type** (`doc_convert.rs`):
+  eBook / Markdown / Typst conversions always wrote HTML, so `To Png` on a `.md`
+  file silently produced an HTML document named `....png`. All text-producing
+  engines now share one `write_document_output` writer that honours
+  `Pdf` / `Txt` / `Html` / raster outputs (new `Txt` and `Html` output types).
+- **GIF conversion from still images** (`scheduler.rs`, `image.rs`, `ffmpeg.rs`):
+  `scale` + `fps` + `palettegen` produced an *empty* palette file for single-frame
+  sources, so the second pass failed with
+  `Error opening input file ... fc_palette_*.png: No such file or directory`.
+  Still images (and still WebP) are now encoded natively with `GifEncoder`;
+  FFmpeg's palette recipe is reserved for genuinely animated input, and its
+  palette pass no longer applies `fps`. The palette file is also cleaned up when
+  a pass chain aborts.
+- **WebM / OGV / AVI output rejected odd-sized or non-yuv420p sources** (`ffmpeg.rs`):
+  `libvpx-vp9` failed with `Error while opening encoder` on GIF input. Video
+  outputs now always emit an even-dimension `scale` filter plus `-pix_fmt yuv420p`.
+- **ICO conversion** (`image.rs`, `scheduler.rs`): output was forced into a 256x256
+  square (destroying the aspect ratio) and depended on FFmpeg's ICO muxer, which
+  rejects pages larger than 256 px (`Could not write header`). ICO is now written
+  natively as a multi-resolution container (16/24/32/48/64/128/256).
+- **PDF input ignored scale / rotation / clamp settings** (`image.rs`):
+  rendered pages skipped the transform pipeline, so `To Ico` and `Scale x%` on a
+  PDF produced full-page images. PDF pages now run through the same
+  `apply_image_transforms` stage as still images.
+- **`preset.input_types` was never enforced** (`scheduler.rs`, `types.rs`):
+  applying `Compress Png (lossless)` to a JPEG reached OxiPNG and failed with
+  `Invalid PNG header detected`. `ConversionJob::validate` now rejects
+  unsupported inputs with an actionable message, and the UI filter and the
+  scheduler share one `is_preset_applicable_to_file` implementation.
+- **Preparation failures were swallowed** (`main.rs`, `scheduler.rs`):
+  `create_conversion_jobs` logged and dropped the error, so the job later failed
+  with `No output path specified for job`. The reason is now stored on the job and
+  reported verbatim.
+- **Success was reported for outputs that do not exist** (`scheduler.rs`):
+  `Done` is now only reported when every declared output file is present.
+- **FFmpeg timeout could never fire** (`ffmpeg.rs`): the 1-hour watchdog was
+  checked around a blocking `stderr.read()`. Progress parsing now runs on a reader
+  thread with a channel timeout, so a hung FFmpeg is actually killed.
+- **GIF palette temp file was deleted before use** (`ffmpeg.rs`):
+  `TempPath::into_temp_path().to_path_buf()` dropped the guard immediately,
+  deleting the palette path. A collision-free temp path is now generated without
+  creating the file.
+- **Settings window never persisted anything** (`main.rs`):
+  `on_save_settings` only wrote `duration_between_end_of_conversions_and_application_exit`,
+  silently discarding every preset edit and preference toggle. All mutable
+  preferences are now read back from the UI and saved.
+- **Preset selection used filtered row indices** (`main.rs`): selecting,
+  duplicating or deleting a preset while a search filter was active operated on
+  the wrong preset (and reset the filter). Rows are now mapped back through
+  `PresetData.original_index`.
+- **Missing Office / FFmpeg encoders produced opaque errors** (`office.rs`, `ffmpeg.rs`):
+  both are now probed up-front and reported with actionable guidance.
+
+### Changed
+- **The clipboard was never actually written** (`scheduler.rs`):
+  `clipboard_win::raw::set_file_list` uses its `NoClear` variant, which does *not*
+  open the clipboard, so every "copy results to clipboard" call failed with
+  `ERROR_CLIPBOARD_NOT_OPEN (1418)` and was silently swallowed. The clipboard is
+  now opened, emptied, populated and closed explicitly.
+- **Paged outputs reported the wrong total** (`scheduler.rs`, `office.rs`):
+  `(n:c)` was filled with the number of *input files*, so an 8-page PDF produced
+  `file 1 of 1.png` … `file 8 of 1.png`. It now reports the number of files
+  produced for the current input.
+- **Newly shipped presets now reach existing installations** (`main.rs`):
+  presets present in the shipped defaults but missing from the user's
+  `Settings.user.xml` are merged in on startup (additive only - user edits are
+  never overwritten). Note that *corrected* presets that already exist under the
+  same name keep the user's stored definition; use "Import Presets" or delete
+  `Settings.user.xml` to pick those up.
+- **Image to PDF page size** (`image.rs`): pages were one PDF point per pixel
+  (a 4000 px photo became a 55 inch page). Bitmaps are now treated as 96 DPI.
+- **`ImageClampSizePowerOf2`** (`image.rs`): forced a square; each axis is now
+  rounded down to a power of two independently, preserving the aspect ratio.
+- **`ImageScale` / `ImageRotation` parsing** (`image.rs`, `ffmpeg.rs`): accepts
+  comma decimals, rejects non-finite or non-positive values, and rotation is
+  normalised modulo 360 degrees.
+- **New default presets** (`Settings.default.xml`): `To Text (from EPUB/Markdown)`
+  now has `OutputType="Txt"` (it previously claimed `Pdf`); added
+  `To Html (from EPUB/Markdown/Text)`, `To Png (from Text/Markdown/EPUB)` and
+  `To Jpg (from Text/Markdown/EPUB)`; `To Pdf` and
+  `To Pdf (from Markdown/Typst/EPUB)` now accept text/markup inputs.
+- **Raw camera formats report a clear error** (`image.rs`): `arw`, `cr2`, `nef`,
+  `psd`, `xcf`, ... return an actionable message instead of
+  `Failed to decode image data`.
+- **PDF pages are unpremultiplied** (`image.rs`): hayro/vello emits premultiplied
+  alpha, which produced fringes on transparent PDF pages.
+- **`OutputType::Jxl` keeps using FFmpeg's `libjxl` encoder** (`scheduler.rs`):
+  `jxl-oxide` is decode-only, so routing JXL output to the image engine would have
+  produced an unsupported-encoder error.
+- **Duplicate `Settings.default.xml` files removed** (`file_converter_bin/`,
+  `file_converter_shell/`): both crates embedded a stale crate-local copy
+  (76 presets) while the packaged file at the repository root had drifted. The
+  crates now `include_str!("../../Settings.default.xml")`, so the embedded
+  presets always match what the installer and the release archive ship.
+- **`--version` and `--help` no longer launch the GUI** (`main.rs`): clap's
+  help/version/usage errors were treated as "invalid arguments", so asking for
+  the version silently opened the settings window. They now print and exit, and
+  genuine usage errors are reported on stderr with a hint.
+- **`--version` is derived from the crate version** (`main.rs`): the flag was
+  hardcoded to `0.9.4` and had drifted. It now uses `env!("CARGO_PKG_VERSION")`.
+
+### Safety
+- **`file_converter_core` is now free of `unsafe`.** All three
+  `unsafe { Mmap::map(..) }` blocks in `image.rs` and `pdf_compress.rs` were
+  replaced with owned `std::fs::read` buffers, and the `memmap2` dependency was
+  dropped. The conversion engines are pure safe Rust.
+- **`file_converter_bin`:** the hand-rolled `extern "system"` declarations for
+  `ShellExecuteW` and `MessageBeep` were replaced with `windows` crate bindings.
+  The remaining `unsafe` is limited to unavoidable Win32/COM interop (file dialog,
+  window lookup, `WM_DROPFILES` subclassing, `ShellExecuteW`).
+
+---
+
 ## [0.9.7] - 2026-09-12
 
 ### ⚡ Performance & Memory Optimization

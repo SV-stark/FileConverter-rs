@@ -1,6 +1,6 @@
 [package]
 name = "file_converter_core"
-version = "0.9.7"
+version = "0.10.0"
 edition = "2024"
 description = "Core conversion library for FileConverter-rs"
 license = "GPL-3.0-or-later"
@@ -21,7 +21,6 @@ hayro.workspace = true
 hayro-interpret.workspace = true
 bytemuck.workspace = true
 rayon.workspace = true
-memmap2.workspace = true
 lopdf.workspace = true
 ureq.workspace = true
 zip.workspace = true

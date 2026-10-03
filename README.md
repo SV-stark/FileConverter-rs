@@ -39,12 +39,12 @@ This project modernizes and accelerates the core conversion pipelines, Windows E
 | **Windows Explorer Integration** | Legacy *"Show more options"* only | Native COM `shellex` + **Direct Windows 11 Context Menu** |
 | **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
 | **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** with per-job live progress, cancel controls, dropzone actions & dynamic status indicators |
-| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using zero-copy `memmap2`, SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), & `oxipng` multi-level lossless PNG compression |
-| **Direct Vector PDF Generation** | ImageMagick / HTML rasterization | **Pure-Rust** `pdf-writer` creating vector-accurate, multi-page PDF documents directly from eBooks (EPUB, MOBI, AZW), Markdown, Typst, and images |
+| **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), `oxipng` multi-level lossless PNG compression, and native multi-resolution ICO / GIF writers |
+| **Direct Vector PDF Generation** | ImageMagick / HTML rasterization | **Pure-Rust** `pdf-writer` creating vector-accurate, multi-page PDF documents directly from eBooks (EPUB, MOBI, AZW), Markdown, Typst, plain text, HTML, and images |
 | **Parallel Scheduling & PDF Optimization** | Serial / ThreadPool | **Rayon Work-Stealing Pool** for concurrent job conversion and parallel embedded image stream recompression (`pdf_compress.rs`) |
-| **HEIC/HEIF Support** | ImageMagick / libheif binaries | **Pure-Rust** `heic` decoder with memory-mapped byte buffer parsing |
+| **HEIC/HEIF Support** | ImageMagick / libheif binaries | **Pure-Rust** `heic` decoder operating on an owned byte buffer |
 | **PDF Page Rasterization** | Ghostscript / ImageMagick | **Pure-Rust** `hayro` engine rendering pages in parallel with `rayon` across all CPU cores |
-| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`ebook-rs`, `pulldown-cmark`, `typst`) converting EPUB, MOBI, AZW, Markdown, and Typst to PDF, HTML, and Text |
+| **Document & E-Book Conversion** | Pandoc / Calibre / Office | **Pure-Rust Engine** (`ebook-rs`, `pulldown-cmark`, `typst`, `resvg`) converting EPUB, MOBI, AZW, Markdown, Typst, plain text and HTML to PDF, HTML, Text and raster images |
 | **Audio/Video Conversion** | FFMpeg CLI execution | Optimized FFMpeg CLI wrapper with **GPU Auto-Detection** (CUDA / AMF / QSV), chunked stderr streaming, **EBU R128 Audio Normalization** (`loudnorm`), & JPEG XL encoding |
 | **Office Conversion** | Word / Excel / PowerPoint COM Interop | Background PowerShell COM automation with asynchronous stderr draining and 5-minute timeout protection |
 

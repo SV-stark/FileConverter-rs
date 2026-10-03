@@ -148,7 +148,7 @@ pub fn create_pdf_from_text(title: &str, text: &str, output_path: &str) -> Resul
 }
 
 /// Convert eBook files (EPUB, MOBI, AZW, AZW3, KFX, FB2, CBZ, KEPUB, LIT, etc.)
-/// to HTML, TXT, or PDF using `ebook-rs`.
+/// to PDF, plain text, HTML, or a raster image using `ebook-rs`.
 pub fn run_ebook_conversion(
     input_path: &str,
     output_path: &str,
@@ -157,71 +157,58 @@ pub fn run_ebook_conversion(
 ) -> Result<()> {
     progress_cb(0.1, "Opening eBook document (ebook-rs)");
 
-    match Book::from_file(input_path) {
-        Ok(book) => {
-            let meta_title = book.metadata().title.trim().to_string();
-            let title = if !meta_title.is_empty() {
-                meta_title
-            } else {
-                Path::new(input_path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("eBook Document")
-                    .to_string()
-            };
+    let book = Book::from_file(input_path)
+        .map_err(|e| FileConverterError::Invalid(format!("Failed to parse eBook: {:?}", e)))?;
 
-            progress_cb(0.25, "Extracting eBook sections");
-            let mut html_body = String::new();
-            let mut text_body = String::new();
+    let meta_title = book.metadata().title.trim().to_string();
+    let title = if !meta_title.is_empty() {
+        meta_title
+    } else {
+        Path::new(input_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("eBook Document")
+            .to_string()
+    };
 
-            let sections = book.sections();
-            let total_sections = sections.len();
+    progress_cb(0.25, "Extracting eBook sections");
+    let mut html_body = String::new();
+    let mut text_body = String::new();
 
-            for (i, section) in sections.iter().enumerate() {
-                if !section.raw_html.is_empty() {
-                    html_body.push_str(&section.raw_html);
-                    html_body.push_str("\n<hr/>\n");
-                }
+    let sections = book.sections();
+    let total_sections = sections.len().max(1);
 
-                if !section.plain_text.is_empty() {
-                    text_body.push_str(&section.plain_text);
-                    text_body.push_str("\n\n--- Section Break ---\n\n");
-                } else if !section.raw_html.is_empty() {
-                    let plain = strip_html_tags(&section.raw_html);
-                    text_body.push_str(&plain);
-                    text_body.push_str("\n\n--- Section Break ---\n\n");
-                }
-
-                let prog = 0.25 + (i as f32 / total_sections.max(1) as f32) * 0.6;
-                progress_cb(
-                    prog,
-                    &format!("Processing Section {}/{}", i + 1, total_sections),
-                );
-            }
-
-            progress_cb(0.9, "Writing output file");
-            let is_pdf =
-                output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
-            let is_txt =
-                output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
-
-            if is_pdf {
-                create_pdf_from_text(&title, &text_body, output_path)?;
-            } else if is_txt {
-                write_output_file(output_path, text_body)?;
-            } else {
-                let full_html = wrap_html(&title, &html_body);
-                write_output_file(output_path, full_html)?;
-            }
-
-            progress_cb(1.0, "Complete");
-            Ok(())
+    for (i, section) in sections.iter().enumerate() {
+        if !section.raw_html.is_empty() {
+            html_body.push_str(&section.raw_html);
+            html_body.push_str("\n<hr/>\n");
         }
-        Err(e) => Err(FileConverterError::Invalid(format!(
-            "Failed to parse eBook: {:?}",
-            e
-        ))),
+
+        if !section.plain_text.is_empty() {
+            text_body.push_str(&section.plain_text);
+            text_body.push_str("\n\n--- Section Break ---\n\n");
+        } else if !section.raw_html.is_empty() {
+            let plain = strip_html_tags(&section.raw_html);
+            text_body.push_str(&plain);
+            text_body.push_str("\n\n--- Section Break ---\n\n");
+        }
+
+        let prog = 0.25 + (i as f32 / total_sections as f32) * 0.6;
+        progress_cb(prog, &format!("Processing Section {}/{}", i + 1, total_sections));
     }
+
+    progress_cb(0.9, "Writing output file");
+    write_document_output(
+        &title,
+        &text_body,
+        Some(&html_body),
+        output_path,
+        output_type,
+        progress_cb,
+    )?;
+
+    progress_cb(1.0, "Complete");
+    Ok(())
 }
 
 /// Backward compatibility alias for EPUB conversions
@@ -234,7 +221,7 @@ pub fn run_epub_conversion(
     run_ebook_conversion(input_path, output_path, output_type, progress_cb)
 }
 
-/// Convert Markdown file to HTML, TXT, or PDF via pulldown-cmark
+/// Convert a Markdown file to PDF, plain text, HTML, or a raster image.
 pub fn run_markdown_conversion(
     input_path: &str,
     output_path: &str,
@@ -253,27 +240,25 @@ pub fn run_markdown_conversion(
     let file_stem = Path::new(input_path)
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("Document");
+        .unwrap_or("Document")
+        .to_string();
 
-    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
-    let is_txt = output_type == OutputType::None && output_path.to_lowercase().ends_with(".txt");
+    let plain_text = strip_html_tags(&html_output);
 
-    if is_pdf {
-        let plain_text = strip_html_tags(&html_output);
-        create_pdf_from_text(file_stem, &plain_text, output_path)?;
-    } else if is_txt {
-        let plain_text = strip_html_tags(&html_output);
-        write_output_file(output_path, plain_text)?;
-    } else {
-        let styled_html = wrap_html(file_stem, &html_output);
-        write_output_file(output_path, styled_html)?;
-    }
+    write_document_output(
+        &file_stem,
+        &plain_text,
+        Some(&html_output),
+        output_path,
+        output_type,
+        progress_cb,
+    )?;
 
     progress_cb(1.0, "Complete");
     Ok(())
 }
 
-/// Convert Typst document to PDF or HTML
+/// Convert a Typst document to PDF or HTML (or any other supported output).
 pub fn run_typst_conversion(
     input_path: &str,
     output_path: &str,
@@ -282,9 +267,13 @@ pub fn run_typst_conversion(
 ) -> Result<()> {
     progress_cb(0.2, "Checking Typst compiler");
 
-    let is_pdf = output_type == OutputType::Pdf || output_path.to_lowercase().ends_with(".pdf");
+    let wants_pdf = output_type == OutputType::Pdf
+        || (output_type == OutputType::None && output_path.to_lowercase().ends_with(".pdf"));
 
-    if let Some(typst_exe) = crate::path_helpers::find_in_path("typst") {
+    if wants_pdf
+        && let Some(typst_exe) = crate::path_helpers::find_in_path("typst.exe")
+            .or_else(|| crate::path_helpers::find_in_path("typst"))
+    {
         progress_cb(0.5, "Compiling document with Typst");
         if let Some(parent) = Path::new(output_path).parent() {
             let _ = fs::create_dir_all(parent);
@@ -302,7 +291,7 @@ pub fn run_typst_conversion(
             })?;
 
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(60);
+        let timeout = std::time::Duration::from_secs(120);
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -311,7 +300,7 @@ pub fn run_typst_conversion(
                         let _ = child.kill();
                         let _ = child.wait();
                         return Err(FileConverterError::Timeout(
-                            "Typst compilation timed out after 60s".to_string(),
+                            "Typst compilation timed out after 120s".to_string(),
                         ));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -330,19 +319,20 @@ pub fn run_typst_conversion(
         if status.success() {
             progress_cb(1.0, "Complete");
             return Ok(());
-        } else {
-            let mut stderr_str = String::new();
-            if let Some(mut pipe) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr_str);
-            }
-            return Err(FileConverterError::Invalid(format!(
-                "Typst compilation failed: {}",
-                stderr_str
-            )));
         }
+
+        let mut stderr_str = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr_str);
+        }
+        return Err(FileConverterError::Invalid(format!(
+            "Typst compilation failed: {}",
+            stderr_str.trim()
+        )));
     }
 
-    // Fallback if typst binary is not installed: parse source as text/markup
+    // Fallback when the Typst CLI is unavailable: treat the source as
+    // text/markup so the requested output is still produced.
     progress_cb(0.5, "Formatting Typst source code");
     let content = fs::read_to_string(input_path)?;
     let parser = pulldown_cmark::Parser::new(&content);
@@ -352,22 +342,365 @@ pub fn run_typst_conversion(
     let file_stem = Path::new(input_path)
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("Typst Document");
+        .unwrap_or("Typst Document")
+        .to_string();
 
-    if is_pdf {
-        let plain = strip_html_tags(&html_output);
-        create_pdf_from_text(file_stem, &plain, output_path)?;
-    } else {
-        let styled_html = wrap_html(file_stem, &html_output);
-        write_output_file(output_path, styled_html)?;
-    }
+    let plain_text = strip_html_tags(&html_output);
 
-    progress_cb(1.0, "Complete (Fallback)");
+    write_document_output(
+        &file_stem,
+        &plain_text,
+        Some(&html_output),
+        output_path,
+        output_type,
+        progress_cb,
+    )?;
+
+    progress_cb(1.0, "Complete (fallback renderer)");
     Ok(())
 }
 
+/// Extracts readable text from a plain-text / markup document.
+///
+/// Supports raw text (`txt`, `csv`, `json`, ...) as well as light markup
+/// (`html`, `rtf`) whose tags are stripped. Returns `None` when the file is
+/// binary and therefore not a text document at all.
+fn read_text_document(input_path: &str) -> Option<String> {
+    let bytes = fs::read(input_path).ok()?;
+
+    // Reject obvious binary payloads (NUL bytes in the first 4 KiB).
+    let probe = &bytes[..bytes.len().min(4096)];
+    if probe.contains(&0u8) {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let ext = Path::new(input_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "htm" | "html" | "xhtml" | "rtf" => Some(decode_entities(&strip_html_tags(&raw))),
+        _ => Some(raw),
+    }
+}
+
+/// Minimal HTML entity decoder.
+///
+/// Numeric references plus the handful of named entities that matter for
+/// rendered document text.
+fn decode_entities(text: &str) -> String {
+    const NAMED: &[(&str, char)] = &[
+        ("amp", '&'),
+        ("lt", '<'),
+        ("gt", '>'),
+        ("quot", '"'),
+        ("apos", '\''),
+        ("nbsp", '\u{00A0}'),
+        ("hellip", '\u{2026}'),
+        ("mdash", '\u{2014}'),
+        ("ndash", '\u{2013}'),
+        ("lsquo", '\u{2018}'),
+        ("rsquo", '\u{2019}'),
+        ("ldquo", '\u{201C}'),
+        ("rdquo", '\u{201D}'),
+        ("copy", '\u{00A9}'),
+        ("reg", '\u{00AE}'),
+        ("trade", '\u{2122}'),
+        ("deg", '\u{00B0}'),
+        ("euro", '\u{20AC}'),
+        ("pound", '\u{00A3}'),
+        ("yen", '\u{00A5}'),
+        ("middot", '\u{00B7}'),
+        ("bull", '\u{2022}'),
+    ];
+
+    const ACCENTED: &[(&str, char)] = &[
+        ("aacute", '\u{00E1}'),
+        ("agrave", '\u{00E0}'),
+        ("acirc", '\u{00E2}'),
+        ("auml", '\u{00E4}'),
+        ("aring", '\u{00E5}'),
+        ("aelig", '\u{00E6}'),
+        ("ccedil", '\u{00E7}'),
+        ("eacute", '\u{00E9}'),
+        ("egrave", '\u{00E8}'),
+        ("ecirc", '\u{00EA}'),
+        ("euml", '\u{00EB}'),
+        ("iacute", '\u{00ED}'),
+        ("igrave", '\u{00EC}'),
+        ("ntilde", '\u{00F1}'),
+        ("oacute", '\u{00F3}'),
+        ("ograve", '\u{00F2}'),
+        ("ocirc", '\u{00F4}'),
+        ("ouml", '\u{00F6}'),
+        ("uacute", '\u{00FA}'),
+        ("ugrave", '\u{00F9}'),
+        ("ucirc", '\u{00FB}'),
+        ("uuml", '\u{00FC}'),
+    ];
+
+    if !text.contains('&') {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'&'
+            && let Some(semi) = memchr::memchr(b';', &bytes[i..])
+        {
+            let end = i + semi;
+            let entity = &text[i + 1..end];
+            let replacement = if let Some(num) = entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+            {
+                u32::from_str_radix(num, 16).ok().and_then(char::from_u32)
+            } else if let Some(num) = entity.strip_prefix('#') {
+                num.parse::<u32>().ok().and_then(char::from_u32)
+            } else if let Some((_, c)) = NAMED.iter().find(|(name, _)| *name == entity) {
+                Some(*c)
+            } else {
+                ACCENTED
+                    .iter()
+                    .find(|(name, _)| *name == entity)
+                    .map(|(_, c)| *c)
+            };
+
+            if let Some(c) = replacement {
+                out.push(c);
+                i = end + 1;
+                continue;
+            }
+        }
+
+        let ch_len = text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&text[i..i + ch_len]);
+        i += ch_len;
+    }
+
+    out
+}
+
+fn escape_xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 && c != '\t' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Builds a printable A4 SVG page for the given text. Rasterized by `resvg`.
+fn layout_text_as_svg(title: &str, text: &str) -> String {
+    const PAGE_W: f32 = 1240.0;
+    const PAGE_H: f32 = 1754.0;
+    const MARGIN: f32 = 72.0;
+    const FONT_SIZE: f32 = 24.0;
+    const LINE_HEIGHT: f32 = 34.0;
+    const TITLE_SIZE: f32 = 40.0;
+
+    let content_width_px = PAGE_W - MARGIN * 2.0;
+    // Rough monospace-ish advance estimate for a proportional UI font.
+    let chars_per_line = ((content_width_px / (FONT_SIZE * 0.52)).floor() as usize).max(20);
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut y = MARGIN + TITLE_SIZE;
+
+    if !title.is_empty() {
+        y += TITLE_SIZE;
+        lines.push(format!(
+            r##"<text x="{x:.1}" y="{y:.1}" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="{ts}" font-weight="600" fill="#111827">{t}</text>"##,
+            x = MARGIN,
+            y = y,
+            ts = TITLE_SIZE,
+            t = escape_xml(title)
+        ));
+        y += LINE_HEIGHT;
+    }
+
+    let max_y = PAGE_H - MARGIN;
+    for raw_line in text.lines() {
+        if y >= max_y {
+            break;
+        }
+        let trimmed = raw_line.trim_end();
+        if trimmed.is_empty() {
+            y += LINE_HEIGHT;
+            continue;
+        }
+
+        for chunk in wrap_line(trimmed, chars_per_line) {
+            if y >= max_y {
+                break;
+            }
+            lines.push(format!(
+                r##"<text x="{x:.1}" y="{y:.1}" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="{fs}" fill="#1f2937" xml:space="preserve">{t}</text>"##,
+                x = MARGIN,
+                y = y,
+                fs = FONT_SIZE,
+                t = escape_xml(&chunk)
+            ));
+            y += LINE_HEIGHT;
+        }
+    }
+
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+<rect width="{w}" height="{h}" fill="#ffffff"/>
+{body}
+</svg>"##,
+        w = PAGE_W,
+        h = PAGE_H,
+        body = lines.join("\n")
+    )
+}
+
+/// Word-wraps a single line to `max_chars`, breaking over-long words.
+fn wrap_line(line: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+
+    for word in line.split_whitespace() {
+        if current.is_empty() {
+            if word.chars().count() > max_chars {
+                let mut rest: Vec<char> = word.chars().collect();
+                while rest.len() > max_chars {
+                    out.push(rest[..max_chars].iter().collect());
+                    rest = rest[max_chars..].to_vec();
+                }
+                current = rest.into_iter().collect();
+            } else {
+                current.push_str(word);
+            }
+        } else if current.chars().count() + 1 + word.chars().count() <= max_chars {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut current));
+            if word.chars().count() > max_chars {
+                let mut rest: Vec<char> = word.chars().collect();
+                while rest.len() > max_chars {
+                    out.push(rest[..max_chars].iter().collect());
+                    rest = rest[max_chars..].to_vec();
+                }
+                current = rest.into_iter().collect();
+            } else {
+                current.push_str(word);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// Converts a plain-text / markup document (`.txt`, `.html`, `.csv`, `.rtf`, ...)
+/// to PDF, plain text, HTML, or a raster image.
+///
+/// These extensions are handled here instead of being routed to the image engine,
+/// which previously failed with "unknown image format" for every text document.
+pub fn run_text_document_conversion(
+    input_path: &str,
+    output_path: &str,
+    output_type: OutputType,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
+    progress_cb(0.2, "Reading document");
+
+    let raw = read_text_document(input_path).ok_or_else(|| {
+        FileConverterError::Invalid(format!(
+            "'{}' is not a readable text document (binary data detected)",
+            input_path
+        ))
+    })?;
+
+    let file_stem = Path::new(input_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Document")
+        .to_string();
+
+    write_document_output(
+        &file_stem,
+        &raw,
+        None,
+        output_path,
+        output_type,
+        progress_cb,
+    )?;
+
+    progress_cb(1.0, "Complete");
+    Ok(())
+}
+
+/// Writes a document body to the requested output format.
+///
+/// Shared by every text-producing engine (eBook, Markdown, Typst, plain text) so
+/// that each one honours the preset's output type. Previously these engines wrote
+/// HTML regardless of the requested extension, which produced e.g. an HTML file
+/// named `.png`.
+fn write_document_output(
+    title: &str,
+    plain_text: &str,
+    html_body: Option<&str>,
+    output_path: &str,
+    output_type: OutputType,
+    progress_cb: &(dyn Fn(f32, &str) + Sync),
+) -> Result<()> {
+    let lower_path = output_path.to_lowercase();
+
+    let wants_pdf = output_type == OutputType::Pdf
+        || (output_type == OutputType::None && lower_path.ends_with(".pdf"));
+    let wants_txt = output_type == OutputType::Txt
+        || (output_type == OutputType::None && lower_path.ends_with(".txt"));
+    let wants_html = output_type == OutputType::Html
+        || (output_type == OutputType::None && lower_path.ends_with(".html"));
+
+    if wants_pdf {
+        progress_cb(0.8, "Composing PDF");
+        create_pdf_from_text(title, plain_text, output_path)
+    } else if wants_txt {
+        progress_cb(0.8, "Writing text file");
+        write_output_file(output_path, plain_text)
+    } else if wants_html {
+        progress_cb(0.8, "Writing HTML file");
+        let body = match html_body {
+            Some(html) => html.to_string(),
+            None => format!("<pre>{}</pre>", escape_xml(plain_text)),
+        };
+        write_output_file(output_path, wrap_html(title, &body))
+    } else if output_type.is_raster_image() {
+        progress_cb(0.6, "Laying out document page");
+        let svg = layout_text_as_svg(title, plain_text);
+        crate::image::rasterize_svg_page(&svg, output_path, output_type, progress_cb)
+    } else {
+        Err(FileConverterError::Invalid(format!(
+            "Cannot convert a document to '{}' output",
+            output_type.extension()
+        )))
+    }
+}
+
 /// SIMD-accelerated HTML tag stripper using `memchr`
-pub(crate) fn strip_html_tags(html: &str) -> String {
+pub fn strip_html_tags(html: &str) -> String {
     let bytes = html.as_bytes();
     let mut result = String::with_capacity(html.len());
     let mut i = 0;

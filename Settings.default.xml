@@ -671,6 +671,17 @@
         <InputTypes>tif</InputTypes>
         <InputTypes>tiff</InputTypes>
         <InputTypes>webp</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>text</InputTypes>
+        <InputTypes>csv</InputTypes>
+        <InputTypes>log</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
+        <InputTypes>rtf</InputTypes>
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>epub</InputTypes>
+        <InputTypes>typ</InputTypes>
         <InputPostConversionAction>None</InputPostConversionAction>
         <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
     </ConversionPreset>
@@ -2091,15 +2102,66 @@
         <InputTypes>markdown</InputTypes>
         <InputTypes>epub</InputTypes>
         <InputTypes>typ</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>text</InputTypes>
+        <InputTypes>csv</InputTypes>
+        <InputTypes>log</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
+        <InputTypes>rtf</InputTypes>
         <InputPostConversionAction>None</InputPostConversionAction>
         <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
     </ConversionPreset>
-    <ConversionPreset Name="To Text (from EPUB/Markdown)" OutputType="Pdf" IsDefaultSettings="true">
+    <ConversionPreset Name="To Text (from EPUB/Markdown)" OutputType="Txt" IsDefaultSettings="true">
         <InputTypes>epub</InputTypes>
         <InputTypes>md</InputTypes>
         <InputTypes>markdown</InputTypes>
         <InputTypes>typ</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
         <InputPostConversionAction>None</InputPostConversionAction>
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+    <ConversionPreset Name="To Html (from EPUB/Markdown/Text)" OutputType="Html" IsDefaultSettings="true">
+        <InputTypes>epub</InputTypes>
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>typ</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>csv</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+    <ConversionPreset Name="To Png (from Text/Markdown/EPUB)" OutputType="Png" IsDefaultSettings="true">
+        <InputTypes>epub</InputTypes>
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>typ</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>csv</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
+        <InputTypes>rtf</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <Settings Key="ImageScale" Value="1" />
+        <Settings Key="ImageRotation" Value="0" />
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+    <ConversionPreset Name="To Jpg (from Text/Markdown/EPUB)" OutputType="Jpg" IsDefaultSettings="true">
+        <InputTypes>epub</InputTypes>
+        <InputTypes>md</InputTypes>
+        <InputTypes>markdown</InputTypes>
+        <InputTypes>typ</InputTypes>
+        <InputTypes>txt</InputTypes>
+        <InputTypes>csv</InputTypes>
+        <InputTypes>html</InputTypes>
+        <InputTypes>htm</InputTypes>
+        <InputTypes>rtf</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <Settings Key="JpegQuality" Value="90" />
         <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
     </ConversionPreset>
     <ConversionPreset Name="Compress Png (lossless)" OutputType="Png" IsDefaultSettings="true">
@@ -2107,7 +2169,6 @@
         <InputPostConversionAction>None</InputPostConversionAction>
         <Settings Key="OxipngLossless" Value="True" />
         <OutputFileNameTemplate>(p)(f) (compressed)</OutputFileNameTemplate>
-    </ConversionPreset>
-    <CheckUpgradeAtStartup>true</CheckUpgradeAtStartup>
+    </ConversionPreset><CheckUpgradeAtStartup>true</CheckUpgradeAtStartup>
     <CopyFilesInClipboardAfterConversion>false</CopyFilesInClipboardAfterConversion>
 </Settings>
