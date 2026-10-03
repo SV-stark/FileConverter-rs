@@ -380,10 +380,7 @@ pub fn get_ffmpeg_passes(
             // The palette frame must not be rescaled, so an explicit
             // filter_complex graph is used instead of the blanket `-lavfi`.
             args2.push("-filter_complex".to_string());
-            args2.push(format!(
-                "[0:v]{}[x];[x][1:v]paletteuse",
-                video_chain
-            ));
+            args2.push(format!("[0:v]{}[x];[x][1:v]paletteuse", video_chain));
             args2.push(output_path.to_string());
 
             passes.push(FfmpegPass {
@@ -1034,20 +1031,19 @@ pub fn ffmpeg_has_encoder(encoder: &str) -> bool {
     }
 
     let path = resolve_ffmpeg_path();
-    let available = match Command::new(&path).args(["-hide_banner", "-encoders"]).output() {
-        Ok(output) => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| {
-                let mut fields = line.split_whitespace();
-                // Format: " V....D libtheora           libtheora ..."
-                fields.any(|f| f == encoder)
-            }),
+    let available = match Command::new(&path)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            // Format: " V....D libtheora           libtheora ..."
+            fields.any(|f| f == encoder)
+        }),
         Err(_) => false,
     };
 
-    ENCODER_CACHE
-        .lock()
-        .insert(encoder.to_string(), available);
+    ENCODER_CACHE.lock().insert(encoder.to_string(), available);
     available
 }
 
@@ -1189,7 +1185,15 @@ pub fn run_ffmpeg_pass(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // No output for a while - check whether the process finished.
                 match child.try_wait() {
-                    Ok(Some(status)) => return finish_pass(status, &recent_error_lines, &ffmpeg_path, &pass.arguments, &pass.name),
+                    Ok(Some(status)) => {
+                        return finish_pass(
+                            status,
+                            &recent_error_lines,
+                            &ffmpeg_path,
+                            &pass.arguments,
+                            &pass.name,
+                        );
+                    }
                     Ok(None) => {}
                     Err(_) => break,
                 }

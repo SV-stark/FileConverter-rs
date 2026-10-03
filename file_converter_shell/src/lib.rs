@@ -20,7 +20,6 @@ use std::time::SystemTime;
 use file_converter_core::settings::{ConversionPreset, Settings};
 use file_converter_core::types::{OutputType, is_preset_applicable_to_file};
 
-
 #[allow(unused_imports)]
 mod windows_core {
     pub use windows::core::*;

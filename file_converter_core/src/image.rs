@@ -112,7 +112,9 @@ pub fn get_image_dimensions(input_path: &str) -> Result<(u32, u32)> {
 
     let reader = ImageReader::new(Cursor::new(&data))
         .with_guessed_format()
-        .map_err(|e| FileConverterError::Image(format!("Failed to detect image format: {:?}", e)))?;
+        .map_err(|e| {
+            FileConverterError::Image(format!("Failed to detect image format: {:?}", e))
+        })?;
     let reader = reader.into_decoder().map_err(|e| {
         FileConverterError::Image(format!("Failed to load image from memory: {:?}", e))
     })?;
@@ -239,8 +241,7 @@ pub fn rasterize_svg(svg: &str, width: u32, height: u32) -> Result<DynamicImage>
 
     let scale_x = target_w as f32 / tree.size().width().max(f32::MIN_POSITIVE);
     let scale_y = target_h as f32 / tree.size().height().max(f32::MIN_POSITIVE);
-    let transform =
-        resvg::tiny_skia::Transform::from_row(scale_x, 0.0, 0.0, scale_y, 0.0, 0.0);
+    let transform = resvg::tiny_skia::Transform::from_row(scale_x, 0.0, 0.0, scale_y, 0.0, 0.0);
 
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
@@ -279,7 +280,9 @@ fn decode_image_bytes(ext: &str, data: &[u8], preset: &ConversionPreset) -> Resu
         "heic" | "heif" => {
             let output = DecoderConfig::new()
                 .decode(data, PixelLayout::Rgba8)
-                .map_err(|e| FileConverterError::Image(format!("Failed to decode HEIC: {:?}", e)))?;
+                .map_err(|e| {
+                    FileConverterError::Image(format!("Failed to decode HEIC: {:?}", e))
+                })?;
             let buffer = image::ImageBuffer::from_raw(output.width, output.height, output.data)
                 .ok_or_else(|| {
                     FileConverterError::Image("Failed to parse HEIC buffer".to_string())
@@ -298,7 +301,11 @@ fn parsed_scale(preset: &ConversionPreset) -> f32 {
         .get_setting_value("ImageScale")
         .and_then(|v| v.trim().replace(',', ".").parse::<f32>().ok())
         .unwrap_or(1.0);
-    if raw.is_finite() && raw > 0.0 { raw } else { 1.0 }
+    if raw.is_finite() && raw > 0.0 {
+        raw
+    } else {
+        1.0
+    }
 }
 
 fn parsed_rotation(preset: &ConversionPreset) -> f32 {
@@ -400,7 +407,13 @@ pub fn run_image_conversion(
     if ext == "pdf" {
         run_pdf_page_conversion(preset, input_path, output_file_paths, progress_callback)
     } else {
-        run_still_image_conversion(preset, input_path, ext, output_file_paths, progress_callback)
+        run_still_image_conversion(
+            preset,
+            input_path,
+            ext,
+            output_file_paths,
+            progress_callback,
+        )
     }
 }
 
@@ -452,13 +465,14 @@ fn run_pdf_page_conversion(
 
             // hayro/vello stores premultiplied alpha; `image` expects straight RGBA.
             let straight_rgba = pixmap.take_unpremultiplied();
-            let buffer =
-                image::ImageBuffer::from_raw(width, height, bytemuck::cast_slice(&straight_rgba).to_vec())
-                    .ok_or_else(|| {
-                        FileConverterError::Image(
-                            "Failed to create ImageBuffer from PDF page".to_string(),
-                        )
-                    })?;
+            let buffer = image::ImageBuffer::from_raw(
+                width,
+                height,
+                bytemuck::cast_slice(&straight_rgba).to_vec(),
+            )
+            .ok_or_else(|| {
+                FileConverterError::Image("Failed to create ImageBuffer from PDF page".to_string())
+            })?;
 
             // Rendered pages must honour the same rotation/clamp settings as
             // still images, otherwise presets such as "To Ico" or "Scale x%"
@@ -586,9 +600,9 @@ fn save_still_gif(img: &DynamicImage, output_file: &str) -> Result<()> {
     let frame = image::Frame::new(rgba);
 
     let mut encoder = image::codecs::gif::GifEncoder::new(&mut writer);
-    encoder.encode_frame(frame).map_err(|e| {
-        FileConverterError::Image(format!("Failed to save GIF image: {:?}", e))
-    })?;
+    encoder
+        .encode_frame(frame)
+        .map_err(|e| FileConverterError::Image(format!("Failed to save GIF image: {:?}", e)))?;
     drop(encoder);
 
     writer
@@ -727,7 +741,6 @@ fn create_pdf_from_image(img: &DynamicImage, output_path: &str) -> Result<()> {
     Ok(())
 }
 
-
 /// Detects whether an image file contains more than one frame.
 ///
 /// Only cheap header inspection is performed (the first few kilobytes are enough
@@ -747,7 +760,7 @@ pub fn source_is_animated(input_path: &str) -> bool {
         return false;
     };
 
-match ext.as_str() {
+    match ext.as_str() {
         "webp" => {
             use std::io::Read;
             let mut header = [0u8; 64];
@@ -846,8 +859,7 @@ pub fn rasterize_svg_page(
         output_type,
         is_default_settings: true,
         input_types: Vec::new(),
-        input_post_conversion_action:
-            crate::types::InputPostConversionAction::None,
+        input_post_conversion_action: crate::types::InputPostConversionAction::None,
         settings: Vec::new(),
         output_file_name_template: String::new(),
     };

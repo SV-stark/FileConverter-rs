@@ -133,11 +133,7 @@ pub fn determine_job_engine(preset: &ConversionPreset, input_path: &str) -> JobE
 
     if matches!(
         preset.output_type,
-        OutputType::Pdf
-            | OutputType::Avif
-            | OutputType::Jpg
-            | OutputType::Png
-            | OutputType::Webp
+        OutputType::Pdf | OutputType::Avif | OutputType::Jpg | OutputType::Png | OutputType::Webp
     ) && (category == FileCategory::Image || ext == "pdf")
     {
         return JobEngine::Image;
@@ -216,7 +212,12 @@ impl ConversionJob {
             )));
         }
 
-        let declared: Vec<String> = self.preset.input_types.iter().map(|s| s.to_string()).collect();
+        let declared: Vec<String> = self
+            .preset
+            .input_types
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         if is_preset_applicable_to_file(self.preset.output_type, &declared, &self.input_path) {
             Ok(())
         } else {
@@ -609,10 +610,7 @@ pub fn copy_files_to_clipboard(paths: &[String]) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn clipboard_error(context: &str, err: impl std::fmt::Debug) -> FileConverterError {
-    FileConverterError::Io(std::io::Error::other(format!(
-        "{}: {:?}",
-        context, err
-    )))
+    FileConverterError::Io(std::io::Error::other(format!("{}: {:?}", context, err)))
 }
 
 #[cfg(not(target_os = "windows"))]

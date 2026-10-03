@@ -194,7 +194,10 @@ pub fn run_ebook_conversion(
         }
 
         let prog = 0.25 + (i as f32 / total_sections as f32) * 0.6;
-        progress_cb(prog, &format!("Processing Section {}/{}", i + 1, total_sections));
+        progress_cb(
+            prog,
+            &format!("Processing Section {}/{}", i + 1, total_sections),
+        );
     }
 
     progress_cb(0.9, "Writing output file");

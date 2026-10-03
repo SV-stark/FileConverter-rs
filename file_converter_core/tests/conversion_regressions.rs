@@ -171,7 +171,10 @@ fn test_job_run_reports_missing_outputs_as_failure() {
     use file_converter_core::scheduler::{ConversionJob, JobStatus};
     use file_converter_core::types::HardwareAccelerationMode;
 
-    let png = touch_temp("ghost.png", &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    let png = touch_temp(
+        "ghost.png",
+        &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+    );
     let job = ConversionJob::new(1, preset("To Png", OutputType::Png, &["png"]), png.clone());
     job.run(HardwareAccelerationMode::Off);
     let status = job.status.lock().clone();
@@ -234,15 +237,27 @@ fn test_ico_is_multiresolution_and_keeps_aspect_ratio() {
     for i in 0..count {
         let off = 6 + i * 16;
         // 0 is stored as 256.
-        let w = if bytes[off] == 0 { 256 } else { bytes[off] as u32 };
-        let h = if bytes[off + 1] == 0 { 256 } else { bytes[off + 1] as u32 };
+        let w = if bytes[off] == 0 {
+            256
+        } else {
+            bytes[off] as u32
+        };
+        let h = if bytes[off + 1] == 0 {
+            256
+        } else {
+            bytes[off + 1] as u32
+        };
         if let Some((prev_w, prev_h)) = last {
             assert!(w >= prev_w && h >= prev_h, "sizes must be ascending");
             assert_eq!(w as f64 / h as f64, 2.0, "aspect ratio must be 2:1");
         }
         last = Some((w, h));
     }
-    assert_eq!(last, Some((256, 128)), "largest ICO entry is capped at 256px");
+    assert_eq!(
+        last,
+        Some((256, 128)),
+        "largest ICO entry is capped at 256px"
+    );
 
     let _ = std::fs::remove_file(src);
     let _ = std::fs::remove_file(out);
@@ -259,17 +274,24 @@ fn test_still_image_to_gif_without_ffmpeg() {
     let mut p = preset("To Gif", OutputType::Gif, &["png"]);
     p.set_setting_value("ImageScale", "1");
 
-    run_still_gif_conversion(&p, src.to_str().unwrap(), out.to_str().unwrap(), &|_p, _m| {})
-        .unwrap();
+    run_still_gif_conversion(
+        &p,
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        &|_p, _m| {},
+    )
+    .unwrap();
 
     let bytes = std::fs::read(&out).unwrap();
     assert_eq!(&bytes[0..6], b"GIF89a");
     assert_eq!(
-        u16::from_le_bytes([bytes[6], bytes[7]]) as u32, 64,
+        u16::from_le_bytes([bytes[6], bytes[7]]) as u32,
+        64,
         "GIF width"
     );
     assert_eq!(
-        u16::from_le_bytes([bytes[8], bytes[9]]) as u32, 48,
+        u16::from_le_bytes([bytes[8], bytes[9]]) as u32,
+        48,
         "GIF height"
     );
 
@@ -320,7 +342,11 @@ fn test_text_document_conversions() {
         &|_p, _m| {},
     )
     .unwrap();
-    assert!(std::fs::read_to_string(&txt_out).unwrap().contains("Hello File Converter"));
+    assert!(
+        std::fs::read_to_string(&txt_out)
+            .unwrap()
+            .contains("Hello File Converter")
+    );
 
     // txt -> pdf
     let pdf_out = temp_path("doc_out.pdf");
@@ -362,13 +388,8 @@ fn test_html_document_is_stripped_and_entity_decoded() {
         b"<html><body><p>Caf&eacute; &amp; bar</p><p>Line two</p></body></html>",
     );
     let out = temp_path("doc_out2.txt");
-    run_text_document_conversion(
-        &src,
-        out.to_str().unwrap(),
-        OutputType::Txt,
-        &|_p, _m| {},
-    )
-    .unwrap();
+    run_text_document_conversion(&src, out.to_str().unwrap(), OutputType::Txt, &|_p, _m| {})
+        .unwrap();
 
     let text = std::fs::read_to_string(&out).unwrap();
     assert!(text.contains("Café & bar"), "{text}");
@@ -482,8 +503,12 @@ fn test_output_type_classification() {
         get_extension_category("csv"),
         file_converter_core::types::FileCategory::Document
     );
-    assert!(file_converter_core::types::is_text_document_extension("html"));
-    assert!(!file_converter_core::types::is_text_document_extension("png"));
+    assert!(file_converter_core::types::is_text_document_extension(
+        "html"
+    ));
+    assert!(!file_converter_core::types::is_text_document_extension(
+        "png"
+    ));
     assert!(file_converter_core::types::is_ebook_extension("epub"));
     assert!(file_converter_core::types::is_ebook_extension("cbz"));
 }
@@ -496,9 +521,18 @@ fn test_ffmpeg_gif_palette_pass_does_not_use_fps() {
     p.set_setting_value("VideoScale", "0.75");
     p.set_setting_value("VideoFramesPerSecond", "10");
 
-    let passes =
-        get_ffmpeg_passes(&p, "C:\\in.mp4", "C:\\out.gif", HardwareAccelerationMode::Off).unwrap();
-    assert_eq!(passes.len(), 2, "GIF needs a palette pass and a conversion pass");
+    let passes = get_ffmpeg_passes(
+        &p,
+        "C:\\in.mp4",
+        "C:\\out.gif",
+        HardwareAccelerationMode::Off,
+    )
+    .unwrap();
+    assert_eq!(
+        passes.len(),
+        2,
+        "GIF needs a palette pass and a conversion pass"
+    );
 
     // Pass 1: single palette frame, no fps filter (fps+scale on a single-frame
     // source can emit an empty palette file).
@@ -513,7 +547,10 @@ fn test_ffmpeg_gif_palette_pass_does_not_use_fps() {
     // Pass 2: explicit filter_complex so the palette frame is not rescaled.
     assert!(passes[1].arguments.iter().any(|a| a == "-filter_complex"));
     assert!(passes[1].arguments.iter().any(|a| a.contains("paletteuse")));
-    assert!(passes[1].file_to_delete.is_some(), "palette must be cleaned up");
+    assert!(
+        passes[1].file_to_delete.is_some(),
+        "palette must be cleaned up"
+    );
 }
 
 #[test]
@@ -522,8 +559,7 @@ fn test_ffmpeg_video_outputs_force_even_dimensions_and_pix_fmt() {
 
     for output in [OutputType::Webm, OutputType::Ogv, OutputType::Avi] {
         let p = preset("To X", output, &["mp4"]);
-        let passes =
-            get_ffmpeg_passes(&p, "C:\\in.mp4", "C:\\out", HardwareAccelerationMode::Off);
+        let passes = get_ffmpeg_passes(&p, "C:\\in.mp4", "C:\\out", HardwareAccelerationMode::Off);
 
         if output == OutputType::Ogv && !ffmpeg_has_encoder("libtheora") {
             // Reported separately by `test_ffmpeg_missing_encoder_reports_clear_error`.
@@ -550,7 +586,12 @@ fn test_ffmpeg_missing_encoder_reports_clear_error() {
     use file_converter_core::ffmpeg::{ffmpeg_has_encoder, get_ffmpeg_passes};
 
     let p = preset("To Ogv", OutputType::Ogv, &["mp4"]);
-    let passes = get_ffmpeg_passes(&p, "C:\\in.mp4", "C:\\out.ogv", HardwareAccelerationMode::Off);
+    let passes = get_ffmpeg_passes(
+        &p,
+        "C:\\in.mp4",
+        "C:\\out.ogv",
+        HardwareAccelerationMode::Off,
+    );
 
     if ffmpeg_has_encoder("libtheora") {
         assert!(passes.is_ok());
@@ -582,8 +623,13 @@ fn test_ffmpeg_custom_command_and_tokenizer() {
     p.set_setting_value("EnableFFMPEGCustomCommand", "true");
     p.set_setting_value("FFMPEGCustomCommand", "-c:v copy -c:a copy");
 
-    let passes =
-        get_ffmpeg_passes(&p, "C:\\in.mkv", "C:\\out.mp4", HardwareAccelerationMode::Off).unwrap();
+    let passes = get_ffmpeg_passes(
+        &p,
+        "C:\\in.mkv",
+        "C:\\out.mp4",
+        HardwareAccelerationMode::Off,
+    )
+    .unwrap();
     assert_eq!(passes.len(), 1);
     assert!(passes[0].arguments.contains(&"-c:v".to_string()));
     assert!(passes[0].arguments.contains(&"copy".to_string()));
@@ -593,14 +639,23 @@ fn test_ffmpeg_custom_command_and_tokenizer() {
 fn test_ffmpeg_quality_mappings() {
     use file_converter_core::ffmpeg::{
         h264_encoding_speed_to_amf_quality, h264_encoding_speed_to_nvenc_preset,
-        h264_encoding_speed_to_preset, ogg_vbr_bitrate_to_quality_index,
-        mp3_vbr_bitrate_to_quality_index,
+        h264_encoding_speed_to_preset, mp3_vbr_bitrate_to_quality_index,
+        ogg_vbr_bitrate_to_quality_index,
     };
     use file_converter_core::types::VideoEncodingSpeed;
 
-    assert_eq!(h264_encoding_speed_to_preset(VideoEncodingSpeed::UltraFast), "ultrafast");
-    assert_eq!(h264_encoding_speed_to_nvenc_preset(VideoEncodingSpeed::VerySlow), "p7");
-    assert_eq!(h264_encoding_speed_to_amf_quality(VideoEncodingSpeed::VerySlow), "quality");
+    assert_eq!(
+        h264_encoding_speed_to_preset(VideoEncodingSpeed::UltraFast),
+        "ultrafast"
+    );
+    assert_eq!(
+        h264_encoding_speed_to_nvenc_preset(VideoEncodingSpeed::VerySlow),
+        "p7"
+    );
+    assert_eq!(
+        h264_encoding_speed_to_amf_quality(VideoEncodingSpeed::VerySlow),
+        "quality"
+    );
 
     assert_eq!(mp3_vbr_bitrate_to_quality_index(320).unwrap(), 0);
     assert_eq!(mp3_vbr_bitrate_to_quality_index(190).unwrap(), 2);
@@ -622,20 +677,19 @@ fn test_strip_html_tags() {
     use file_converter_core::doc_convert::strip_html_tags;
 
     assert_eq!(
-        strip_html_tags(r#"<p>Welcome to <b>File Converter</b>! <a href="x">Click</a> for more.</p>"#),
+        strip_html_tags(
+            r#"<p>Welcome to <b>File Converter</b>! <a href="x">Click</a> for more.</p>"#
+        ),
         "Welcome to File Converter! Click for more."
     );
     assert_eq!(strip_html_tags(""), "");
-    assert_eq!(
-        strip_html_tags("Just plain text."),
-        "Just plain text."
-    );
+    assert_eq!(strip_html_tags("Just plain text."), "Just plain text.");
 }
 
 #[test]
 fn test_paged_output_reports_the_real_total() {
-    use file_converter_core::scheduler::ConversionJob;
     use file_converter_core::doc_convert::create_pdf_from_text;
+    use file_converter_core::scheduler::ConversionJob;
 
     // A multi-page PDF converted with a `(n:i) of (n:c)` template must number
     // the pages "1 of N" ... "N of N" (previously every page said "of 1").

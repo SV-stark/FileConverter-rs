@@ -88,14 +88,19 @@ fn register_shell_extension(elevated: bool) -> std::io::Result<()> {
 
     let verb = if elevated { "runas" } else { "open" };
     let params: Vec<u16> = if elevated {
-        format!("/s \"{}\"\0", dll_path.display()).encode_utf16().collect()
+        format!("/s \"{}\"\0", dll_path.display())
+            .encode_utf16()
+            .collect()
     } else {
         format!("/u /s \"{}\"\0", dll_path.display())
             .encode_utf16()
             .collect()
     };
     let verb: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
-    let file: Vec<u16> = "regsvr32.exe".encode_utf16().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = "regsvr32.exe"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
 
     // SAFETY: `ShellExecuteW` is a Win32 shim; all pointers reference
     // null-terminated buffers that live until the call returns, and no
@@ -786,7 +791,10 @@ fn resolve_original_index(window: &SettingsWindow, row: usize) -> usize {
     row
 }
 
-fn preset_to_slint_data(preset: &file_converter_core::settings::ConversionPreset, i: usize) -> PresetData {
+fn preset_to_slint_data(
+    preset: &file_converter_core::settings::ConversionPreset,
+    i: usize,
+) -> PresetData {
     PresetData {
         original_index: i as i32,
         name: preset.name.as_str().into(),
@@ -799,7 +807,10 @@ fn preset_to_slint_data(preset: &file_converter_core::settings::ConversionPreset
     }
 }
 
-fn refresh_preview(window: &SettingsWindow, preset: &file_converter_core::settings::ConversionPreset) {
+fn refresh_preview(
+    window: &SettingsWindow,
+    preset: &file_converter_core::settings::ConversionPreset,
+) {
     let preview = file_converter_core::path_helpers::generate_file_path_from_template(
         "C:\\Music\\Album\\sample_track.flac",
         preset.output_type.extension(),
@@ -811,7 +822,10 @@ fn refresh_preview(window: &SettingsWindow, preset: &file_converter_core::settin
 }
 
 /// Fills the editor pane for a preset without touching the preset list model.
-fn populate_slint_editor(window: &SettingsWindow, preset: &file_converter_core::settings::ConversionPreset) {
+fn populate_slint_editor(
+    window: &SettingsWindow,
+    preset: &file_converter_core::settings::ConversionPreset,
+) {
     window.set_edit_name(preset.name.as_str().into());
     window.set_edit_output_type(format!("{:?}", preset.output_type).into());
     window.set_edit_input_types(preset.input_types.join(", ").into());
@@ -1018,8 +1032,7 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
                 w.get_copy_files_in_clipboard_after_conversion();
             s.exit_application_when_conversions_finished =
                 w.get_exit_application_when_conversions_finished();
-            s.duration_between_end_of_conversions_and_application_exit =
-                w.get_exit_delay_seconds();
+            s.duration_between_end_of_conversions_and_application_exit = w.get_exit_delay_seconds();
 
             match s.save_to_file(&*xml_path_clone) {
                 Ok(_) => w.set_status_msg("Settings saved successfully!".into()),
@@ -1669,15 +1682,12 @@ fn run_conversion_gui(
     let scheduler_close = scheduler_rc.clone();
     window.on_close_window(move || {
         if let Some(w) = window_close_cb.upgrade() {
-            let still_running = scheduler_close
-                .jobs
-                .iter()
-                .any(|job| {
-                    matches!(
-                        *job.status.lock(),
-                        JobStatus::Queue | JobStatus::Converting(_)
-                    )
-                });
+            let still_running = scheduler_close.jobs.iter().any(|job| {
+                matches!(
+                    *job.status.lock(),
+                    JobStatus::Queue | JobStatus::Converting(_)
+                )
+            });
 
             if still_running {
                 w.set_overall_status_text(

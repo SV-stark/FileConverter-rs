@@ -10,4 +10,3 @@ pub mod scheduler;
 pub mod settings;
 pub mod types;
 pub mod update_check;
-

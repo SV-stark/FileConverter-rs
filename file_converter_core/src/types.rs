@@ -192,8 +192,8 @@ pub fn get_extension_category(ext: &str) -> FileCategory {
         "gif" => FileCategory::AnimatedImage,
         "pdf" | "doc" | "docx" | "ppt" | "pptx" | "odp" | "ods" | "odt" | "xls" | "xlsx"
         | "epub" | "mobi" | "azw" | "azw3" | "kfx" | "fb2" | "cbz" | "kepub" | "lit" | "rtf"
-        | "md" | "markdown" | "typ" | "txt" | "text" | "log" | "csv" | "json" | "xml"
-        | "html" | "htm" | "xhtml" => FileCategory::Document,
+        | "md" | "markdown" | "typ" | "txt" | "text" | "log" | "csv" | "json" | "xml" | "html"
+        | "htm" | "xhtml" => FileCategory::Document,
         _ => FileCategory::Misc,
     }
 }
@@ -304,7 +304,11 @@ pub fn is_output_type_compatible_with_category(
 ///
 /// This mirrors the check the UI performs when highlighting presets, and is the
 /// single source of truth used by the scheduler before a job is queued.
-pub fn is_preset_applicable_to_file(preset_output: OutputType, input_types: &[String], file_path: &str) -> bool {
+pub fn is_preset_applicable_to_file(
+    preset_output: OutputType,
+    input_types: &[String],
+    file_path: &str,
+) -> bool {
     let ext = std::path::Path::new(file_path)
         .extension()
         .and_then(|s| s.to_str())
