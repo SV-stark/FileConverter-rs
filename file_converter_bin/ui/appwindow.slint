@@ -30,12 +30,25 @@ export struct JobProgressData {
     is_failed: bool,
 }
 
+// One editable conversion setting of the selected preset (quality, bitrate,
+// scale, ...). `choices` is empty for free-text values.
+export struct PresetSettingData {
+    key: string,
+    label: string,
+    hint: string,
+    group: string,
+    value: string,
+    choices: [string],
+    is_custom: bool,
+    is_group_start: bool,
+}
+
 export component SettingsWindow inherits Window {
     title: "⚡ File Converter Settings & Studio";
-    preferred-width: 980px;
-    preferred-height: 720px;
-    min-width: 860px;
-    min-height: 600px;
+    preferred-width: 1280px;
+    preferred-height: 760px;
+    min-width: 1180px;
+    min-height: 620px;
     background: root.dark_mode ? #0b0f19 : #f1f5f9;
 
     in-out property <bool> dark_mode: false;
@@ -47,6 +60,12 @@ export component SettingsWindow inherits Window {
     in-out property <string> status_msg: "Ready";
     in-out property <string> preview_path: "C:\\Output\\sample_track.mp3";
     in-out property <[HistoryItemData]> history_items: [];
+
+    // Editable conversion settings of the selected preset, grouped for display.
+    in-out property <[PresetSettingData]> edit_settings: [];
+    in-out property <string> new_setting_key: "";
+    in-out property <string> new_setting_value: "";
+    in-out property <string> settings_notice: "";
 
     // Form editing properties for selected preset
     in-out property <string> edit_name: "";
@@ -93,6 +112,9 @@ export component SettingsWindow inherits Window {
     callback set_post_action(string);
     callback set_path_template(string);
     callback toggle_theme(bool);
+    callback set_preset_setting(string, string);
+    callback remove_preset_setting(string);
+    callback add_preset_setting(string, string);
 
     VerticalLayout {
         padding: 16px;
@@ -109,7 +131,12 @@ export component SettingsWindow inherits Window {
             HorizontalLayout {
                 padding-left: 16px;
                 padding-right: 16px;
-                alignment: space-between;
+                spacing: 18px;
+                // `space-between` pushed the action buttons to the far right of a
+                // container that can be wider than the window, which put "Save" and
+                // "Shell Integration" completely out of reach. Start-aligned keeps
+                // them next to the tabs at any window size.
+                alignment: start;
 
                 HorizontalLayout {
                     spacing: 14px;
@@ -204,6 +231,7 @@ export component SettingsWindow inherits Window {
                     // Theme Toggle Button
                     Rectangle {
                         height: 34px;
+                        horizontal-stretch: 0;
                         border-radius: 6px;
                         background: root.dark_mode ? #26334d : #e2e8f0;
                         border-width: 1px;
@@ -230,6 +258,7 @@ export component SettingsWindow inherits Window {
                     // Shell Extension Button
                     Rectangle {
                         height: 34px;
+                        horizontal-stretch: 0;
                         border-radius: 6px;
                         background: root.dark_mode ? #1e293b : #f1f5f9;
                         border-width: 1px;
@@ -251,6 +280,7 @@ export component SettingsWindow inherits Window {
                     // Save Settings Button
                     Rectangle {
                         height: 34px;
+                        horizontal-stretch: 0;
                         border-radius: 6px;
                         background: #2563eb;
                         HorizontalLayout {
@@ -531,6 +561,11 @@ export component SettingsWindow inherits Window {
 
                     // Presets Scrollable Cards List
                     ScrollView {
+                    min-width: 0px;
+                        // Keep the declared 320px sidebar width: without this the
+                        // elided preset subtitle's minimum width inflates the
+                        // whole sidebar and steals space from the studio pane.
+
                         VerticalLayout {
                             spacing: 5px;
                             for preset[index] in root.presets : Rectangle {
@@ -571,6 +606,9 @@ export component SettingsWindow inherits Window {
                                             font-size: 11px;
                                             color: root.dark_mode ? #94a3b8 : #64748b;
                                             overflow: elide;
+                                            // Caps the minimum width, so the elide
+                                            // above can actually take effect.
+                                            max-width: 222px;
                                         }
                                     }
 
@@ -713,6 +751,11 @@ export component SettingsWindow inherits Window {
                 border-color: root.dark_mode ? #26334d : #e2e8f0;
 
                 ScrollView {
+                min-width: 0px;
+                    // A Slint ScrollView otherwise reports its content's minimum
+                    // width as its own, which let the studio pane grow past the
+                    // window and silently clip the right edge of every field.
+
                     VerticalLayout {
                         padding: 20px;
                         spacing: 14px;
@@ -734,13 +777,13 @@ export component SettingsWindow inherits Window {
                             spacing: 12px;
                             Text {
                                 text: "Preset Label:";
-                                width: 130px;
+                                width: 108px;
                                 font-weight: 700;
                                 color: root.dark_mode ? #cbd5e1 : #334155;
                                 vertical-alignment: center;
                             }
                             LineEdit {
-                                text <=> root.edit_name;
+                                                    text <=> root.edit_name;
                                 edited => { root.preset_field_changed(); }
                             }
                         }
@@ -752,24 +795,27 @@ export component SettingsWindow inherits Window {
                                 spacing: 12px;
                                 Text {
                                     text: "Target Format:";
-                                    width: 130px;
+                                    width: 108px;
                                     font-weight: 700;
                                     color: root.dark_mode ? #cbd5e1 : #334155;
                                     vertical-alignment: center;
                                 }
                                 LineEdit {
-                                    text <=> root.edit_output_type;
+                                                            text <=> root.edit_output_type;
                                     edited => { root.preset_field_changed(); }
                                 }
                             }
 
                             // Quick Format Picker Chips
+                            //
+                            // Full pane width, no label-column indent: 8 chips do
+                            // not fit beside a 130px label and were being clipped.
                             HorizontalLayout {
-                                padding-left: 142px;
                                 spacing: 6px;
 
                                 Text {
                                     text: "Quick Pick:";
+                                    width: 78px;
                                     font-size: 11px;
                                     font-weight: 700;
                                     color: root.dark_mode ? #94a3b8 : #64748b;
@@ -777,7 +823,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                    width: 46px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Mp3" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -788,7 +836,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 54px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Flac" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -799,7 +849,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                    width: 46px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Png" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -810,7 +862,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                    width: 46px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Jpg" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -821,7 +875,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 56px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Webp" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -832,7 +888,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 50px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Pdf" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -843,7 +901,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 48px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Mp4" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -854,7 +914,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 50px;
                                     height: 24px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.edit_output_type == "Mkv" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
                                     HorizontalLayout {
@@ -871,13 +933,13 @@ export component SettingsWindow inherits Window {
                             spacing: 12px;
                             Text {
                                 text: "Input Extensions:";
-                                width: 130px;
+                                width: 108px;
                                 font-weight: 700;
                                 color: root.dark_mode ? #cbd5e1 : #334155;
                                 vertical-alignment: center;
                             }
                             LineEdit {
-                                placeholder-text: "e.g. wav, flac, mp3, mkv, jpg (leave empty to allow all)";
+                                                    placeholder-text: "e.g. wav, flac, mp3, mkv, jpg (leave empty to allow all)";
                                 text <=> root.edit_input_types;
                                 edited => { root.preset_field_changed(); }
                             }
@@ -890,13 +952,13 @@ export component SettingsWindow inherits Window {
                                 spacing: 12px;
                                 Text {
                                     text: "Path Template:";
-                                    width: 130px;
+                                    width: 108px;
                                     font-weight: 700;
                                     color: root.dark_mode ? #cbd5e1 : #334155;
                                     vertical-alignment: center;
                                 }
                                 LineEdit {
-                                    placeholder-text: "(p)(f)";
+                                                            placeholder-text: "(p)(f)";
                                     text <=> root.edit_template;
                                     edited => { root.preset_field_changed(); }
                                 }
@@ -904,11 +966,11 @@ export component SettingsWindow inherits Window {
 
                             // Template Quick Helper Tags
                             HorizontalLayout {
-                                padding-left: 142px;
                                 spacing: 6px;
 
                                 Text {
                                     text: "Presets:";
+                                    width: 56px;
                                     font-size: 11px;
                                     font-weight: 700;
                                     color: root.dark_mode ? #94a3b8 : #64748b;
@@ -916,7 +978,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 118px;
                                     height: 22px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.dark_mode ? #1e293b : #f1f5f9;
                                     border-width: 1px;
@@ -929,7 +993,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 152px;
                                     height: 22px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.dark_mode ? #1e293b : #f1f5f9;
                                     border-width: 1px;
@@ -942,7 +1008,9 @@ export component SettingsWindow inherits Window {
                                 }
 
                                 Rectangle {
+                                width: 190px;
                                     height: 22px;
+                                    horizontal-stretch: 0;
                                     border-radius: 4px;
                                     background: root.dark_mode ? #1e293b : #f1f5f9;
                                     border-width: 1px;
@@ -986,12 +1054,14 @@ export component SettingsWindow inherits Window {
                             spacing: 12px;
                             Text {
                                 text: "Post Action:";
-                                width: 130px;
+                                width: 92px;
                                 font-weight: 700;
                                 color: root.dark_mode ? #cbd5e1 : #334155;
                                 vertical-alignment: center;
+                                horizontal-stretch: 0;
                             }
 
+width: 134px;
                             HorizontalLayout {
                                 spacing: 8px;
 
@@ -1011,26 +1081,28 @@ export component SettingsWindow inherits Window {
                                             vertical-alignment: center;
                                         }
                                     }
+                                    width: 198px;
                                     TouchArea { clicked => { root.set_post_action("None"); } }
                                 }
 
                                 Rectangle {
                                     height: 32px;
                                     border-radius: 6px;
-                                    background: root.edit_post_action == "Recycle" ? #f59e0b : (root.dark_mode ? #1e293b : #f1f5f9);
+                                    background: root.edit_post_action == "MoveInArchiveFolder" ? #f59e0b : (root.dark_mode ? #1e293b : #f1f5f9);
                                     border-width: 1px;
-                                    border-color: root.edit_post_action == "Recycle" ? #f59e0b : (root.dark_mode ? #334155 : #cbd5e1);
+                                    border-color: root.edit_post_action == "MoveInArchiveFolder" ? #f59e0b : (root.dark_mode ? #334155 : #cbd5e1);
                                     HorizontalLayout {
                                         padding-left: 10px; padding-right: 10px;
                                         Text {
-                                            text: "🗑️ Move to Recycle Bin";
+                                            text: "📦 Move to Archive Folder";
                                             font-size: 12px;
                                             font-weight: 700;
-                                            color: root.edit_post_action == "Recycle" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
+                                            color: root.edit_post_action == "MoveInArchiveFolder" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea { clicked => { root.set_post_action("Recycle"); } }
+                                    width: 170px;
+                                    TouchArea { clicked => { root.set_post_action("MoveInArchiveFolder"); } }
                                 }
 
                                 Rectangle {
@@ -1050,6 +1122,196 @@ export component SettingsWindow inherits Window {
                                         }
                                     }
                                     TouchArea { clicked => { root.set_post_action("Delete"); } }
+                                }
+                            }
+                        }
+
+                        // Conversion Settings Editor
+                        Rectangle {
+                            background: root.dark_mode ? #111827 : #f8fafc;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: root.dark_mode ? #26334d : #e2e8f0;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "⚙️ Conversion Settings";
+                                    font-size: 13px;
+                                    font-weight: 800;
+                                    color: root.dark_mode ? #f8fafc : #0f172a;
+                                }
+
+                                Text {
+                                    text: "Engine options for this preset - bitrate, quality, scale, rotation. Leave a field empty to use the default.";
+                                    font-size: 11px;
+                                    color: root.dark_mode ? #94a3b8 : #64748b;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.edit_settings.length == 0 : Text {
+                                    text: "No settings apply to this output type.";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: #94a3b8;
+                                }
+
+                                for row in root.edit_settings : VerticalLayout {
+                                    spacing: 3px;
+
+                                    if row.is_group_start : Text {
+                                        text: row.group;
+                                        font-size: 10px;
+                                        font-weight: 800;
+                                        color: #2563eb;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        padding-top: 2px;
+
+                                        VerticalLayout {
+                                            width: 118px;
+                                            spacing: 0px;
+                                            Text {
+                                                text: row.label;
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                                color: root.dark_mode ? #cbd5e1 : #334155;
+                                            }
+                                            Text {
+                                                text: row.hint;
+                                                font-size: 9px;
+                                                color: root.dark_mode ? #64748b : #94a3b8;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+
+                                        // Free-text values get an editor.
+                                        if row.choices.length == 0 : LineEdit {
+                                            placeholder-text: "default";
+                                            text: row.value;
+                                            edited => { root.set_preset_setting(row.key, self.text); }
+                                        }
+
+                                        if row.is_custom : TouchArea {
+                                            width: 30px;
+                                            clicked => { root.remove_preset_setting(row.key); }
+                                            Rectangle {
+                                                background: #ef444415;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: #ef444455;
+                                            }
+                                            Text {
+                                                text: "✕";
+                                                font-size: 13px;
+                                                font-weight: 800;
+                                                color: #ef4444;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+
+                                    // Short enumerated values become clickable
+                                    // chips. Slint 1.9 has no FlowLayout, so the
+                                    // chip row is a plain HorizontalLayout and the
+                                    // descriptor data keeps these lists to <= 4.
+                                    if row.choices.length > 0 : HorizontalLayout {
+                                        padding-left: 128px;
+                                        spacing: 4px;
+                                        for choice in row.choices : Rectangle {
+                                            height: 24px;
+                                            horizontal-stretch: 0;
+                                            border-radius: 4px;
+                                            background: row.value == choice ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
+                                            border-width: 1px;
+                                            border-color: row.value == choice ? #2563eb : (root.dark_mode ? #334155 : #cbd5e1);
+                                            HorizontalLayout {
+                                                padding-left: 9px; padding-right: 9px;
+                                                Text {
+                                                    text: choice;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    color: row.value == choice ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            TouchArea { clicked => { root.set_preset_setting(row.key, choice); } }
+                                        }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: root.dark_mode ? #26334d : #e2e8f0; }
+
+                                // Escape hatch for keys the UI does not know about.
+                                //
+                                // One editor per row: two LineEdits side by side made
+                                // this the widest row in the pane, which dragged the
+                                // whole studio past the window edge and clipped
+                                // every other field.
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: "Custom key";
+                                        width: 118px;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: root.dark_mode ? #94a3b8 : #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    LineEdit {
+                                                                    placeholder-text: "e.g. AudioNormalize";
+                                        text <=> root.new_setting_key;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: "Custom value";
+                                        width: 118px;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: root.dark_mode ? #94a3b8 : #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    LineEdit {
+                                                                    placeholder-text: "Value";
+                                        text <=> root.new_setting_value;
+                                    }
+                                    Rectangle {
+                                        width: 62px;
+                                        height: 30px;
+                                        border-radius: 6px;
+                                        background: #2563eb;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "Add";
+                                                font-size: 12px;
+                                                font-weight: 700;
+                                                color: #ffffff;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        TouchArea {
+                                            clicked => {
+                                                root.add_preset_setting(root.new_setting_key, root.new_setting_value);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if root.settings_notice != "" : Text {
+                                    text: root.settings_notice;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: root.settings_notice == "✓ Added" || root.settings_notice == "✓ Removed" || root.settings_notice == "✓ Updated" ? #10b981 : #ef4444;
+                                    wrap: word-wrap;
                                 }
                             }
                         }
@@ -1141,6 +1403,7 @@ export component SettingsWindow inherits Window {
                 }
 
                 ScrollView {
+                min-width: 0px;
                     VerticalLayout {
                         spacing: 6px;
                         for item in root.history_items : Rectangle {
@@ -1195,6 +1458,7 @@ export component SettingsWindow inherits Window {
             border-color: root.dark_mode ? #26334d : #e2e8f0;
 
             ScrollView {
+            min-width: 0px;
                 VerticalLayout {
                     padding: 24px;
                     spacing: 18px;
@@ -1388,6 +1652,7 @@ export component ProgressWindow inherits Window {
             border-color: root.dark_mode ? #26334d : #e2e8f0;
 
             ScrollView {
+            min-width: 0px;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
@@ -1453,6 +1718,7 @@ export component ProgressWindow inherits Window {
 
                                     if !job.is_done && !job.is_failed : Rectangle {
                                         height: 24px;
+                                        horizontal-stretch: 0;
                                         border-radius: 4px;
                                         background: root.dark_mode ? #334155 : #e2e8f0;
                                         HorizontalLayout {

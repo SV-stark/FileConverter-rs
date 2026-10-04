@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - per-preset conversion settings editor (Preset Studio)
+
+The conversion engines have always read their tuning from free-form keys in
+`ConversionPreset::settings` (bitrate, quality, scale, rotation, frame rate,
+encoder speed, JPEG/OxiPNG level, PDF DPI, loudness normalisation, custom FFmpeg
+arguments), but **nothing in the UI could write them**. Every preset shipped with
+fixed, untunable values.
+
+The Preset Studio now has a **Conversion Settings** card that renders exactly the
+settings that are meaningful for the selected preset's output format, grouped
+(Audio / Video / Image / PDF / Advanced), each with a label and a hint:
+
+- Free-form values get a text field; clearing it removes the key so the engine
+  default applies again (rather than persisting an empty value).
+- Enumerated values (booleans, rotation, MP3 VBR/CBR, WAV sample depth) get
+  clickable chips.
+- A **custom key** escape hatch accepts any other key, validated to identifier
+  characters, so nothing is unreachable.
+- Keys already stored on a preset that have no descriptor are shown as removable
+  "custom" rows, so a preset can never silently lose a setting on the next save.
+- The card follows the target format: switching format rebuilds the row list, and
+  format-specific keys (`JpegQuality`, `AudioEncodingMode`) never appear on
+  formats that ignore them.
+
+Descriptor data lives in `file_converter_core::types::preset_setting_keys` so it is
+unit-tested rather than being duplicated in the `.slint` file.
+
+### Fixed - UI
+
+- **The "Move to Recycle Bin" button did nothing.** It sent the string
+  `Recycle`, which is not an `InputPostConversionAction` variant (`None`,
+  `MoveInArchiveFolder`, `Delete`), so `parse` failed and the click was silently
+  discarded. The button is now **Move to Archive Folder** - the real variant -
+  which also makes `MoveInArchiveFolder` reachable for the first time.
+- **"Save" and "Shell Integration" were off-screen.** The header used
+  `alignment: space-between`, which pins the action buttons to the far right of a
+  container that can be wider than the window, so at the default size both buttons
+  were clipped away and unreachable. The header is now start-aligned, which keeps
+  them next to the tabs at any window size.
+- **The right-hand edge of every field in the Preset Studio was clipped.** A Slint
+  `ScrollView` reports its content's minimum width as its own, and several rows
+  (8 format chips, 3 template chips, 3 post-action buttons) plus a 130px label
+  column added up to more than the pane had, so the pane grew past the window and
+  the studio silently truncated its right side with no way to scroll to it. Fixed
+  by capping the ScrollViews' minimum width, giving the static chips explicit
+  widths, and removing the label-column indent from the chip rows.
+- **The preset list subtitle dictated the sidebar width.** `overflow: elide` only
+  affects painting - the `Text` still reported the full extension list as its
+  minimum width, inflating the declared 320px sidebar to ~400px and stealing space
+  from the studio pane. It is now capped with `max-width`.
+- **Staging many files could blow up the layout.** The dropzone subtitle embeds a
+  comma-joined list of every staged file name with no wrap, so its minimum width
+  grew with the selection. It now wraps.
+- **The theme choice was discarded on exit.** The toggle worked for the session
+  (the `.slint` side flips the property) but `on_toggle_theme` was an empty
+  closure, so the preference was re-derived from the Windows registry on every
+  launch and a user who preferred the opposite of their system theme could never
+  keep it. The choice is now stored in `Settings.dark_mode` (`None` = follow the
+  system theme) and written immediately, since the progress window has no Save
+  button.
+- Default window size raised to 1280x760 (min 1180x620) so the studio fits
+  without horizontal clipping.
+
+### Fixed - settings persistence
+
+- **An empty element could make `Settings.user.xml` unloadable.** `dark_mode` is
+  an `Option<bool>`; quick-xml writes `None` as an empty `<DarkMode />`, which then
+  fails to deserialize with `InvalidBoolean("")`. Caught by the existing
+  save/reload round-trip test. `skip_serializing_if` keeps the element out
+  entirely, and the round-trip test now covers `None`, `Some(true)` and
+  `Some(false)`.
+
 ### Fixed - Explorer context menu (shell extension)
 
 Found by a line-by-line audit of `file_converter_shell`. The COM extension is
@@ -85,9 +157,21 @@ would be in a standalone process.
   exact CI sequence (fmt, clippy `-D warnings`, build, tests) on 1.99.0.
 
 ### Notes
+
 - `cargo fmt` was not applied before the v0.10.0 tag, so the CI workflow failed on
   `main` (formatting only - clippy, the build and all tests passed). Fixed in the
   commit immediately after the tag.
+- Verified for this round: `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` all
+  pass (40 tests, 6 new), and the UI was checked by rendering the real window
+  before and after. Synthetic mouse input does not reach the app in the build
+  environment, so the click-through path (chip click -> callback ->
+  `Settings.user.xml`) could not be exercised end-to-end; its validation logic is
+  unit-tested instead.
+- Slint 1.9 has no `FlowLayout`, and `horizontal-stretch` is not honoured for
+  layout children in this version, so chip rows use explicit widths and
+  `preset_setting_keys` demotes any choice list longer than four to free text (a
+  `debug_assert` guards the invariant).
 
 ---
 

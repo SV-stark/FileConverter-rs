@@ -825,6 +825,95 @@ fn refresh_preview(
     window.set_preview_path(preview.into());
 }
 
+/// Validates a custom conversion-setting key typed into the editor.
+///
+/// Returns the trimmed key to store, or a user-facing message. Split out from the
+/// callback so the rules are unit-testable without a GUI.
+fn validate_custom_setting_key(key: &str, already_known: bool) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("Enter a setting key first".to_string());
+    }
+    // Keys end up as XML attribute values and are matched case-sensitively by the
+    // engines, so restrict them to the identifier characters the engines use.
+    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("Keys may only contain letters, digits and '_'".to_string());
+    }
+    if already_known {
+        return Err("That key is already in the list above".to_string());
+    }
+    Ok(key.to_string())
+}
+
+/// Builds the editable conversion-setting rows shown in the Preset Studio.
+///
+/// Every setting the engines understand for this output type is offered, plus any
+/// key already stored on the preset that has no descriptor (shown as a removable
+/// "custom" row) so an unknown key is visible rather than silently dropped on the
+/// next save.
+fn setting_rows(
+    preset: &file_converter_core::settings::ConversionPreset,
+) -> Vec<PresetSettingData> {
+    let descriptors = file_converter_core::types::preset_setting_keys(preset.output_type);
+
+    let mut rows: Vec<PresetSettingData> = Vec::with_capacity(descriptors.len());
+    let mut previous_group = "";
+
+    for descriptor in &descriptors {
+        rows.push(PresetSettingData {
+            key: descriptor.key.into(),
+            label: descriptor.label.into(),
+            hint: descriptor.hint.into(),
+            group: descriptor.group.into(),
+            value: preset
+                .get_setting_value(descriptor.key)
+                .unwrap_or_default()
+                .into(),
+            choices: Rc::new(slint::VecModel::from(
+                descriptor
+                    .choices
+                    .iter()
+                    .map(|c| slint::SharedString::from(*c))
+                    .collect::<Vec<slint::SharedString>>(),
+            ))
+            .into(),
+            is_custom: false,
+            is_group_start: descriptor.group != previous_group,
+        });
+        previous_group = descriptor.group;
+    }
+
+    for setting in &preset.settings {
+        if descriptors.iter().any(|d| d.key == setting.key.as_str()) {
+            continue;
+        }
+        rows.push(PresetSettingData {
+            key: setting.key.as_str().into(),
+            label: setting.key.as_str().into(),
+            hint: "Custom setting - not interpreted by the editor".into(),
+            group: "Custom".into(),
+            value: setting.value.as_str().into(),
+            choices: Rc::new(slint::VecModel::from(Vec::<slint::SharedString>::new())).into(),
+            is_custom: true,
+            is_group_start: true,
+        });
+    }
+
+    rows
+}
+
+/// Refreshes only the conversion-settings model, leaving the other editor fields
+/// (and the caret position inside the field being typed into) untouched.
+fn refresh_setting_rows(
+    window: &SettingsWindow,
+    preset: &file_converter_core::settings::ConversionPreset,
+) {
+    let rows = setting_rows(preset);
+    window.set_edit_settings(Rc::new(slint::VecModel::from(rows)).into());
+    window.set_new_setting_key("".into());
+    window.set_new_setting_value("".into());
+}
+
 /// Fills the editor pane for a preset without touching the preset list model.
 fn populate_slint_editor(
     window: &SettingsWindow,
@@ -835,6 +924,7 @@ fn populate_slint_editor(
     window.set_edit_input_types(preset.input_types.join(", ").into());
     window.set_edit_template(preset.output_file_name_template.as_str().into());
     window.set_edit_post_action(format!("{:?}", preset.input_post_conversion_action).into());
+    refresh_setting_rows(window, preset);
     refresh_preview(window, preset);
 }
 
@@ -941,6 +1031,7 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
         copy_files_in_clipboard_after_conversion: true,
         hardware_acceleration_mode: HardwareAccelerationMode::Off,
         auto_start_on_file_drop: true,
+        dark_mode: None,
         conversion_presets: vec![],
     });
     let check_upgrade = settings.check_upgrade_at_startup;
@@ -955,7 +1046,8 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     // Initial Population
     {
         let s = settings_state.borrow();
-        window.set_dark_mode(is_windows_dark_mode());
+        // An explicit in-app choice wins; otherwise follow the Windows app theme.
+        window.set_dark_mode(s.dark_mode.unwrap_or_else(is_windows_dark_mode));
         window.set_active_category("All".into());
         window.set_auto_start_on_file_drop(s.auto_start_on_file_drop);
         window.set_copy_files_in_clipboard_after_conversion(
@@ -1224,7 +1316,22 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
     });
 
     // Callback: Toggle Theme
-    window.on_toggle_theme(move |_dark| {});
+    //
+    // The .slint side already flips `root.dark_mode`, so the window repaints on
+    // its own; what was missing is persistence. The choice used to be thrown
+    // away on exit and re-derived from the Windows registry on the next launch,
+    // so a user who prefers the opposite of their system theme could never keep
+    // it. Written straight to disk because the progress window has no Save
+    // button and a theme is a view preference rather than a conversion setting.
+    let settings_clone = settings_state.clone();
+    let theme_xml_path = user_xml_path_rc.clone();
+    window.on_toggle_theme(move |dark| {
+        let mut s = settings_clone.borrow_mut();
+        s.dark_mode = Some(dark);
+        if let Err(e) = s.save_to_file(&*theme_xml_path) {
+            eprintln!("Failed to persist theme preference: {e:?}");
+        }
+    });
 
     // Callback: Filter Category Changed
     let window_weak = window.as_weak();
@@ -1266,6 +1373,9 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
                             1,
                         );
                     w.set_preview_path(preview.into());
+                    // Which settings apply depends on the format, so the editor
+                    // has to be rebuilt when it changes.
+                    refresh_setting_rows(&w, preset);
                 }
             }
             refresh_filtered_presets(&w, &s, &w.get_search_query(), &w.get_active_category());
@@ -1313,6 +1423,100 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
         }
     });
 
+    // Callback: Edit one conversion setting of the selected preset
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_set_preset_setting(move |key, value| {
+        let Some(w) = window_weak.upgrade() else {
+            return;
+        };
+        let mut s = settings_clone.borrow_mut();
+        let idx = w.get_selected_preset_index().max(0) as usize;
+        let Some(preset) = s.conversion_presets.get_mut(idx) else {
+            return;
+        };
+
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            // An empty box means "use the engine default", so drop the key rather
+            // than persisting an empty value the XML would have to carry around.
+            preset.remove_setting(&key);
+        } else {
+            preset.set_setting_value(&key, trimmed);
+        }
+        w.set_settings_notice("✓ Updated".into());
+
+        // Only enumerated settings need a redraw (to move the chip highlight).
+        // Rebuilding on every keystroke of a free-text field would recreate the
+        // LineEdit being typed into and steal the caret.
+        let is_enumerated = file_converter_core::types::preset_setting_keys(preset.output_type)
+            .iter()
+            .any(|d| d.key == key.as_str() && !d.choices.is_empty());
+        if is_enumerated {
+            let snapshot = preset.clone();
+            refresh_setting_rows(&w, &snapshot);
+        }
+    });
+
+    // Callback: Remove a custom conversion setting
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_remove_preset_setting(move |key| {
+        let Some(w) = window_weak.upgrade() else {
+            return;
+        };
+        let mut s = settings_clone.borrow_mut();
+        let idx = w.get_selected_preset_index().max(0) as usize;
+        let Some(preset) = s.conversion_presets.get_mut(idx) else {
+            return;
+        };
+        let removed = preset.remove_setting(&key);
+        let snapshot = preset.clone();
+        refresh_setting_rows(&w, &snapshot);
+        w.set_settings_notice(if removed {
+            "✓ Removed".into()
+        } else {
+            format!("✗ '{key}' was not set").into()
+        });
+    });
+
+    // Callback: Add a custom (non-descriptor) conversion setting
+    let window_weak = window.as_weak();
+    let settings_clone = settings_state.clone();
+    window.on_add_preset_setting(move |key, value| {
+        let Some(w) = window_weak.upgrade() else {
+            return;
+        };
+        let already_known = {
+            let s = settings_clone.borrow();
+            let idx = w.get_selected_preset_index().max(0) as usize;
+            s.conversion_presets.get(idx).is_some_and(|p| {
+                file_converter_core::types::preset_setting_keys(p.output_type)
+                    .iter()
+                    .any(|d| d.key == key.trim())
+            })
+        };
+
+        let key = match validate_custom_setting_key(&key, already_known) {
+            Ok(k) => k,
+            Err(message) => {
+                w.set_settings_notice(format!("✗ {message}").into());
+                return;
+            }
+        };
+
+        let mut s = settings_clone.borrow_mut();
+        let idx = w.get_selected_preset_index().max(0) as usize;
+        let Some(preset) = s.conversion_presets.get_mut(idx) else {
+            return;
+        };
+
+        preset.set_setting_value(&key, value.trim());
+        let snapshot = preset.clone();
+        refresh_setting_rows(&w, &snapshot);
+        w.set_settings_notice("✓ Added".into());
+    });
+
     // Callback: Preset Field Edited
     let window_weak = window.as_weak();
     let settings_clone = settings_state.clone();
@@ -1330,11 +1534,13 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
                     .filter(|str| !str.is_empty())
                     .collect();
 
+                let mut output_type_changed = false;
                 if let Ok(parsed_type) = w
                     .get_edit_output_type()
                     .as_str()
                     .parse::<file_converter_core::types::OutputType>()
                 {
+                    output_type_changed = preset.output_type != parsed_type;
                     preset.output_type = parsed_type;
                 }
                 if let Ok(parsed_act) =
@@ -1353,6 +1559,12 @@ fn run_settings_native_gui(initial_files: Option<Vec<String>>) {
                     1,
                 );
                 w.set_preview_path(preview.into());
+
+                // Rebuilt only on an actual format change: this callback also
+                // fires on every keystroke in the name/template fields.
+                if output_type_changed {
+                    refresh_setting_rows(&w, preset);
+                }
             }
         }
     });
@@ -1493,8 +1705,17 @@ fn run_conversion_gui(
         }
     };
 
-    window.set_dark_mode(is_windows_dark_mode());
-    window.on_toggle_theme(move |_dark| {});
+    window.set_dark_mode(settings.dark_mode.unwrap_or_else(is_windows_dark_mode));
+    // Persist the theme choice immediately: this window has no Save button, and
+    // the previous no-op handler silently discarded the user's choice.
+    let mut theme_settings = settings.clone();
+    let theme_xml_path = Rc::new(get_settings_paths().1);
+    window.on_toggle_theme(move |dark| {
+        theme_settings.dark_mode = Some(dark);
+        if let Err(e) = theme_settings.save_to_file(&*theme_xml_path) {
+            eprintln!("Failed to persist theme preference: {e:?}");
+        }
+    });
     window.set_preset_name(preset_name.into());
     window.set_overall_progress(0.0);
     window.set_overall_status_text("Starting conversion...".into());
@@ -1718,6 +1939,45 @@ fn run_conversion_gui(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_custom_setting_key() {
+        // Accepted: identifier-shaped keys, trimmed.
+        assert_eq!(
+            validate_custom_setting_key("AudioNormalize", false).unwrap(),
+            "AudioNormalize"
+        );
+        assert_eq!(
+            validate_custom_setting_key("  My_Key2  ", false).unwrap(),
+            "My_Key2"
+        );
+
+        // Rejected: empty / whitespace only.
+        assert!(validate_custom_setting_key("", false).is_err());
+        assert!(validate_custom_setting_key("   ", false).is_err());
+
+        // Rejected: characters that would break XML attribute values or the
+        // engines' case-sensitive key lookups.
+        for bad in [
+            "Audio Bitrate",  // space in the middle
+            "Audio/Bitrate",  // path separator
+            "Audio\nBitrate", // newline would inject XML
+            "<Key>",          // markup
+            "Key=1",          // attribute injection
+            "kéy",            // non-ASCII
+            "",
+        ] {
+            assert!(
+                validate_custom_setting_key(bad, false).is_err(),
+                "{bad:?} should have been rejected"
+            );
+        }
+
+        // A key that already has a descriptor must not be added a second time,
+        // otherwise the editor would show two rows fighting over one setting.
+        assert!(validate_custom_setting_key("VideoQuality", true).is_err());
+        assert!(validate_custom_setting_key("VideoQuality", false).is_ok());
+    }
 
     #[test]
     fn test_embedded_default_settings_xml_syntax() {

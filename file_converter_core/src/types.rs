@@ -40,6 +40,259 @@ pub enum OutputType {
     Webp,
 }
 
+/// Metadata for one editable per-preset conversion setting.
+///
+/// The conversion engines read their tuning from free-form string keys in
+/// `ConversionPreset::settings`, but until now nothing in the UI could write
+/// them, so every preset shipped with fixed, untunable values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetSettingKey {
+    /// Key as stored in the preset (and read by the engines).
+    pub key: &'static str,
+    /// Human-readable label shown in the UI.
+    pub label: &'static str,
+    /// Short explanation / accepted range shown under the label.
+    pub hint: &'static str,
+    /// Group heading this setting is presented under.
+    pub group: &'static str,
+    /// Fixed set of accepted values; empty means free text.
+    pub choices: &'static [&'static str],
+}
+
+const CHOICES_TRUE_FALSE: &[&str] = &["True", "False"];
+const CHOICES_ROTATION: &[&str] = &["0", "90", "180", "270"];
+
+const AUDIO_SETTINGS: &[PresetSettingKey] = &[
+    PresetSettingKey {
+        key: "AudioBitrate",
+        label: "Audio bitrate",
+        hint: "Target bitrate in kbit/s",
+        group: "Audio",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "AudioChannelCount",
+        label: "Channels",
+        hint: "0 keeps source layout; also 1, 2, 6, 8",
+        group: "Audio",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "AudioNormalize",
+        label: "Loudness normalise",
+        hint: "EBU R128 normalisation (loudnorm)",
+        group: "Audio",
+        choices: CHOICES_TRUE_FALSE,
+    },
+];
+
+const VIDEO_SETTINGS: &[PresetSettingKey] = &[
+    PresetSettingKey {
+        key: "VideoQuality",
+        label: "Video quality",
+        hint: "1 = smallest, 63 = best",
+        group: "Video",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "VideoScale",
+        label: "Scale",
+        hint: "Multiplier, e.g. 0.5 or 2",
+        group: "Video",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "VideoRotation",
+        label: "Rotation",
+        hint: "Clockwise degrees",
+        group: "Video",
+        choices: CHOICES_ROTATION,
+    },
+    PresetSettingKey {
+        key: "VideoFramesPerSecond",
+        label: "Frame rate",
+        hint: "Frames per second (GIF output)",
+        group: "Video",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "VideoEncodingSpeed",
+        label: "Encoder speed",
+        hint: "UltraFast .. VerySlow (faster = smaller)",
+        group: "Video",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "EnableAudio",
+        label: "Keep audio",
+        hint: "Strip the audio track instead",
+        group: "Video",
+        choices: CHOICES_TRUE_FALSE,
+    },
+];
+
+const IMAGE_SETTINGS: &[PresetSettingKey] = &[
+    PresetSettingKey {
+        key: "ImageScale",
+        label: "Scale",
+        hint: "Multiplier, e.g. 0.5 or 2",
+        group: "Image",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "ImageRotation",
+        label: "Rotation",
+        hint: "Clockwise degrees",
+        group: "Image",
+        choices: CHOICES_ROTATION,
+    },
+    PresetSettingKey {
+        key: "ImageMaximumSize",
+        label: "Max dimension",
+        hint: "Longest edge in pixels, 0 = unlimited",
+        group: "Image",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "ImageClampSizePowerOf2",
+        label: "Round to power of two",
+        hint: "Rounds each axis down to a power of two",
+        group: "Image",
+        choices: CHOICES_TRUE_FALSE,
+    },
+];
+
+const PDF_SETTINGS: &[PresetSettingKey] = &[
+    PresetSettingKey {
+        key: "PdfTargetDpi",
+        label: "Optimise to DPI",
+        hint: "Down-samples embedded images above this DPI",
+        group: "PDF",
+        choices: &[],
+    },
+    PresetSettingKey {
+        key: "PdfJpegQuality",
+        label: "JPEG quality",
+        hint: "1 - 100",
+        group: "PDF",
+        choices: &[],
+    },
+];
+
+const ADVANCED_SETTINGS: &[PresetSettingKey] = &[
+    PresetSettingKey {
+        key: "EnableFFMPEGCustomCommand",
+        label: "Custom FFmpeg command",
+        hint: "Appended verbatim to the FFmpeg invocation",
+        group: "Advanced",
+        choices: CHOICES_TRUE_FALSE,
+    },
+    PresetSettingKey {
+        key: "FFMPEGCustomCommand",
+        label: "FFmpeg arguments",
+        hint: "e.g. -crf 21 -vf \"scale=1280:720\"",
+        group: "Advanced",
+        choices: &[],
+    },
+];
+
+/// Every setting that is meaningful for this output type, in display order.
+pub fn preset_setting_keys(output_type: OutputType) -> Vec<PresetSettingKey> {
+    let mut keys: Vec<PresetSettingKey> = Vec::new();
+
+    match output_type {
+        // Audio containers
+        OutputType::Aac
+        | OutputType::Flac
+        | OutputType::Mp3
+        | OutputType::Ogg
+        | OutputType::Wav => {
+            keys.extend_from_slice(AUDIO_SETTINGS);
+            match output_type {
+                OutputType::Mp3 => keys.push(PresetSettingKey {
+                    key: "AudioEncodingMode",
+                    label: "Encoding mode",
+                    hint: "VBR targets a quality, CBR a bitrate",
+                    group: "Audio",
+                    choices: &["Mp3VBR", "Mp3CBR"],
+                }),
+                OutputType::Wav => keys.push(PresetSettingKey {
+                    key: "AudioEncodingMode",
+                    label: "Sample format",
+                    hint: "Uncompressed PCM depth",
+                    group: "Audio",
+                    choices: &["Wav8", "Wav16", "Wav24", "Wav32"],
+                }),
+                _ => {}
+            }
+        }
+
+        // Video containers
+        OutputType::Avi
+        | OutputType::Mkv
+        | OutputType::Mp4
+        | OutputType::Ogv
+        | OutputType::Webm
+        | OutputType::Gif => {
+            keys.extend_from_slice(VIDEO_SETTINGS);
+            keys.push(PresetSettingKey {
+                key: "AudioBitrate",
+                label: "Audio bitrate",
+                hint: "Target bitrate in kbit/s",
+                group: "Audio",
+                choices: &[],
+            });
+        }
+
+        // Still images
+        OutputType::Avif
+        | OutputType::Ico
+        | OutputType::Jpg
+        | OutputType::Jxl
+        | OutputType::Png
+        | OutputType::Webp => {
+            keys.extend_from_slice(IMAGE_SETTINGS);
+            if output_type == OutputType::Jpg {
+                keys.push(PresetSettingKey {
+                    key: "JpegQuality",
+                    label: "JPEG quality",
+                    hint: "1 - 100",
+                    group: "Image",
+                    choices: &[],
+                });
+            }
+            if output_type == OutputType::Png {
+                keys.push(PresetSettingKey {
+                    key: "OxipngOptimizationLevel",
+                    label: "OxiPNG level",
+                    hint: "1 - 6 (lossless re-compression)",
+                    group: "Image",
+                    choices: &[],
+                });
+            }
+        }
+
+        OutputType::Pdf => keys.extend_from_slice(PDF_SETTINGS),
+        OutputType::Epub | OutputType::Html | OutputType::Txt | OutputType::None => {}
+    }
+
+    keys.extend_from_slice(ADVANCED_SETTINGS);
+
+    // The UI renders a `choices` list as one row of clickable chips, and Slint
+    // 1.9 has no wrapping layout, so a long list would overflow the preset pane.
+    // Demote anything longer to free text; such a descriptor must document the
+    // accepted values in its hint, since no chips will be drawn.
+    const MAX_CHIP_CHOICES: usize = 4;
+    for k in &mut keys {
+        if k.choices.len() > MAX_CHIP_CHOICES {
+            debug_assert!(!k.hint.is_empty(), "{} must document its values", k.key);
+            k.choices = &[];
+        }
+    }
+
+    keys
+}
+
 impl OutputType {
     pub fn extension(&self) -> &'static str {
         match self {

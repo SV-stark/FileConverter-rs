@@ -38,6 +38,19 @@ pub struct Settings {
     #[serde(default)]
     pub auto_start_on_file_drop: bool,
 
+    /// `None` follows the Windows app theme; `Some(true)` forces dark.
+    ///
+    /// Optional so that "not chosen yet" stays distinguishable from an explicit
+    /// choice, which matters because the in-app toggle used to be discarded on
+    /// exit and re-derived from the registry every launch.
+    ///
+    /// `skip_serializing_if` is essential, not cosmetic: quick-xml writes `None`
+    /// as an empty `<DarkMode />` element, and reading that back fails with
+    /// `InvalidBoolean("")`, which would make the settings file unloadable after
+    /// the very first save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark_mode: Option<bool>,
+
     #[serde(rename = "ConversionPreset", default)]
     pub conversion_presets: Vec<ConversionPreset>,
 }
@@ -162,6 +175,17 @@ impl ConversionPreset {
                 value: CompactStr::new(value),
             });
         }
+    }
+
+    /// Drops a setting entirely, returning whether it was present.
+    ///
+    /// Not equivalent to `set_setting_value(key, "")`: several engines read an
+    /// empty value as "use the default", but the key would still be written back
+    /// out to `Settings.user.xml` and keep showing up in the editor.
+    pub fn remove_setting(&mut self, key: &str) -> bool {
+        let before = self.settings.len();
+        self.settings.retain(|s| s.key != key);
+        self.settings.len() != before
     }
 
     pub fn migrate(&mut self, old_version: i32) {

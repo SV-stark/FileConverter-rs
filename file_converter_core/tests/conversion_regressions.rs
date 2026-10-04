@@ -56,12 +56,27 @@ fn test_settings_save_and_reload_roundtrip() {
     settings.maximum_number_of_simultaneous_conversions = 8;
     settings.auto_start_on_file_drop = false;
     settings.copy_files_in_clipboard_after_conversion = true;
+    // Unset: must not emit an empty element, which quick-xml would then fail to
+    // read back as a boolean and make the whole file unloadable.
+    settings.dark_mode = None;
     settings.save_to_file(&xml_path).expect("save settings");
 
     let reloaded = Settings::load_from_file(&xml_path).expect("reload settings");
     assert_eq!(reloaded.maximum_number_of_simultaneous_conversions, 8);
     assert!(!reloaded.auto_start_on_file_drop);
     assert!(reloaded.copy_files_in_clipboard_after_conversion);
+    assert_eq!(reloaded.dark_mode, None);
+
+    // An explicit choice must survive the round-trip in both directions.
+    for choice in [Some(true), Some(false)] {
+        settings.dark_mode = choice;
+        settings.save_to_file(&xml_path).expect("save settings");
+        let reloaded = Settings::load_from_file(&xml_path).expect("reload settings");
+        assert_eq!(
+            reloaded.dark_mode, choice,
+            "theme preference {choice:?} did not round-trip"
+        );
+    }
 
     let _ = std::fs::remove_file(xml_path);
 }
@@ -864,6 +879,180 @@ fn test_preset_input_types_are_enforced_end_to_end() {
     let status = job.status.lock().clone();
     assert!(matches!(status, JobStatus::Failed(_)), "{status:?}");
     let _ = std::fs::remove_file(wav);
+}
+
+#[test]
+fn test_preset_setting_descriptors_cover_every_output_type() {
+    use file_converter_core::types::{OutputType, preset_setting_keys};
+
+    // Every output type must offer at least the Advanced group, otherwise the
+    // editor renders an empty card and the user cannot set anything at all.
+    for ot in [
+        OutputType::Aac,
+        OutputType::Avi,
+        OutputType::Flac,
+        OutputType::Jpg,
+        OutputType::Mp3,
+        OutputType::Mp4,
+        OutputType::Pdf,
+        OutputType::Png,
+        OutputType::Wav,
+        OutputType::None,
+    ] {
+        let keys = preset_setting_keys(ot);
+        assert!(!keys.is_empty(), "{ot:?} has no setting descriptors");
+        assert!(
+            keys.iter().any(|k| k.key == "FFMPEGCustomCommand"),
+            "{ot:?} is missing the Advanced escape hatch"
+        );
+        assert!(
+            keys.iter().all(|k| !k.hint.is_empty()),
+            "{ot:?} has a descriptor without a hint"
+        );
+        // Keys must be unique or the editor would render duplicate rows that
+        // fight over the same underlying setting.
+        let mut seen: Vec<&str> = keys.iter().map(|k| k.key).collect();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "{ot:?} has duplicate descriptor keys");
+    }
+
+    // Format-specific keys must not leak into unrelated formats: a stale
+    // `JpegQuality` on an audio preset would be silently ignored by the engine.
+    let mp3: Vec<&str> = preset_setting_keys(OutputType::Mp3)
+        .iter()
+        .map(|k| k.key)
+        .collect();
+    assert!(mp3.contains(&"AudioEncodingMode"));
+    assert!(!mp3.contains(&"JpegQuality"));
+
+    let jpg: Vec<&str> = preset_setting_keys(OutputType::Jpg)
+        .iter()
+        .map(|k| k.key)
+        .collect();
+    assert!(jpg.contains(&"JpegQuality"));
+    assert!(!jpg.contains(&"AudioEncodingMode"));
+
+    // Slint 1.9 has no wrapping layout, so long choice lists would overflow the
+    // pane; `preset_setting_keys` demotes them to free text.
+    for ot in [
+        OutputType::Mp4,
+        OutputType::Png,
+        OutputType::Wav,
+        OutputType::Jpg,
+    ] {
+        for k in preset_setting_keys(ot) {
+            assert!(
+                k.choices.len() <= 4,
+                "{ot:?}/{} has {} choices and would overflow the editor",
+                k.key,
+                k.choices.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_ui_post_action_strings_are_all_parseable() {
+    // Regression guard: the UI used to send "Recycle", which is not an
+    // `InputPostConversionAction` variant, so the button silently did nothing.
+    // Every string the .slint can emit must parse.
+    for s in ["None", "MoveInArchiveFolder", "Delete"] {
+        assert!(
+            s.parse::<file_converter_core::types::InputPostConversionAction>()
+                .is_ok(),
+            "UI sends {s:?} but it does not parse"
+        );
+    }
+    // And the raw variant names must round-trip for the enum-name comparison the
+    // UI highlight relies on.
+    for action in [
+        file_converter_core::types::InputPostConversionAction::None,
+        file_converter_core::types::InputPostConversionAction::MoveInArchiveFolder,
+        file_converter_core::types::InputPostConversionAction::Delete,
+    ] {
+        let debug = format!("{action:?}");
+        assert_eq!(
+            debug.parse::<file_converter_core::types::InputPostConversionAction>(),
+            Ok(action),
+            "{debug:?} does not round-trip"
+        );
+    }
+}
+
+#[test]
+fn test_remove_setting_distinguishes_absent_from_empty() {
+    let mut p = preset("To Mp3", OutputType::Mp3, &["wav"]);
+    p.set_setting_value("AudioBitrate", "192");
+    assert_eq!(p.get_setting_value("AudioBitrate"), Some("192"));
+
+    assert!(p.remove_setting("AudioBitrate"));
+    assert_eq!(p.get_setting_value("AudioBitrate"), None);
+    assert!(!p.settings.iter().any(|s| s.key == "AudioBitrate"));
+
+    // Removing something absent reports false so the UI can say so.
+    assert!(!p.remove_setting("AudioBitrate"));
+
+    // An empty value is *not* the same as removal: it means "use the default"
+    // but must still round-trip through the XML.
+    p.set_setting_value("AudioBitrate", "");
+    assert_eq!(p.get_setting_value("AudioBitrate"), Some(""));
+    assert!(p.remove_setting("AudioBitrate"));
+}
+
+#[test]
+fn test_preset_setting_descriptors_match_engine_read_keys() {
+    use file_converter_core::types::{OutputType, preset_setting_keys};
+
+    // Guards against a descriptor being added for a key no engine reads: the UI
+    // would offer a control that has no effect.
+    let known: Vec<&str> = vec![
+        "AudioBitrate",
+        "AudioChannelCount",
+        "AudioEncodingMode",
+        "AudioNormalize",
+        "AudioLoudnorm",
+        "EnableAudio",
+        "EnableFFMPEGCustomCommand",
+        "FFMPEGCustomCommand",
+        "ImageClampSizePowerOf2",
+        "ImageMaximumSize",
+        "ImageRotation",
+        "ImageScale",
+        "JpegQuality",
+        "OxipngOptimizationLevel",
+        "PdfJpegQuality",
+        "PdfTargetDpi",
+        "VideoEncodingSpeed",
+        "VideoFramesPerSecond",
+        "VideoQuality",
+        "VideoRotation",
+        "VideoScale",
+    ];
+    for ot in [
+        OutputType::Aac,
+        OutputType::Avi,
+        OutputType::Flac,
+        OutputType::Gif,
+        OutputType::Jpg,
+        OutputType::Mkv,
+        OutputType::Mp3,
+        OutputType::Mp4,
+        OutputType::Ogv,
+        OutputType::Pdf,
+        OutputType::Png,
+        OutputType::Wav,
+        OutputType::Webm,
+    ] {
+        for k in preset_setting_keys(ot) {
+            assert!(
+                known.contains(&k.key),
+                "{ot:?} exposes unknown setting key {:?}",
+                k.key
+            );
+        }
+    }
 }
 
 #[test]
