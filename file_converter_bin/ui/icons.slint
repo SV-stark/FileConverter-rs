@@ -1,0 +1,39 @@
+// Monochrome icon set (Lucide 24x24 stroke geometry, bundled as SVG).
+//
+// One asset per icon, tinted at draw time with `colorize`, so a single file
+// serves both themes. Everything is a compile-checked component: a typo in an
+// icon name is a build error instead of a missing glyph at runtime.
+//
+// Note for `Image.colorize`: the SVG is rasterised at build time and the
+// result is used as an alpha mask, so any stroke colour in the source file
+// works as long as it is opaque.
+
+export component Icon inherits Image {
+    in property <length> size: 16px;
+    in property <color> tint: #000000;
+
+    width: root.size;
+    height: root.size;
+    colorize: root.tint;
+    image-fit: contain;
+    image-rendering: smooth;
+}
+
+export component IconZap inherits Icon { source: @image-url("icons/zap.svg"); }
+export component IconSliders inherits Icon { source: @image-url("icons/sliders.svg"); }
+export component IconHistory inherits Icon { source: @image-url("icons/history.svg"); }
+export component IconSettings inherits Icon { source: @image-url("icons/settings.svg"); }
+export component IconSun inherits Icon { source: @image-url("icons/sun.svg"); }
+export component IconMoon inherits Icon { source: @image-url("icons/moon.svg"); }
+export component IconPlug inherits Icon { source: @image-url("icons/plug.svg"); }
+export component IconSave inherits Icon { source: @image-url("icons/save.svg"); }
+export component IconDownload inherits Icon { source: @image-url("icons/download.svg"); }
+export component IconUpload inherits Icon { source: @image-url("icons/upload.svg"); }
+export component IconPlus inherits Icon { source: @image-url("icons/plus.svg"); }
+export component IconCopy inherits Icon { source: @image-url("icons/copy.svg"); }
+export component IconTrash inherits Icon { source: @image-url("icons/trash.svg"); }
+export component IconFolder inherits Icon { source: @image-url("icons/folder.svg"); }
+export component IconFolderOpen inherits Icon { source: @image-url("icons/folder-open.svg"); }
+export component IconX inherits Icon { source: @image-url("icons/x.svg"); }
+export component IconCheck inherits Icon { source: @image-url("icons/check.svg"); }
+export component IconChevronRight inherits Icon { source: @image-url("icons/chevron-right.svg"); }

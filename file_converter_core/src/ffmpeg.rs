@@ -10,12 +10,12 @@ use std::time::Duration;
 
 static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Duration:\s*(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})")
-        .unwrap()
+        .expect("ffmpeg Duration pattern is a valid regex")
 });
 
 static PROGRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"size=\s*(?P<sz>[0-9]+).*time=(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})\.(?P<ms>[0-9]{2})")
-        .unwrap()
+        .expect("ffmpeg progress pattern is a valid regex")
 });
 
 #[derive(Debug, Clone)]

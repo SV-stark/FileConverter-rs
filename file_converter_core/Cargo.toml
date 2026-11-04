@@ -6,6 +6,9 @@ description = "Core conversion library for FileConverter-rs"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/SV-stark/FileConverter-rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true

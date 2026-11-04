@@ -1,12 +1,15 @@
+//! Windows Explorer context-menu shell extension (in-process COM DLL).
+//!
+//! Implements `IShellExtInit`, `IContextMenu`, `IExplorerCommand`, and
+//! `IShellPropSheetExt` so right-clicking files in Explorer offers the
+//! configured FileConverter conversion presets without leaving the shell.
+
 #![allow(
+    // The `windows` crate's generated COM plumbing forces snake_case / non-CamelCase
+    // identifiers that we cannot rename; this blanket applies only to this FFI crate.
     non_snake_case,
     non_camel_case_types,
-    unsafe_op_in_unsafe_fn,
-    clippy::missing_safety_doc,
-    clippy::collapsible_if,
-    clippy::upper_case_acronyms,
-    clippy::let_and_return,
-    clippy::useless_conversion
+    reason = "Win32 COM FFI surface is generated names we cannot rename"
 )]
 
 use std::ffi::{OsString, c_void};
@@ -20,7 +23,10 @@ use std::time::SystemTime;
 use file_converter_core::settings::{ConversionPreset, Settings};
 use file_converter_core::types::{OutputType, is_preset_applicable_to_file};
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "re-exported for the shell extension's COM interop"
+)]
 mod windows_core {
     pub use windows::core::*;
 }
@@ -79,6 +85,12 @@ static G_DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
 static G_LOCK_COUNT: AtomicU32 = AtomicU32::new(0);
 static G_OBJECT_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// # Safety
+///
+/// COM entry point invoked by the Windows loader under the loader lock when
+/// this DLL is attached to `explorer.exe`. `hinst_dll` must be the module
+/// handle the loader supplied; the function performs no allocation, formatting,
+/// or locking, so the loader-lock invariant is preserved.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(
     hinst_dll: HMODULE,
@@ -96,7 +108,10 @@ pub unsafe extern "system" fn DllMain(
         //
         // Also skip per-thread notifications: this is an in-process COM server
         // and Explorer can attach thousands of threads over a session.
-        let _ = DisableThreadLibraryCalls(hinst_dll);
+        // SAFETY: `hinst_dll` is the loader-supplied module handle for this DLL.
+        unsafe {
+            let _ = DisableThreadLibraryCalls(hinst_dll);
+        }
     }
     1
 }
@@ -566,6 +581,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             return Err(E_FAIL.into());
         }
 
+        // SAFETY: `pici` was null-checked immediately before this block; the COM
+        // runtime owns `CMINVOKECOMMANDINFO` for the duration of the call and it
+        // is not mutated while we read `lpVerb`, so the field read is valid.
         let verb_val = unsafe { (*pici).lpVerb.0 as usize };
         if verb_val >> 16 != 0 {
             return Err(E_FAIL.into());
@@ -879,6 +897,9 @@ fn get_bin_path() -> PathBuf {
     let dll_hinst = G_DLL_INSTANCE.load(Ordering::Relaxed);
     if dll_hinst != 0 {
         let mut buf = vec![0u16; 512];
+        // SAFETY: `dll_hinst` came from the module handle captured in `DllMain`,
+        // which we store only when non-zero; `buf` is a valid writable 512-WCHAR
+        // buffer that outlives the call and `GetModuleFileNameW` null-terminates.
         let len = unsafe { GetModuleFileNameW(HMODULE(dll_hinst as *mut c_void), &mut buf) };
         if len > 0 {
             let dll_path = wide_to_path(&buf);
@@ -934,6 +955,8 @@ impl IClassFactory_Impl for FileConverterClassFactory_Impl {
 
         // COM requires the out-parameter to be NULL on failure; `query` only
         // writes it on success, so clear it up front.
+        // The null-out is ownership transfer to COM, which owns `ppvobject` for
+        // the duration of the call; we only write, never read through it.
         if !ppvobject.is_null() {
             unsafe { *ppvobject = std::ptr::null_mut() };
         }
@@ -967,6 +990,11 @@ impl IClassFactory_Impl for FileConverterClassFactory_Impl {
     }
 }
 
+/// # Safety
+///
+/// COM entry point. The caller (the COM runtime) must supply valid,
+/// non-null `rclsid` / `riid` GUID pointers and a non-null `ppv` out-pointer
+/// for the class factory. All three are null-checked before any dereference.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -976,16 +1004,28 @@ pub unsafe extern "system" fn DllGetClassObject(
     if ppv.is_null() || rclsid.is_null() || riid.is_null() {
         return E_FAIL;
     }
-    *ppv = std::ptr::null_mut();
+    // SAFETY: the COM runtime owns `ppv` / `rclsid` / `riid` for the duration
+    // of the call and they were null-checked above; this function only reads
+    // the GUIDs and writes the out-pointer.
+    unsafe {
+        *ppv = std::ptr::null_mut();
 
-    if *rclsid != CLSID_FILE_CONVERTER {
-        return CLASS_E_CLASSNOTAVAILABLE;
+        if *rclsid != CLSID_FILE_CONVERTER {
+            return CLASS_E_CLASSNOTAVAILABLE;
+        }
     }
 
     let factory: IClassFactory = FileConverterClassFactory.into();
-    factory.query(riid, ppv)
+    // SAFETY: `riid` and `ppv` are the caller-supplied out-parameters checked
+    // non-null above, and `factory` is alive for the whole query.
+    unsafe { factory.query(riid, ppv) }
 }
 
+/// # Safety
+///
+/// COM entry point. The caller must be the COM runtime only; the function
+/// takes no pointers and only reads the atomic lock/object counters, so no
+/// caller-owned memory is dereferenced.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     if G_LOCK_COUNT.load(Ordering::Relaxed) == 0 && G_OBJECT_COUNT.load(Ordering::Relaxed) == 0 {
@@ -995,6 +1035,11 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
+/// # Safety
+///
+/// COM entry point invoked by `regsvr32.exe` to register this DLL. The
+/// caller must be the COM runtime only; the function takes no pointers,
+/// so no caller-owned memory is dereferenced.
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
@@ -1006,7 +1051,10 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     if hmodule != 0 {
         let mut buf = vec![0u16; 512];
-        let len = GetModuleFileNameW(HMODULE(hmodule as *mut c_void), &mut buf);
+        // SAFETY: `hmodule` is the module handle captured in `DllMain` and is
+        // only stored when non-zero; `buf` is a valid writable 512-WCHAR buffer
+        // that outlives the call and `GetModuleFileNameW` null-terminates it.
+        let len = unsafe { GetModuleFileNameW(HMODULE(hmodule as *mut c_void), &mut buf) };
         if len > 0 {
             module_path = wide_to_path(&buf);
         }
@@ -1014,9 +1062,14 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 
     if module_path.as_os_str().is_empty() {
         let dll_name: Vec<u16> = "file_converter_shell.dll\0".encode_utf16().collect();
-        if let Ok(h) = GetModuleHandleW(windows::core::PCWSTR(dll_name.as_ptr())) {
+        // SAFETY: `dll_name` is a valid null-terminated UTF-16 buffer that
+        // outlives the call; the returned `HMODULE` is either null (failure,
+        // handled by the `Ok` arm) or a live module handle.
+        if let Ok(h) = unsafe { GetModuleHandleW(windows::core::PCWSTR(dll_name.as_ptr())) } {
             let mut buf = vec![0u16; 512];
-            let len = GetModuleFileNameW(h, &mut buf);
+            // SAFETY: `h` is a valid module handle as above; `buf` lifetime and
+            // null-termination match `GetModuleFileNameW`'s contract.
+            let len = unsafe { GetModuleFileNameW(h, &mut buf) };
             if len > 0 {
                 module_path = wide_to_path(&buf);
             }
@@ -1192,7 +1245,12 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
         dbg_log!("Could not write HKLM Approved entry (needs elevation)");
     }
 
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    // SAFETY: `SHChangeNotify` takes no caller-owned pointers; the
+    // `None` arguments map to valid nulls and the shell notification is
+    // non-blocking and thread-safe.
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
 
     if write_failed {
         dbg_log!("Shell extension registration completed with errors");
@@ -1202,6 +1260,11 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     S_OK
 }
 
+/// # Safety
+///
+/// COM entry point invoked by `regsvr32.exe` to unregister this DLL. The
+/// caller must be the COM runtime only; the function takes no pointers,
+/// so no caller-owned memory is dereferenced.
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
@@ -1269,7 +1332,12 @@ pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
         let _ = key.delete_value(clsid_str);
     }
 
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    // SAFETY: `SHChangeNotify` takes no caller-owned pointers; the
+    // `None` arguments map to valid nulls and the shell notification is
+    // non-blocking and thread-safe.
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
 
     S_OK
 }

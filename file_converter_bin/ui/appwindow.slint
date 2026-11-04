@@ -1,4 +1,17 @@
-import { Button, LineEdit, ScrollView, ProgressIndicator, CheckBox } from "std-widgets.slint";
+// ---------------------------------------------------------------------------
+// FileConverter-rs UI.
+//
+// Structure: tokens (theme.slint) -> primitives (components.slint) -> rows
+// defined once at the bottom of this file -> two windows.
+//
+// Every colour comes from Theme, every control from components.slint. Nothing
+// below contains a raw hex value or a hand-built button.
+// ---------------------------------------------------------------------------
+
+import { LineEdit, ScrollView, ProgressIndicator, CheckBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ButtonKind, UiBadge, UiButton, UiCard, UiChip, UiDivider, UiFieldLabel, UiIconButton } from "components.slint";
+import { Icon, IconCopy, IconDownload, IconFolder, IconFolderOpen, IconMoon, IconPlug, IconPlus, IconSave, IconSun, IconTrash, IconUpload, IconX, IconZap } from "icons.slint";
 
 export struct PresetData {
     original_index: int,
@@ -43,13 +56,269 @@ export struct PresetSettingData {
     is_group_start: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Rows and small local composites
+// ---------------------------------------------------------------------------
+
+component NavTab inherits Rectangle {
+    in property <bool> dark: false;
+    in property <bool> selected: false;
+    in property <string> text <=> lbl.text;
+    in property <image> icon;
+    callback clicked();
+
+    height: 32px;
+    border-radius: Theme.r-sm;
+    background: root.selected ? Theme.accentSoft(root.dark) : transparent;
+    animate background { duration: Theme.fast; easing: ease-out; }
+
+    HorizontalLayout {
+        alignment: center;
+        padding-left: Theme.s-3;
+        padding-right: Theme.s-3;
+        spacing: Theme.s-2;
+
+        Icon {
+            source: root.icon;
+            size: 14px;
+            tint: root.selected ? Theme.accent(root.dark) : Theme.textMute(root.dark);
+        }
+
+        lbl := Text {
+            font-size: Theme.t-md;
+            font-weight: root.selected ? Theme.w-semibold : Theme.w-medium;
+            color: root.selected ? Theme.accent(root.dark) : Theme.textDim(root.dark);
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected : { background: Theme.surface3(root.dark); }
+    ]
+}
+
+component PresetRow inherits Rectangle {
+    in property <bool> dark: false;
+    in property <bool> selected: false;
+    in property <PresetData> data;
+    callback clicked();
+
+    height: 52px;
+    border-radius: Theme.r-sm;
+    background: root.selected ? Theme.accentSoft(root.dark) : Theme.surface2(root.dark);
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent(root.dark) : Theme.border(root.dark);
+    animate background { duration: Theme.fast; easing: ease-out; }
+    animate border-color { duration: Theme.fast; easing: ease-out; }
+
+    HorizontalLayout {
+        padding-left: Theme.s-3;
+        padding-right: Theme.s-2;
+        spacing: Theme.s-2;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.data.name;
+                font-size: Theme.t-md;
+                font-weight: Theme.w-semibold;
+                color: Theme.text(root.dark);
+                overflow: elide;
+            }
+            Text {
+                text: root.data.output_ext + " · " + root.data.input_types;
+                font-size: Theme.t-sm;
+                color: Theme.textMute(root.dark);
+                overflow: elide;
+                // Caps the minimum width so the elide above can take effect
+                // instead of inflating the 320px sidebar.
+                max-width: 210px;
+            }
+        }
+
+        UiChip {
+            text: root.data.category;
+            dark: root.dark;
+            h: 22px;
+            horizontal-stretch: 0;
+            interactive: false;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected : { background: Theme.surface3(root.dark); }
+    ]
+}
+
+component HistoryRow inherits Rectangle {
+    in property <bool> dark: false;
+    in property <HistoryItemData> data;
+
+    height: 54px;
+    border-radius: Theme.r-sm;
+    background: Theme.surface2(root.dark);
+    border-width: 1px;
+    border-color: Theme.border(root.dark);
+
+    HorizontalLayout {
+        padding-left: Theme.s-4;
+        padding-right: Theme.s-4;
+        spacing: Theme.s-3;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.data.preset_name + " · " + root.data.timestamp;
+                font-size: Theme.t-md;
+                font-weight: Theme.w-semibold;
+                color: Theme.text(root.dark);
+            }
+            Text {
+                text: root.data.input_path;
+                font-size: Theme.t-sm;
+                color: Theme.textMute(root.dark);
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s-1;
+            alignment: center;
+            horizontal-stretch: 0;
+
+            Icon {
+                source: root.data.status == "Done" ? @image-url("icons/check.svg") : @image-url("icons/x.svg");
+                size: 13px;
+                tint: root.data.status == "Done" ? Theme.success(root.dark) : Theme.danger(root.dark);
+            }
+            Text {
+                text: root.data.status;
+                font-size: Theme.t-base;
+                font-weight: Theme.w-semibold;
+                vertical-alignment: center;
+                color: root.data.status == "Done" ? Theme.success(root.dark) : Theme.danger(root.dark);
+            }
+        }
+    }
+}
+
+component JobRow inherits Rectangle {
+    in property <bool> dark: false;
+    in property <JobProgressData> data;
+    callback cancel(int);
+
+    height: 62px;
+    border-radius: Theme.r-sm;
+    background: Theme.surface2(root.dark);
+    border-width: 1px;
+    border-color: Theme.border(root.dark);
+
+    VerticalLayout {
+        padding-left: Theme.s-4;
+        padding-right: Theme.s-4;
+        padding-top: Theme.s-2;
+        padding-bottom: Theme.s-2;
+        spacing: Theme.s-1;
+
+        HorizontalLayout {
+            alignment: space-between;
+            spacing: Theme.s-2;
+
+            Text {
+                text: root.data.input_file_name;
+                font-size: Theme.t-md;
+                font-weight: Theme.w-medium;
+                color: Theme.text(root.dark);
+                overflow: elide;
+            }
+
+            UiBadge {
+                text: root.data.status_text;
+                horizontal-stretch: 0;
+                fg: root.data.is_done ? Theme.success(root.dark)
+                    : root.data.is_failed ? Theme.danger(root.dark)
+                    : Theme.accent(root.dark);
+                bg: root.data.is_done ? Theme.successSoft(root.dark)
+                    : root.data.is_failed ? Theme.dangerSoft(root.dark)
+                    : Theme.accentSoft(root.dark);
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s-2;
+            alignment: space-between;
+
+            ProgressIndicator {
+                progress: root.data.progress;
+                horizontal-stretch: 1;
+            }
+
+            if !root.data.is_done && !root.data.is_failed : UiButton {
+                text: "Cancel";
+                kind: ButtonKind.Ghost;
+                dark: root.dark;
+                h: 24px;
+                pad-x: Theme.s-2;
+                has-icon: true;
+                icon: @image-url("icons/x.svg");
+                clicked => { root.cancel(root.data.id); }
+            }
+        }
+    }
+}
+
+// A single toggleable preference block.
+component PrefCard inherits UiCard {
+    in property <string> title;
+    in property <string> hint;
+    in-out property <bool> checked;
+    callback toggled(bool);
+
+    pad: Theme.s-4;
+    gap: Theme.s-2;
+    fill: Theme.surface2(root.dark);
+    radius: Theme.r-md;
+
+    CheckBox {
+        text: root.title;
+        checked <=> root.checked;
+        toggled => { root.toggled(self.checked); }
+    }
+    Text {
+        text: root.hint;
+        font-size: Theme.t-base;
+        color: Theme.textMute(root.dark);
+        wrap: word-wrap;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings & Preset Studio
+// ---------------------------------------------------------------------------
+
 export component SettingsWindow inherits Window {
-    title: "⚡ File Converter Settings & Studio";
+    title: "File Converter — Settings & Studio";
     preferred-width: 1280px;
-    preferred-height: 760px;
+    preferred-height: 800px;
     min-width: 1180px;
     min-height: 620px;
-    background: root.dark_mode ? #0b0f19 : #f1f5f9;
+    default-font-family: "Segoe UI Variable Text";
+    default-font-size: Theme.t-md;
+    background: Theme.bg(root.dark_mode);
 
     in-out property <bool> dark_mode: false;
     in-out property <int> active_tab: 0; // 0: Presets & Studio, 1: History Log, 2: Preferences
@@ -117,1266 +386,877 @@ export component SettingsWindow inherits Window {
     callback add_preset_setting(string, string);
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        padding: Theme.s-4;
+        spacing: Theme.s-3;
 
-        // Top Modern Navigation Bar
+        // -------------------------------------------------------------- nav
         Rectangle {
             height: 56px;
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
+            border-radius: Theme.r-lg;
+            background: Theme.surface(root.dark_mode);
             border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
+            border-color: Theme.border(root.dark_mode);
+            drop-shadow-color: Theme.shadow(root.dark_mode);
+            drop-shadow-blur: 14px;
+            drop-shadow-offset-y: 1px;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 18px;
-                // `space-between` pushed the action buttons to the far right of a
-                // container that can be wider than the window, which put "Save" and
-                // "Shell Integration" completely out of reach. Start-aligned keeps
-                // them next to the tabs at any window size.
+                padding-left: Theme.s-4;
+                padding-right: Theme.s-2;
+                spacing: Theme.s-3;
+                // `space-between` pushed the action buttons past the window
+                // edge, so the row stays start-aligned and the actions are
+                // pushed right by a stretch spacer instead.
                 alignment: start;
 
                 HorizontalLayout {
-                    spacing: 14px;
-                    alignment: start;
+                    spacing: Theme.s-2;
+                    alignment: center;
+                    horizontal-stretch: 0;
 
-                    // Brand Badge
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: center;
-                        Text {
-                            text: "⚡";
-                            font-size: 20px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "File Converter";
-                            font-size: 17px;
-                            font-weight: 800;
-                            color: root.dark_mode ? #f8fafc : #0f172a;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Rectangle { width: 1px; background: root.dark_mode ? #26334d : #e2e8f0; height: 26px; }
-
-                    // Navigation Tabs
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: center;
-
-                        Rectangle {
-                            height: 34px;
-                            border-radius: 6px;
-                            background: root.active_tab == 0 ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                Text {
-                                    text: "🎛️ Presets";
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: root.active_tab == 0 ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_tab = 0; } }
-                        }
-
-                        Rectangle {
-                            height: 34px;
-                            border-radius: 6px;
-                            background: root.active_tab == 1 ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                Text {
-                                    text: "📜 History";
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: root.active_tab == 1 ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_tab = 1; } }
-                        }
-
-                        Rectangle {
-                            height: 34px;
-                            border-radius: 6px;
-                            background: root.active_tab == 2 ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                Text {
-                                    text: "⚙️ Preferences";
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: root.active_tab == 2 ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_tab = 2; } }
-                        }
-                    }
-                }
-
-                // Header Action Controls
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: end;
-
-                    // Theme Toggle Button
                     Rectangle {
-                        height: 34px;
-                        horizontal-stretch: 0;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #26334d : #e2e8f0;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #384969 : #cbd5e1;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            Text {
-                                text: root.dark_mode ? "☀️ Light" : "🌙 Dark";
-                                font-size: 12px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #f1f5f9 : #1e293b;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea {
-                            clicked => {
-                                root.dark_mode = !root.dark_mode;
-                                root.toggle_theme(root.dark_mode);
-                            }
+                        width: 28px;
+                        height: 28px;
+                        border-radius: Theme.r-xs;
+                        background: Theme.accentSoft(root.dark_mode);
+
+                        IconZap {
+                            size: 15px;
+                            tint: Theme.accent(root.dark_mode);
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
                         }
                     }
 
-                    // Shell Extension Button
-                    Rectangle {
-                        height: 34px;
-                        horizontal-stretch: 0;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #1e293b : #f1f5f9;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #334155 : #cbd5e1;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            Text {
-                                text: "🔌 Shell Integration";
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: root.dark_mode ? #e2e8f0 : #334155;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea { clicked => { root.register_shell(); } }
-                    }
-
-                    // Save Settings Button
-                    Rectangle {
-                        height: 34px;
-                        horizontal-stretch: 0;
-                        border-radius: 6px;
-                        background: #2563eb;
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            Text {
-                                text: "💾 Save";
-                                font-size: 13px;
-                                font-weight: 700;
-                                color: #ffffff;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea { clicked => { root.save_settings(); } }
-                    }
-                }
-            }
-        }
-
-        // Update Notification Banner
-        if root.update_available_text != "" : Rectangle {
-            height: 40px;
-            background: root.dark_mode ? #451a03 : #fef3c7;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: root.dark_mode ? #78350f : #fde68a;
-
-            HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 14px;
-                alignment: space-between;
-                Text {
-                    text: root.update_available_text;
-                    font-size: 13px;
-                    color: root.dark_mode ? #fed7aa : #92400e;
-                    font-weight: 700;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    height: 28px;
-                    border-radius: 6px;
-                    background: #d97706;
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        Text {
-                            text: "🚀 Download Update";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: #ffffff;
-                            vertical-alignment: center;
-                        }
-                    }
-                    TouchArea { clicked => { root.open_update_url(root.update_download_url); } }
-                }
-            }
-        }
-
-        // Status Feedback Bar
-        if root.status_msg != "" : Rectangle {
-            height: 32px;
-            background: root.dark_mode ? #0c2d48 : #e0f2fe;
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: root.dark_mode ? #145374 : #bae6fd;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                Text {
-                    text: root.status_msg;
-                    font-size: 12px;
-                    color: root.dark_mode ? #7dd3fc : #0369a1;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        // Active File Selection Quick-Action Banner
-        if root.pending_files_count > 0 : Rectangle {
-            height: 52px;
-            background: root.dark_mode ? #064e3b : #ecfdf5;
-            border-radius: 8px;
-            border-width: 1.5px;
-            border-color: #10b981;
-
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                alignment: space-between;
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: start;
                     Text {
-                        text: "📁 " + root.pending_files_count + " file(s) ready: " + root.pending_files_summary;
-                        font-size: 13px;
-                        font-weight: 700;
-                        color: root.dark_mode ? #a7f3d0 : #065f46;
+                        text: "File Converter";
+                        font-size: Theme.t-lg;
+                        font-weight: Theme.w-semibold;
+                        color: Theme.text(root.dark_mode);
                         vertical-alignment: center;
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: end;
+                Rectangle {
+                    width: 1px;
+                    height: 22px;
+                    background: Theme.border(root.dark_mode);
+                    vertical-stretch: 0;
+                }
 
-                    Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: #10b981;
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            Text {
-                                text: "⚡ Convert with " + root.edit_name;
-                                font-size: 13px;
-                                font-weight: 700;
-                                color: #ffffff;
-                                vertical-alignment: center;
-                            }
+                // Navigation tabs
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    alignment: center;
+                    horizontal-stretch: 0;
+
+                    NavTab {
+                        text: "Presets";
+                        icon: @image-url("icons/sliders.svg");
+                        dark: root.dark_mode;
+                        selected: root.active_tab == 0;
+                        clicked => { root.active_tab = 0; }
+                    }
+                    NavTab {
+                        text: "History";
+                        icon: @image-url("icons/history.svg");
+                        dark: root.dark_mode;
+                        selected: root.active_tab == 1;
+                        clicked => { root.active_tab = 1; }
+                    }
+                    NavTab {
+                        text: "Preferences";
+                        icon: @image-url("icons/settings.svg");
+                        dark: root.dark_mode;
+                        selected: root.active_tab == 2;
+                        clicked => { root.active_tab = 2; }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Header actions
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    alignment: end;
+                    horizontal-stretch: 0;
+
+                    UiIconButton {
+                        icon: root.dark_mode ? @image-url("icons/sun.svg") : @image-url("icons/moon.svg");
+                        dark: root.dark_mode;
+                        clicked => {
+                            root.dark_mode = !root.dark_mode;
+                            root.toggle_theme(root.dark_mode);
                         }
-                        TouchArea { clicked => { root.start_pending_conversion(); } }
                     }
 
-                    Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #1e293b : #ffffff;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #475569 : #cbd5e1;
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            Text {
-                                text: "✕ Clear";
-                                font-size: 12px;
-                                font-weight: 600;
-                                color: root.dark_mode ? #cbd5e1 : #475569;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea { clicked => { root.clear_pending_files(); } }
+                    UiButton {
+                        text: "Shell integration";
+                        kind: ButtonKind.Ghost;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/plug.svg");
+                        clicked => { root.register_shell(); }
+                    }
+
+                    UiButton {
+                        text: "Save";
+                        kind: ButtonKind.Primary;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/save.svg");
+                        clicked => { root.save_settings(); }
                     }
                 }
             }
         }
 
-        // Tab 0: Presets & Studio
+        // ------------------------------------------------------- update banner
+        if root.update_available_text != "" : Rectangle {
+            height: 42px;
+            background: Theme.warnSoft(root.dark_mode);
+            border-radius: Theme.r-md;
+            border-width: 1px;
+            border-color: Theme.warn(root.dark_mode);
+
+            HorizontalLayout {
+                padding-left: Theme.s-4;
+                padding-right: Theme.s-2;
+                alignment: space-between;
+
+                Text {
+                    text: root.update_available_text;
+                    font-size: Theme.t-md;
+                    font-weight: Theme.w-medium;
+                    color: Theme.warn(root.dark_mode);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                UiButton {
+                    text: "Download update";
+                    kind: ButtonKind.Ghost;
+                    dark: root.dark_mode;
+                    h: 28px;
+                    has-icon: true;
+                    icon: @image-url("icons/download.svg");
+                    clicked => { root.open_update_url(root.update_download_url); }
+                }
+            }
+        }
+
+        // ------------------------------------------------------- status line
+        if root.status_msg != "" : Rectangle {
+            height: 30px;
+            background: Theme.accentSoft(root.dark_mode);
+            border-radius: Theme.r-sm;
+
+            HorizontalLayout {
+                padding-left: Theme.s-3;
+                padding-right: Theme.s-3;
+                Text {
+                    text: root.status_msg;
+                    font-size: Theme.t-base;
+                    font-weight: Theme.w-medium;
+                    color: Theme.accent(root.dark_mode);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // --------------------------------------------- staged files quick bar
+        if root.pending_files_count > 0 : Rectangle {
+            height: 52px;
+            background: Theme.successSoft(root.dark_mode);
+            border-radius: Theme.r-md;
+            border-width: 1px;
+            border-color: Theme.success(root.dark_mode);
+
+            HorizontalLayout {
+                padding-left: Theme.s-4;
+                padding-right: Theme.s-2;
+                spacing: Theme.s-3;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: Theme.s-2;
+                    alignment: start;
+
+                    IconFolder {
+                        size: 15px;
+                        tint: Theme.success(root.dark_mode);
+                    }
+                    Text {
+                        text: root.pending_files_count + " file(s) ready · " + root.pending_files_summary;
+                        font-size: Theme.t-md;
+                        font-weight: Theme.w-medium;
+                        color: Theme.success(root.dark_mode);
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    alignment: end;
+                    horizontal-stretch: 0;
+
+                    UiButton {
+                        text: "Convert with " + root.edit_name;
+                        kind: ButtonKind.Primary;
+                        dark: root.dark_mode;
+                        h: 30px;
+                        has-icon: true;
+                        icon: @image-url("icons/zap.svg");
+                        clicked => { root.start_pending_conversion(); }
+                    }
+
+                    UiButton {
+                        text: "Clear";
+                        kind: ButtonKind.Ghost;
+                        dark: root.dark_mode;
+                        h: 30px;
+                        has-icon: true;
+                        icon: @image-url("icons/x.svg");
+                        clicked => { root.clear_pending_files(); }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------ tab 0: studio
         if root.active_tab == 0 : HorizontalLayout {
-            spacing: 14px;
+            spacing: Theme.s-3;
 
-            // Left Sidebar: Presets Library & Category Filter
-            Rectangle {
+            // ---- sidebar: preset library
+            UiCard {
                 width: 320px;
-                background: root.dark_mode ? #161e2e : #ffffff;
-                border-radius: 10px;
-                border-width: 1px;
-                border-color: root.dark_mode ? #26334d : #e2e8f0;
+                horizontal-stretch: 0;
+                dark: root.dark_mode;
+                pad: Theme.s-3;
+                gap: Theme.s-2;
 
-                VerticalLayout {
-                    padding: 14px;
-                    spacing: 10px;
+                LineEdit {
+                    placeholder-text: "Search presets or formats...";
+                    text <=> root.search_query;
+                    edited(text) => { root.search_query_changed(text); }
+                }
 
-                    // Search Line
-                    LineEdit {
-                        placeholder-text: "🔍 Search presets or formats...";
-                        text <=> root.search_query;
-                        edited(text) => { root.search_query_changed(text); }
+                // Category filter. Split over two rows: five chips do not fit
+                // in the 320px sidebar and were being clipped.
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    alignment: start;
+
+                    UiChip {
+                        text: "All";
+                        dark: root.dark_mode;
+                        selected: root.active_category == "All";
+                        clicked => { root.active_category = "All"; root.filter_category_changed("All"); }
                     }
-
-                    // Category Filter Chips
-                    HorizontalLayout {
-                        spacing: 4px;
-                        alignment: start;
-
-                        Rectangle {
-                            height: 26px;
-                            border-radius: 13px;
-                            background: root.active_category == "All" ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "All";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.active_category == "All" ? #ffffff : (root.dark_mode ? #94a3b8 : #64748b);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_category = "All"; root.filter_category_changed("All"); } }
-                        }
-
-                        Rectangle {
-                            height: 26px;
-                            border-radius: 13px;
-                            background: root.active_category == "Audio" ? #8b5cf6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "🎵 Audio";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.active_category == "Audio" ? #ffffff : (root.dark_mode ? #94a3b8 : #64748b);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_category = "Audio"; root.filter_category_changed("Audio"); } }
-                        }
-
-                        Rectangle {
-                            height: 26px;
-                            border-radius: 13px;
-                            background: root.active_category == "Video" ? #ec4899 : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "🎬 Video";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.active_category == "Video" ? #ffffff : (root.dark_mode ? #94a3b8 : #64748b);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_category = "Video"; root.filter_category_changed("Video"); } }
-                        }
-
-                        Rectangle {
-                            height: 26px;
-                            border-radius: 13px;
-                            background: root.active_category == "Image" ? #10b981 : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "🖼️ Image";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.active_category == "Image" ? #ffffff : (root.dark_mode ? #94a3b8 : #64748b);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_category = "Image"; root.filter_category_changed("Image"); } }
-                        }
-
-                        Rectangle {
-                            height: 26px;
-                            border-radius: 13px;
-                            background: root.active_category == "Doc" ? #f59e0b : (root.dark_mode ? #1e293b : #f1f5f9);
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "📄 Doc";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.active_category == "Doc" ? #ffffff : (root.dark_mode ? #94a3b8 : #64748b);
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.active_category = "Doc"; root.filter_category_changed("Doc"); } }
-                        }
+                    UiChip {
+                        text: "Audio";
+                        dark: root.dark_mode;
+                        tone: Theme.catAudio(root.dark_mode);
+                        selected: root.active_category == "Audio";
+                        clicked => { root.active_category = "Audio"; root.filter_category_changed("Audio"); }
                     }
-
-                    HorizontalLayout {
-                        alignment: space-between;
-                        Text {
-                            text: "Presets (" + root.presets.length + ")";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: root.dark_mode ? #94a3b8 : #64748b;
-                        }
+                    UiChip {
+                        text: "Video";
+                        dark: root.dark_mode;
+                        tone: Theme.catVideo(root.dark_mode);
+                        selected: root.active_category == "Video";
+                        clicked => { root.active_category = "Video"; root.filter_category_changed("Video"); }
                     }
+                }
 
-                    // Presets Scrollable Cards List
-                    ScrollView {
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    alignment: start;
+
+                    UiChip {
+                        text: "Image";
+                        dark: root.dark_mode;
+                        tone: Theme.catImage(root.dark_mode);
+                        selected: root.active_category == "Image";
+                        clicked => { root.active_category = "Image"; root.filter_category_changed("Image"); }
+                    }
+                    UiChip {
+                        text: "Doc";
+                        dark: root.dark_mode;
+                        tone: Theme.catDoc(root.dark_mode);
+                        selected: root.active_category == "Doc";
+                        clicked => { root.active_category = "Doc"; root.filter_category_changed("Doc"); }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Presets";
+                        font-size: Theme.t-base;
+                        font-weight: Theme.w-semibold;
+                        color: Theme.textMute(root.dark_mode);
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.presets.length + "";
+                        font-size: Theme.t-base;
+                        font-weight: Theme.w-semibold;
+                        color: Theme.textMute(root.dark_mode);
+                        vertical-alignment: center;
+                    }
+                }
+
+                ScrollView {
                     min-width: 0px;
-                        // Keep the declared 320px sidebar width: without this the
-                        // elided preset subtitle's minimum width inflates the
-                        // whole sidebar and steals space from the studio pane.
 
-                        VerticalLayout {
-                            spacing: 5px;
-                            for preset[index] in root.presets : Rectangle {
-                                height: 50px;
-                                border-radius: 8px;
-                                background: (preset.original_index == root.selected_preset_index)
-                                    ? (root.dark_mode ? #1e3a8a : #dbeafe)
-                                    : (root.dark_mode ? #111827 : #f8fafc);
-                                border-width: 1.5px;
-                                border-color: (preset.original_index == root.selected_preset_index)
-                                    ? #3b82f6
-                                    : (root.dark_mode ? #1f2937 : #e2e8f0);
-
-                                TouchArea {
-                                    clicked => {
-                                        root.selected_preset_index = preset.original_index;
-                                        root.select_preset(preset.original_index);
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    padding-left: 12px;
-                                    padding-right: 12px;
-                                    spacing: 8px;
-                                    alignment: space-between;
-
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 2px;
-                                        Text {
-                                            text: preset.name;
-                                            font-size: 13px;
-                                            font-weight: 700;
-                                            color: root.dark_mode ? #f8fafc : #0f172a;
-                                        }
-                                        Text {
-                                            text: "→ " + preset.output_ext + " • " + preset.input_types;
-                                            font-size: 11px;
-                                            color: root.dark_mode ? #94a3b8 : #64748b;
-                                            overflow: elide;
-                                            // Caps the minimum width, so the elide
-                                            // above can actually take effect.
-                                            max-width: 222px;
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        background: root.dark_mode ? #1f2937 : #e2e8f0;
-                                        border-radius: 4px;
-                                        height: 22px;
-                                        HorizontalLayout {
-                                            padding-left: 6px;
-                                            padding-right: 6px;
-                                            Text {
-                                                text: preset.category;
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                color: root.dark_mode ? #cbd5e1 : #475569;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
+                    VerticalLayout {
+                        spacing: Theme.s-1;
+                        for preset in root.presets : PresetRow {
+                            data: preset;
+                            dark: root.dark_mode;
+                            selected: preset.original_index == root.selected_preset_index;
+                            clicked => {
+                                root.selected_preset_index = preset.original_index;
+                                root.select_preset(preset.original_index);
                             }
                         }
                     }
+                }
 
-                    // Preset Operations Toolbar
-                    HorizontalLayout {
-                        spacing: 4px;
+                UiDivider { dark: root.dark_mode; }
 
-                        Rectangle {
-                            height: 32px;
-                            border-radius: 6px;
-                            background: root.dark_mode ? #1e293b : #f1f5f9;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #334155 : #cbd5e1;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "➕ New";
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #f1f5f9 : #1e293b;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.new_preset(); } }
-                        }
-
-                        Rectangle {
-                            height: 32px;
-                            border-radius: 6px;
-                            background: root.dark_mode ? #1e293b : #f1f5f9;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #334155 : #cbd5e1;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "📋 Clone";
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #f1f5f9 : #1e293b;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.duplicate_preset(root.selected_preset_index); } }
-                        }
-
-                        Rectangle {
-                            height: 32px;
-                            border-radius: 6px;
-                            background: root.dark_mode ? #450a0a : #fee2e2;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #7f1d1d : #fca5a5;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "🗑️ Delete";
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #fca5a5 : #b91c1c;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.delete_preset(root.selected_preset_index); } }
-                        }
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    UiButton {
+                        text: "New";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        h: 30px;
+                        pad-x: Theme.s-2;
+                        has-icon: true;
+                        icon: @image-url("icons/plus.svg");
+                        clicked => { root.new_preset(); }
                     }
+                    UiButton {
+                        text: "Clone";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        h: 30px;
+                        pad-x: Theme.s-2;
+                        has-icon: true;
+                        icon: @image-url("icons/copy.svg");
+                        clicked => { root.duplicate_preset(root.selected_preset_index); }
+                    }
+                    UiButton {
+                        text: "Delete";
+                        kind: ButtonKind.Danger;
+                        dark: root.dark_mode;
+                        h: 30px;
+                        pad-x: Theme.s-2;
+                        has-icon: true;
+                        icon: @image-url("icons/trash.svg");
+                        clicked => { root.delete_preset(root.selected_preset_index); }
+                    }
+                }
 
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Rectangle {
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.dark_mode ? #1e293b : #f8fafc;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #334155 : #e2e8f0;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "📥 Import XML";
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    color: root.dark_mode ? #94a3b8 : #475569;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.import_presets(); } }
-                        }
-
-                        Rectangle {
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.dark_mode ? #1e293b : #f8fafc;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #334155 : #e2e8f0;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                Text {
-                                    text: "📤 Export XML";
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    color: root.dark_mode ? #94a3b8 : #475569;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            TouchArea { clicked => { root.export_presets(); } }
-                        }
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+                    UiButton {
+                        text: "Import";
+                        kind: ButtonKind.Ghost;
+                        dark: root.dark_mode;
+                        h: 28px;
+                        pad-x: Theme.s-2;
+                        has-icon: true;
+                        icon: @image-url("icons/download.svg");
+                        clicked => { root.import_presets(); }
+                    }
+                    UiButton {
+                        text: "Export";
+                        kind: ButtonKind.Ghost;
+                        dark: root.dark_mode;
+                        h: 28px;
+                        pad-x: Theme.s-2;
+                        has-icon: true;
+                        icon: @image-url("icons/upload.svg");
+                        clicked => { root.export_presets(); }
                     }
                 }
             }
 
-            // Right Pane: Preset Configuration Studio
-            Rectangle {
-                background: root.dark_mode ? #161e2e : #ffffff;
-                border-radius: 10px;
-                border-width: 1px;
-                border-color: root.dark_mode ? #26334d : #e2e8f0;
+            // ---- studio pane
+            UiCard {
+                dark: root.dark_mode;
+                pad: 0px;
+                gap: 0px;
 
                 ScrollView {
-                min-width: 0px;
+                    min-width: 0px;
                     // A Slint ScrollView otherwise reports its content's minimum
                     // width as its own, which let the studio pane grow past the
                     // window and silently clip the right edge of every field.
 
                     VerticalLayout {
-                        padding: 20px;
-                        spacing: 14px;
+                        padding: Theme.s-5;
+                        spacing: Theme.s-4;
 
-                        HorizontalLayout {
-                            alignment: space-between;
-                            Text {
-                                text: "🎛️ Preset Studio: " + root.edit_name;
-                                font-size: 17px;
-                                font-weight: 800;
-                                color: root.dark_mode ? #f8fafc : #0f172a;
-                            }
+                        Text {
+                            text: "Preset studio";
+                            font-size: Theme.t-xl;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.text(root.dark_mode);
+                            overflow: elide;
                         }
 
-                        Rectangle { height: 1px; background: root.dark_mode ? #26334d : #f1f5f9; }
+                        UiDivider { dark: root.dark_mode; }
 
-                        // Preset Name
+                        // Preset label
                         HorizontalLayout {
-                            spacing: 12px;
-                            Text {
-                                text: "Preset Label:";
-                                width: 108px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #cbd5e1 : #334155;
-                                vertical-alignment: center;
-                            }
+                            spacing: Theme.s-3;
+                            UiFieldLabel { text: "Preset label"; dark: root.dark_mode; }
                             LineEdit {
-                                                    text <=> root.edit_name;
+                                text <=> root.edit_name;
                                 edited => { root.preset_field_changed(); }
                             }
                         }
 
-                        // Target Output Format Visual Selector
+                        // Target output format
                         VerticalLayout {
-                            spacing: 6px;
+                            spacing: Theme.s-2;
+
                             HorizontalLayout {
-                                spacing: 12px;
-                                Text {
-                                    text: "Target Format:";
-                                    width: 108px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #cbd5e1 : #334155;
-                                    vertical-alignment: center;
-                                }
+                                spacing: Theme.s-3;
+                                UiFieldLabel { text: "Target format"; dark: root.dark_mode; }
                                 LineEdit {
-                                                            text <=> root.edit_output_type;
+                                    text <=> root.edit_output_type;
                                     edited => { root.preset_field_changed(); }
                                 }
                             }
 
-                            // Quick Format Picker Chips
-                            //
-                            // Full pane width, no label-column indent: 8 chips do
-                            // not fit beside a 130px label and were being clipped.
+                            // Quick format picker. Full pane width, no
+                            // label-column indent: eight chips do not fit
+                            // beside a 130px label.
                             HorizontalLayout {
-                                spacing: 6px;
+                                spacing: Theme.s-1;
 
                                 Text {
-                                    text: "Quick Pick:";
-                                    width: 78px;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #94a3b8 : #64748b;
+                                    text: "Quick pick";
+                                    width: 72px;
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-semibold;
+                                    color: Theme.textMute(root.dark_mode);
                                     vertical-alignment: center;
                                 }
 
-                                Rectangle {
-                                    width: 46px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Mp3" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "MP3"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Mp3" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Mp3"); } }
+                                UiChip {
+                                    text: "MP3";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Mp3";
+                                    clicked => { root.set_output_type("Mp3"); }
                                 }
-
-                                Rectangle {
-                                width: 54px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Flac" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "FLAC"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Flac" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Flac"); } }
+                                UiChip {
+                                    text: "FLAC";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Flac";
+                                    clicked => { root.set_output_type("Flac"); }
                                 }
-
-                                Rectangle {
-                                    width: 46px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Png" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "PNG"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Png" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Png"); } }
+                                UiChip {
+                                    text: "PNG";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Png";
+                                    clicked => { root.set_output_type("Png"); }
                                 }
-
-                                Rectangle {
-                                    width: 46px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Jpg" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "JPG"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Jpg" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Jpg"); } }
+                                UiChip {
+                                    text: "JPG";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Jpg";
+                                    clicked => { root.set_output_type("Jpg"); }
                                 }
-
-                                Rectangle {
-                                width: 56px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Webp" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "WEBP"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Webp" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Webp"); } }
+                                UiChip {
+                                    text: "WEBP";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Webp";
+                                    clicked => { root.set_output_type("Webp"); }
                                 }
-
-                                Rectangle {
-                                width: 50px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Pdf" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "PDF"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Pdf" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Pdf"); } }
+                                UiChip {
+                                    text: "PDF";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Pdf";
+                                    clicked => { root.set_output_type("Pdf"); }
                                 }
-
-                                Rectangle {
-                                width: 48px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Mp4" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "MP4"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Mp4" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Mp4"); } }
+                                UiChip {
+                                    text: "MP4";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Mp4";
+                                    clicked => { root.set_output_type("Mp4"); }
                                 }
-
-                                Rectangle {
-                                width: 50px;
-                                    height: 24px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.edit_output_type == "Mkv" ? #3b82f6 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "MKV"; font-size: 11px; font-weight: 700; color: root.edit_output_type == "Mkv" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569); vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_output_type("Mkv"); } }
+                                UiChip {
+                                    text: "MKV";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    selected: root.edit_output_type == "Mkv";
+                                    clicked => { root.set_output_type("Mkv"); }
                                 }
                             }
                         }
 
-                        // Compatible Input Extensions
+                        // Compatible input extensions
                         HorizontalLayout {
-                            spacing: 12px;
-                            Text {
-                                text: "Input Extensions:";
-                                width: 108px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #cbd5e1 : #334155;
-                                vertical-alignment: center;
-                            }
+                            spacing: Theme.s-3;
+                            UiFieldLabel { text: "Input extensions"; dark: root.dark_mode; }
                             LineEdit {
-                                                    placeholder-text: "e.g. wav, flac, mp3, mkv, jpg (leave empty to allow all)";
+                                placeholder-text: "e.g. wav, flac, mp3, mkv, jpg (leave empty to allow all)";
                                 text <=> root.edit_input_types;
                                 edited => { root.preset_field_changed(); }
                             }
                         }
 
-                        // Path Template & Quick Tags
+                        // Path template
                         VerticalLayout {
-                            spacing: 6px;
+                            spacing: Theme.s-2;
+
                             HorizontalLayout {
-                                spacing: 12px;
-                                Text {
-                                    text: "Path Template:";
-                                    width: 108px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #cbd5e1 : #334155;
-                                    vertical-alignment: center;
-                                }
+                                spacing: Theme.s-3;
+                                UiFieldLabel { text: "Path template"; dark: root.dark_mode; }
                                 LineEdit {
-                                                            placeholder-text: "(p)(f)";
+                                    placeholder-text: "(p)(f)";
                                     text <=> root.edit_template;
                                     edited => { root.preset_field_changed(); }
                                 }
                             }
 
-                            // Template Quick Helper Tags
                             HorizontalLayout {
-                                spacing: 6px;
+                                spacing: Theme.s-1;
 
                                 Text {
-                                    text: "Presets:";
-                                    width: 56px;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #94a3b8 : #64748b;
+                                    text: "Presets";
+                                    width: 72px;
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-semibold;
+                                    color: Theme.textMute(root.dark_mode);
                                     vertical-alignment: center;
                                 }
 
-                                Rectangle {
-                                width: 118px;
-                                    height: 22px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.dark_mode ? #1e293b : #f1f5f9;
-                                    border-width: 1px;
-                                    border-color: root.dark_mode ? #334155 : #e2e8f0;
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "Same Folder: (p)(f)"; font-size: 10px; font-weight: 600; color: root.dark_mode ? #93c5fd : #2563eb; vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_path_template("(p)(f)"); } }
+                                UiChip {
+                                    text: "Same folder";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    clicked => { root.set_path_template("(p)(f)"); }
                                 }
-
-                                Rectangle {
-                                width: 152px;
-                                    height: 22px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.dark_mode ? #1e293b : #f1f5f9;
-                                    border-width: 1px;
-                                    border-color: root.dark_mode ? #334155 : #e2e8f0;
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "Subfolder: (p)Converted\\(f)"; font-size: 10px; font-weight: 600; color: root.dark_mode ? #93c5fd : #2563eb; vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_path_template("(p)Converted\\(f)"); } }
+                                UiChip {
+                                    text: "Subfolder";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    clicked => { root.set_path_template("(p)Converted\\(f)"); }
                                 }
-
-                                Rectangle {
-                                width: 190px;
-                                    height: 22px;
-                                    horizontal-stretch: 0;
-                                    border-radius: 4px;
-                                    background: root.dark_mode ? #1e293b : #f1f5f9;
-                                    border-width: 1px;
-                                    border-color: root.dark_mode ? #334155 : #e2e8f0;
-                                    HorizontalLayout {
-                                        padding-left: 6px; padding-right: 6px;
-                                        Text { text: "With Date: (p)(f)_(d:yyyyMMdd)"; font-size: 10px; font-weight: 600; color: root.dark_mode ? #93c5fd : #2563eb; vertical-alignment: center; }
-                                    }
-                                    TouchArea { clicked => { root.set_path_template("(p)(f)_(d:yyyyMMdd)"); } }
+                                UiChip {
+                                    text: "With date";
+                                    dark: root.dark_mode;
+                                    h: 24px;
+                                    clicked => { root.set_path_template("(p)(f)_(d:yyyyMMdd)"); }
                                 }
                             }
                         }
 
-                        // Live Output Path Transformation Preview Card
+                        // Live output path preview
                         Rectangle {
-                            background: root.dark_mode ? #111827 : #f8fafc;
-                            border-radius: 8px;
+                            background: Theme.surface2(root.dark_mode);
+                            border-radius: Theme.r-md;
                             border-width: 1px;
-                            border-color: root.dark_mode ? #26334d : #e2e8f0;
+                            border-color: Theme.border(root.dark_mode);
 
                             VerticalLayout {
-                                padding: 12px;
-                                spacing: 4px;
+                                padding: Theme.s-3;
+                                spacing: Theme.s-1;
+
                                 Text {
-                                    text: "✨ Live Output Path Transformation:";
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #94a3b8 : #64748b;
+                                    text: "Live output path";
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-semibold;
+                                    color: Theme.textMute(root.dark_mode);
                                 }
                                 Text {
                                     text: root.preview_path;
-                                    font-size: 13px;
-                                    font-weight: 700;
-                                    color: root.dark_mode ? #38bdf8 : #2563eb;
+                                    font-size: Theme.t-md;
+                                    font-weight: Theme.w-medium;
+                                    color: Theme.accent(root.dark_mode);
+                                    overflow: elide;
                                 }
                             }
                         }
 
-                        // Post-Conversion Action Segmented Selector
+                        // Post-conversion action
                         HorizontalLayout {
-                            spacing: 12px;
-                            Text {
-                                text: "Post Action:";
-                                width: 92px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #cbd5e1 : #334155;
-                                vertical-alignment: center;
-                                horizontal-stretch: 0;
-                            }
+                            spacing: Theme.s-3;
+                            UiFieldLabel { text: "After conversion"; dark: root.dark_mode; }
 
-width: 134px;
                             HorizontalLayout {
-                                spacing: 8px;
-
-                                Rectangle {
-                                    height: 32px;
-                                    border-radius: 6px;
-                                    background: root.edit_post_action == "None" ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    border-width: 1px;
-                                    border-color: root.edit_post_action == "None" ? #2563eb : (root.dark_mode ? #334155 : #cbd5e1);
-                                    HorizontalLayout {
-                                        padding-left: 10px; padding-right: 10px;
-                                        Text {
-                                            text: "⏹️ Keep Original";
-                                            font-size: 12px;
-                                            font-weight: 700;
-                                            color: root.edit_post_action == "None" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                    width: 198px;
-                                    TouchArea { clicked => { root.set_post_action("None"); } }
+                                spacing: Theme.s-1;
+                                UiChip {
+                                    text: "Keep original";
+                                    dark: root.dark_mode;
+                                    h: 30px;
+                                    selected: root.edit_post_action == "None";
+                                    clicked => { root.set_post_action("None"); }
                                 }
-
-                                Rectangle {
-                                    height: 32px;
-                                    border-radius: 6px;
-                                    background: root.edit_post_action == "MoveInArchiveFolder" ? #f59e0b : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    border-width: 1px;
-                                    border-color: root.edit_post_action == "MoveInArchiveFolder" ? #f59e0b : (root.dark_mode ? #334155 : #cbd5e1);
-                                    HorizontalLayout {
-                                        padding-left: 10px; padding-right: 10px;
-                                        Text {
-                                            text: "📦 Move to Archive Folder";
-                                            font-size: 12px;
-                                            font-weight: 700;
-                                            color: root.edit_post_action == "MoveInArchiveFolder" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                    width: 170px;
-                                    TouchArea { clicked => { root.set_post_action("MoveInArchiveFolder"); } }
+                                UiChip {
+                                    text: "Move to archive";
+                                    dark: root.dark_mode;
+                                    h: 30px;
+                                    tone: Theme.warn(root.dark_mode);
+                                    selected: root.edit_post_action == "MoveInArchiveFolder";
+                                    clicked => { root.set_post_action("MoveInArchiveFolder"); }
                                 }
-
-                                Rectangle {
-                                    height: 32px;
-                                    border-radius: 6px;
-                                    background: root.edit_post_action == "Delete" ? #ef4444 : (root.dark_mode ? #1e293b : #f1f5f9);
-                                    border-width: 1px;
-                                    border-color: root.edit_post_action == "Delete" ? #ef4444 : (root.dark_mode ? #334155 : #cbd5e1);
-                                    HorizontalLayout {
-                                        padding-left: 10px; padding-right: 10px;
-                                        Text {
-                                            text: "❌ Delete Permanently";
-                                            font-size: 12px;
-                                            font-weight: 700;
-                                            color: root.edit_post_action == "Delete" ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                    TouchArea { clicked => { root.set_post_action("Delete"); } }
+                                UiChip {
+                                    text: "Delete permanently";
+                                    dark: root.dark_mode;
+                                    h: 30px;
+                                    tone: Theme.danger(root.dark_mode);
+                                    selected: root.edit_post_action == "Delete";
+                                    clicked => { root.set_post_action("Delete"); }
                                 }
                             }
                         }
 
-                        // Conversion Settings Editor
-                        Rectangle {
-                            background: root.dark_mode ? #111827 : #f8fafc;
-                            border-radius: 8px;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #26334d : #e2e8f0;
+                        // Conversion settings editor
+                        UiCard {
+                            dark: root.dark_mode;
+                            pad: Theme.s-3;
+                            gap: Theme.s-2;
+                            fill: Theme.surface2(root.dark_mode);
+                            radius: Theme.r-md;
 
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 8px;
+                            Text {
+                                text: "Conversion settings";
+                                font-size: Theme.t-md;
+                                font-weight: Theme.w-semibold;
+                                color: Theme.text(root.dark_mode);
+                            }
 
-                                Text {
-                                    text: "⚙️ Conversion Settings";
-                                    font-size: 13px;
-                                    font-weight: 800;
-                                    color: root.dark_mode ? #f8fafc : #0f172a;
-                                }
+                            Text {
+                                text: "Engine options for this preset: bitrate, quality, scale, rotation. Leave a field empty to use the default.";
+                                font-size: Theme.t-sm;
+                                color: Theme.textMute(root.dark_mode);
+                                wrap: word-wrap;
+                            }
 
-                                Text {
-                                    text: "Engine options for this preset - bitrate, quality, scale, rotation. Leave a field empty to use the default.";
-                                    font-size: 11px;
-                                    color: root.dark_mode ? #94a3b8 : #64748b;
-                                    wrap: word-wrap;
-                                }
+                            if root.edit_settings.length == 0 : Text {
+                                text: "No settings apply to this output type.";
+                                font-size: Theme.t-sm;
+                                color: Theme.textMute(root.dark_mode);
+                            }
 
-                                if root.edit_settings.length == 0 : Text {
-                                    text: "No settings apply to this output type.";
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    color: #94a3b8;
-                                }
+                            for row in root.edit_settings : VerticalLayout {
+                                spacing: Theme.s-1;
 
-                                for row in root.edit_settings : VerticalLayout {
-                                    spacing: 3px;
-
-                                    if row.is_group_start : Text {
-                                        text: row.group;
-                                        font-size: 10px;
-                                        font-weight: 800;
-                                        color: #2563eb;
-                                    }
-
-                                    HorizontalLayout {
-                                        spacing: 10px;
-                                        padding-top: 2px;
-
-                                        VerticalLayout {
-                                            width: 118px;
-                                            spacing: 0px;
-                                            Text {
-                                                text: row.label;
-                                                font-size: 12px;
-                                                font-weight: 700;
-                                                color: root.dark_mode ? #cbd5e1 : #334155;
-                                            }
-                                            Text {
-                                                text: row.hint;
-                                                font-size: 9px;
-                                                color: root.dark_mode ? #64748b : #94a3b8;
-                                                wrap: word-wrap;
-                                            }
-                                        }
-
-                                        // Free-text values get an editor.
-                                        if row.choices.length == 0 : LineEdit {
-                                            placeholder-text: "default";
-                                            text: row.value;
-                                            edited => { root.set_preset_setting(row.key, self.text); }
-                                        }
-
-                                        if row.is_custom : TouchArea {
-                                            width: 30px;
-                                            clicked => { root.remove_preset_setting(row.key); }
-                                            Rectangle {
-                                                background: #ef444415;
-                                                border-radius: 4px;
-                                                border-width: 1px;
-                                                border-color: #ef444455;
-                                            }
-                                            Text {
-                                                text: "✕";
-                                                font-size: 13px;
-                                                font-weight: 800;
-                                                color: #ef4444;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-
-                                    // Short enumerated values become clickable
-                                    // chips. Slint 1.9 has no FlowLayout, so the
-                                    // chip row is a plain HorizontalLayout and the
-                                    // descriptor data keeps these lists to <= 4.
-                                    if row.choices.length > 0 : HorizontalLayout {
-                                        padding-left: 128px;
-                                        spacing: 4px;
-                                        for choice in row.choices : Rectangle {
-                                            height: 24px;
-                                            horizontal-stretch: 0;
-                                            border-radius: 4px;
-                                            background: row.value == choice ? #2563eb : (root.dark_mode ? #1e293b : #f1f5f9);
-                                            border-width: 1px;
-                                            border-color: row.value == choice ? #2563eb : (root.dark_mode ? #334155 : #cbd5e1);
-                                            HorizontalLayout {
-                                                padding-left: 9px; padding-right: 9px;
-                                                Text {
-                                                    text: choice;
-                                                    font-size: 11px;
-                                                    font-weight: 600;
-                                                    color: row.value == choice ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                            TouchArea { clicked => { root.set_preset_setting(row.key, choice); } }
-                                        }
-                                    }
-                                }
-
-                                Rectangle { height: 1px; background: root.dark_mode ? #26334d : #e2e8f0; }
-
-                                // Escape hatch for keys the UI does not know about.
-                                //
-                                // One editor per row: two LineEdits side by side made
-                                // this the widest row in the pane, which dragged the
-                                // whole studio past the window edge and clipped
-                                // every other field.
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        text: "Custom key";
-                                        width: 118px;
-                                        font-size: 11px;
-                                        font-weight: 700;
-                                        color: root.dark_mode ? #94a3b8 : #64748b;
-                                        vertical-alignment: center;
-                                    }
-                                    LineEdit {
-                                                                    placeholder-text: "e.g. AudioNormalize";
-                                        text <=> root.new_setting_key;
-                                    }
+                                if row.is_group_start : Text {
+                                    text: row.group;
+                                    font-size: Theme.t-xs;
+                                    font-weight: Theme.w-semibold;
+                                    color: Theme.accent(root.dark_mode);
                                 }
 
                                 HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        text: "Custom value";
-                                        width: 118px;
-                                        font-size: 11px;
-                                        font-weight: 700;
-                                        color: root.dark_mode ? #94a3b8 : #64748b;
-                                        vertical-alignment: center;
-                                    }
-                                    LineEdit {
-                                                                    placeholder-text: "Value";
-                                        text <=> root.new_setting_value;
-                                    }
-                                    Rectangle {
-                                        width: 62px;
-                                        height: 30px;
-                                        border-radius: 6px;
-                                        background: #2563eb;
-                                        HorizontalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "Add";
-                                                font-size: 12px;
-                                                font-weight: 700;
-                                                color: #ffffff;
-                                                vertical-alignment: center;
-                                            }
+                                    spacing: Theme.s-2;
+                                    padding-top: 2px;
+
+                                    VerticalLayout {
+                                        width: 120px;
+                                        spacing: 0px;
+                                        Text {
+                                            text: row.label;
+                                            font-size: Theme.t-base;
+                                            font-weight: Theme.w-medium;
+                                            color: Theme.textDim(root.dark_mode);
                                         }
-                                        TouchArea {
-                                            clicked => {
-                                                root.add_preset_setting(root.new_setting_key, root.new_setting_value);
-                                            }
+                                        Text {
+                                            text: row.hint;
+                                            font-size: Theme.t-xs;
+                                            color: Theme.textMute(root.dark_mode);
+                                            wrap: word-wrap;
                                         }
+                                    }
+
+                                    // Free-text values get an editor.
+                                    if row.choices.length == 0 : LineEdit {
+                                        placeholder-text: "default";
+                                        text: row.value;
+                                        edited => { root.set_preset_setting(row.key, self.text); }
+                                    }
+
+                                    if row.is_custom : UiIconButton {
+                                        icon: @image-url("icons/x.svg");
+                                        dark: root.dark_mode;
+                                        size: 26px;
+                                        tint: Theme.danger(root.dark_mode);
+                                        clicked => { root.remove_preset_setting(row.key); }
                                     }
                                 }
 
-                                if root.settings_notice != "" : Text {
-                                    text: root.settings_notice;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    color: root.settings_notice == "✓ Added" || root.settings_notice == "✓ Removed" || root.settings_notice == "✓ Updated" ? #10b981 : #ef4444;
-                                    wrap: word-wrap;
+                                // Short enumerated values become clickable
+                                // chips. Slint has no FlowLayout, so the chip
+                                // row is a plain HorizontalLayout and the
+                                // descriptor data keeps these lists to <= 4.
+                                if row.choices.length > 0 : HorizontalLayout {
+                                    padding-left: 128px;
+                                    spacing: Theme.s-1;
+                                    for choice in row.choices : UiChip {
+                                        text: choice;
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        selected: row.value == choice;
+                                        clicked => { root.set_preset_setting(row.key, choice); }
+                                    }
                                 }
+                            }
+
+                            UiDivider { dark: root.dark_mode; }
+
+                            // Escape hatch for keys the UI does not know about.
+                            // One editor per row: two LineEdits side by side
+                            // made this the widest row in the pane and dragged
+                            // the studio past the window edge.
+                            HorizontalLayout {
+                                spacing: Theme.s-2;
+                                Text {
+                                    text: "Custom key";
+                                    width: 120px;
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-medium;
+                                    color: Theme.textMute(root.dark_mode);
+                                    vertical-alignment: center;
+                                }
+                                LineEdit {
+                                    placeholder-text: "e.g. AudioNormalize";
+                                    text <=> root.new_setting_key;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.s-2;
+                                Text {
+                                    text: "Custom value";
+                                    width: 120px;
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-medium;
+                                    color: Theme.textMute(root.dark_mode);
+                                    vertical-alignment: center;
+                                }
+                                LineEdit {
+                                    placeholder-text: "Value";
+                                    text <=> root.new_setting_value;
+                                }
+                                UiButton {
+                                    text: "Add";
+                                    kind: ButtonKind.Secondary;
+                                    dark: root.dark_mode;
+                                    h: 30px;
+                                    pad-x: Theme.s-3;
+                                    clicked => {
+                                        root.add_preset_setting(root.new_setting_key, root.new_setting_value);
+                                    }
+                                }
+                            }
+
+                            if root.settings_notice != "" : Text {
+                                text: root.settings_notice;
+                                font-size: Theme.t-sm;
+                                font-weight: Theme.w-medium;
+                                color: root.settings_notice == "✓ Added" || root.settings_notice == "✓ Removed" || root.settings_notice == "✓ Updated"
+                                    ? Theme.success(root.dark_mode) : Theme.danger(root.dark_mode);
+                                wrap: word-wrap;
                             }
                         }
 
-                        // Modern Interactive File Dropzone
+                        // Drop zone
                         Rectangle {
-                            height: 110px;
-                            border-radius: 10px;
+                            height: 116px;
+                            border-radius: Theme.r-lg;
                             background: root.pending_files_count > 0
-                                ? (root.dark_mode ? #064e3b : #ecfdf5)
-                                : (root.dark_mode ? #111827 : #f8fafc);
-                            border-width: 2px;
-                            border-color: root.pending_files_count > 0 ? #10b981 : (root.dark_mode ? #334155 : #cbd5e1);
-
-                            TouchArea { clicked => { root.select_files(); } }
+                                ? Theme.successSoft(root.dark_mode)
+                                : Theme.surface2(root.dark_mode);
+                            border-width: 1px;
+                            border-color: root.pending_files_count > 0
+                                ? Theme.success(root.dark_mode)
+                                : Theme.borderStrong(root.dark_mode);
+                            animate background { duration: Theme.base; }
+                            animate border-color { duration: Theme.base; }
 
                             VerticalLayout {
                                 alignment: center;
-                                spacing: 6px;
+                                spacing: Theme.s-1;
+                                padding: Theme.s-3;
+
+                                Icon {
+                                    source: root.pending_files_count > 0
+                                        ? @image-url("icons/check.svg")
+                                        : @image-url("icons/folder.svg");
+                                    size: 22px;
+                                    tint: root.pending_files_count > 0
+                                        ? Theme.success(root.dark_mode)
+                                        : Theme.textMute(root.dark_mode);
+                                }
 
                                 Text {
                                     text: root.pending_files_count > 0
-                                        ? "✅ " + root.pending_files_count + " File(s) Staged & Ready for Conversion"
-                                        : "📂 Click or Drag & Drop Files Here";
-                                    font-size: 15px;
-                                    font-weight: 800;
-                                    color: root.pending_files_count > 0 ? #10b981 : (root.dark_mode ? #e2e8f0 : #1e293b);
+                                        ? root.pending_files_count + " file(s) staged and ready"
+                                        : "Click or drop files here";
+                                    font-size: Theme.t-lg;
+                                    font-weight: Theme.w-semibold;
+                                    color: root.pending_files_count > 0
+                                        ? Theme.success(root.dark_mode)
+                                        : Theme.text(root.dark_mode);
                                     horizontal-alignment: center;
                                 }
 
                                 Text {
                                     text: root.pending_files_count > 0
-                                        ? root.pending_files_summary + " • Click to stage more files"
+                                        ? root.pending_files_summary + " · click to stage more"
                                         : "Drop files anywhere in this window to convert using " + root.edit_name;
-                                    font-size: 12px;
-                                    color: root.dark_mode ? #94a3b8 : #64748b;
+                                    font-size: Theme.t-base;
+                                    color: Theme.textMute(root.dark_mode);
                                     horizontal-alignment: center;
+                                    overflow: elide;
                                 }
 
                                 if root.pending_files_count > 0 : HorizontalLayout {
                                     alignment: center;
-                                    spacing: 10px;
+                                    spacing: Theme.s-1;
 
-                                    Rectangle {
-                                        height: 28px;
-                                        border-radius: 6px;
-                                        background: #10b981;
-                                        HorizontalLayout {
-                                            padding-left: 12px; padding-right: 12px;
-                                            Text { text: "⚡ Convert Now"; font-size: 12px; font-weight: 700; color: #ffffff; vertical-alignment: center; }
-                                        }
-                                        TouchArea { clicked => { root.start_pending_conversion(); } }
+                                    UiButton {
+                                        text: "Convert now";
+                                        kind: ButtonKind.Primary;
+                                        dark: root.dark_mode;
+                                        h: 28px;
+                                        has-icon: true;
+                                        icon: @image-url("icons/zap.svg");
+                                        clicked => { root.start_pending_conversion(); }
                                     }
 
-                                    Rectangle {
-                                        height: 28px;
-                                        border-radius: 6px;
-                                        background: root.dark_mode ? #334155 : #e2e8f0;
-                                        HorizontalLayout {
-                                            padding-left: 10px; padding-right: 10px;
-                                            Text { text: "✕ Clear Queue"; font-size: 11px; font-weight: 600; color: root.dark_mode ? #cbd5e1 : #475569; vertical-alignment: center; }
-                                        }
-                                        TouchArea { clicked => { root.clear_pending_files(); } }
+                                    UiButton {
+                                        text: "Clear queue";
+                                        kind: ButtonKind.Ghost;
+                                        dark: root.dark_mode;
+                                        h: 28px;
+                                        has-icon: true;
+                                        icon: @image-url("icons/x.svg");
+                                        clicked => { root.clear_pending_files(); }
                                     }
                                 }
+                            }
+
+                            TouchArea {
+                                clicked => { root.select_files(); }
                             }
                         }
                     }
@@ -1384,164 +1264,76 @@ width: 134px;
             }
         }
 
-        // Tab 1: History Log
-        if root.active_tab == 1 : Rectangle {
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
+        // ----------------------------------------------------- tab 1: history
+        if root.active_tab == 1 : UiCard {
+            dark: root.dark_mode;
+            pad: Theme.s-4;
+            gap: Theme.s-3;
 
-            VerticalLayout {
-                padding: 18px;
-                spacing: 12px;
-
-                Text {
-                    text: "📜 Conversion History Journal";
-                    font-size: 17px;
-                    font-weight: 800;
-                    color: root.dark_mode ? #f8fafc : #0f172a;
-                }
-
-                ScrollView {
-                min-width: 0px;
-                    VerticalLayout {
-                        spacing: 6px;
-                        for item in root.history_items : Rectangle {
-                            height: 52px;
-                            background: root.dark_mode ? #111827 : #f8fafc;
-                            border-radius: 8px;
-                            border-width: 1px;
-                            border-color: root.dark_mode ? #1f2937 : #e2e8f0;
-
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                spacing: 12px;
-                                alignment: space-between;
-
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: 2px;
-                                    Text {
-                                        text: item.preset_name + " • " + item.timestamp;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                        color: root.dark_mode ? #f8fafc : #1e293b;
-                                    }
-                                    Text {
-                                        text: item.input_path;
-                                        font-size: 11px;
-                                        color: root.dark_mode ? #94a3b8 : #64748b;
-                                        overflow: elide;
-                                    }
-                                }
-
-                                Text {
-                                    text: item.status == "Done" ? "✓ " + item.status : "✕ " + item.status;
-                                    font-size: 13px;
-                                    font-weight: 800;
-                                    color: item.status == "Done" ? #10b981 : #ef4444;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
-                }
+            Text {
+                text: "Conversion history";
+                font-size: Theme.t-xl;
+                font-weight: Theme.w-semibold;
+                color: Theme.text(root.dark_mode);
             }
-        }
-
-        // Tab 2: Preferences & Global UX
-        if root.active_tab == 2 : Rectangle {
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
 
             ScrollView {
-            min-width: 0px;
+                min-width: 0px;
+
                 VerticalLayout {
-                    padding: 24px;
-                    spacing: 18px;
+                    spacing: Theme.s-1;
+                    for item in root.history_items : HistoryRow {
+                        data: item;
+                        dark: root.dark_mode;
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------- tab 2: preferences
+        if root.active_tab == 2 : UiCard {
+            dark: root.dark_mode;
+            pad: 0px;
+            gap: 0px;
+
+            ScrollView {
+                min-width: 0px;
+
+                VerticalLayout {
+                    padding: Theme.s-5;
+                    spacing: Theme.s-3;
 
                     Text {
-                        text: "⚙️ Global Conversion Preferences";
-                        font-size: 18px;
-                        font-weight: 800;
-                        color: root.dark_mode ? #f8fafc : #0f172a;
+                        text: "Preferences";
+                        font-size: Theme.t-xl;
+                        font-weight: Theme.w-semibold;
+                        color: Theme.text(root.dark_mode);
                     }
 
-                    Rectangle { height: 1px; background: root.dark_mode ? #26334d : #e2e8f0; }
+                    UiDivider { dark: root.dark_mode; }
 
-                    // Preference Item 1
-                    Rectangle {
-                        background: root.dark_mode ? #111827 : #f8fafc;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #1f2937 : #e2e8f0;
-
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-
-                            CheckBox {
-                                text: "🚀 Zero-Click Auto-Start on File Drop";
-                                checked <=> root.auto_start_on_file_drop;
-                                toggled => { root.toggle_auto_start(self.checked); }
-                            }
-                            Text {
-                                text: "Immediately begin conversion using the selected preset as soon as files are dropped into the window.";
-                                font-size: 12px;
-                                color: root.dark_mode ? #94a3b8 : #64748b;
-                            }
-                        }
+                    PrefCard {
+                        title: "Zero-click auto-start on file drop";
+                        hint: "Immediately begin conversion using the selected preset as soon as files are dropped into the window.";
+                        dark: root.dark_mode;
+                        checked <=> root.auto_start_on_file_drop;
+                        toggled(v) => { root.toggle_auto_start(v); }
                     }
 
-                    // Preference Item 2
-                    Rectangle {
-                        background: root.dark_mode ? #111827 : #f8fafc;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #1f2937 : #e2e8f0;
-
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-
-                            CheckBox {
-                                text: "📋 Copy Output Paths to Clipboard";
-                                checked <=> root.copy_files_in_clipboard_after_conversion;
-                                toggled => { root.toggle_copy_clipboard(self.checked); }
-                            }
-                            Text {
-                                text: "Automatically copy the newly generated destination file paths to the Windows clipboard once conversion finishes.";
-                                font-size: 12px;
-                                color: root.dark_mode ? #94a3b8 : #64748b;
-                            }
-                        }
+                    PrefCard {
+                        title: "Copy output paths to clipboard";
+                        hint: "Automatically copy the newly generated destination file paths to the Windows clipboard once conversion finishes.";
+                        dark: root.dark_mode;
+                        checked <=> root.copy_files_in_clipboard_after_conversion;
+                        toggled(v) => { root.toggle_copy_clipboard(v); }
                     }
 
-                    // Preference Item 3
-                    Rectangle {
-                        background: root.dark_mode ? #111827 : #f8fafc;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #1f2937 : #e2e8f0;
-
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-
-                            CheckBox {
-                                text: "⚡ Auto-Close Window when Finished";
-                                checked <=> root.exit_application_when_conversions_finished;
-                                toggled => { root.toggle_auto_close(self.checked); }
-                            }
-                            Text {
-                                text: "Automatically dismiss the conversion progress window after all files have finished processing.";
-                                font-size: 12px;
-                                color: root.dark_mode ? #94a3b8 : #64748b;
-                            }
-                        }
+                    PrefCard {
+                        title: "Auto-close window when finished";
+                        hint: "Automatically dismiss the conversion progress window after all files have finished processing.";
+                        dark: root.dark_mode;
+                        checked <=> root.exit_application_when_conversions_finished;
+                        toggled(v) => { root.toggle_auto_close(v); }
                     }
                 }
             }
@@ -1549,13 +1341,19 @@ width: 134px;
     }
 }
 
+// ---------------------------------------------------------------------------
+// Progress window
+// ---------------------------------------------------------------------------
+
 export component ProgressWindow inherits Window {
-    title: "⚡ File Converter Progress";
+    title: "File Converter — Progress";
     preferred-width: 720px;
     preferred-height: 520px;
     min-width: 620px;
     min-height: 420px;
-    background: root.dark_mode ? #0b0f19 : #f1f5f9;
+    default-font-family: "Segoe UI Variable Text";
+    default-font-size: Theme.t-md;
+    background: Theme.bg(root.dark_mode);
 
     in-out property <bool> dark_mode: false;
     in-out property <string> preset_name: "";
@@ -1571,251 +1369,147 @@ export component ProgressWindow inherits Window {
     callback toggle_theme(bool);
 
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        padding: Theme.s-4;
+        spacing: Theme.s-3;
 
-        // Modern Header Card
+        // Header
         Rectangle {
-            height: 68px;
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
+            height: 72px;
+            background: Theme.surface(root.dark_mode);
+            border-radius: Theme.r-lg;
             border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
+            border-color: Theme.border(root.dark_mode);
+            drop-shadow-color: Theme.shadow(root.dark_mode);
+            drop-shadow-blur: 14px;
+            drop-shadow-offset-y: 1px;
 
             HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: Theme.s-5;
+                padding-right: Theme.s-2;
+                spacing: Theme.s-3;
                 alignment: space-between;
 
                 VerticalLayout {
                     alignment: center;
                     spacing: 2px;
-                    Text {
-                        text: "⚡ " + root.preset_name;
-                        font-size: 17px;
-                        font-weight: 800;
-                        color: root.dark_mode ? #f8fafc : #0f172a;
+
+                    HorizontalLayout {
+                        spacing: Theme.s-2;
+                        IconZap {
+                            size: 15px;
+                            tint: Theme.accent(root.dark_mode);
+                        }
+                        Text {
+                            text: root.preset_name;
+                            font-size: Theme.t-lg;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.text(root.dark_mode);
+                            vertical-alignment: center;
+                        }
                     }
+
                     Text {
                         text: root.overall_status_text;
-                        font-size: 13px;
-                        color: root.dark_mode ? #94a3b8 : #64748b;
+                        font-size: Theme.t-md;
+                        color: Theme.textMute(root.dark_mode);
+                        overflow: elide;
                     }
                 }
 
                 HorizontalLayout {
-                    spacing: 14px;
+                    spacing: Theme.s-2;
                     alignment: center;
+                    horizontal-stretch: 0;
 
-                    // Progress Percentage
                     Text {
                         text: Math.round(root.overall_progress * 100) + "%";
-                        font-size: 24px;
-                        font-weight: 900;
-                        color: #2563eb;
+                        font-size: Theme.t-2xl;
+                        font-weight: Theme.w-semibold;
+                        color: Theme.accent(root.dark_mode);
                         vertical-alignment: center;
                     }
 
-                    // Theme Toggle Icon Button
-                    Rectangle {
-                        height: 32px;
-                        width: 32px;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #26334d : #e2e8f0;
-                        Text {
-                            text: root.dark_mode ? "☀️" : "🌙";
-                            font-size: 14px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            clicked => {
-                                root.dark_mode = !root.dark_mode;
-                                root.toggle_theme(root.dark_mode);
-                            }
+                    UiIconButton {
+                        icon: root.dark_mode ? @image-url("icons/sun.svg") : @image-url("icons/moon.svg");
+                        dark: root.dark_mode;
+                        clicked => {
+                            root.dark_mode = !root.dark_mode;
+                            root.toggle_theme(root.dark_mode);
                         }
                     }
                 }
             }
         }
 
-        // Sleek Progress Bar
         ProgressIndicator {
             progress: root.overall_progress;
         }
 
-        // Jobs Scrollable Card List
-        Rectangle {
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
+        // Jobs
+        UiCard {
+            dark: root.dark_mode;
+            pad: 0px;
+            gap: 0px;
 
             ScrollView {
-            min-width: 0px;
+                min-width: 0px;
+
                 VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
-
-                    for job in root.jobs : Rectangle {
-                        height: 60px;
-                        background: root.dark_mode ? #111827 : #f8fafc;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #1f2937 : #e2e8f0;
-
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            spacing: 12px;
-
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 4px;
-
-                                HorizontalLayout {
-                                    alignment: space-between;
-                                    Text {
-                                        text: job.input_file_name;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                        color: root.dark_mode ? #f8fafc : #1e293b;
-                                    }
-
-                                    // Status Badge
-                                    Rectangle {
-                                        height: 20px;
-                                        border-radius: 4px;
-                                        background: job.is_done
-                                            ? (root.dark_mode ? #064e3b : #dcfce7)
-                                            : (job.is_failed
-                                                ? (root.dark_mode ? #450a0a : #fee2e2)
-                                                : (root.dark_mode ? #1e3a8a : #dbeafe));
-                                        HorizontalLayout {
-                                            padding-left: 6px;
-                                            padding-right: 6px;
-                                            Text {
-                                                text: job.status_text;
-                                                font-size: 11px;
-                                                font-weight: 700;
-                                                color: job.is_done
-                                                    ? #10b981
-                                                    : (job.is_failed ? #ef4444 : #3b82f6);
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    alignment: space-between;
-
-                                    ProgressIndicator {
-                                        progress: job.progress;
-                                        horizontal-stretch: 1;
-                                    }
-
-                                    if !job.is_done && !job.is_failed : Rectangle {
-                                        height: 24px;
-                                        horizontal-stretch: 0;
-                                        border-radius: 4px;
-                                        background: root.dark_mode ? #334155 : #e2e8f0;
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 8px;
-                                            Text {
-                                                text: "✕ Cancel";
-                                                font-size: 11px;
-                                                font-weight: 600;
-                                                color: root.dark_mode ? #cbd5e1 : #475569;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                        TouchArea { clicked => { root.cancel_job(job.id); } }
-                                    }
-                                }
-                            }
-                        }
+                    padding: Theme.s-3;
+                    spacing: Theme.s-2;
+                    for job in root.jobs : JobRow {
+                        data: job;
+                        dark: root.dark_mode;
+                        cancel(id) => { root.cancel_job(id); }
                     }
                 }
             }
         }
 
-        // Bottom Action Bar
+        // Footer actions
         Rectangle {
-            height: 52px;
-            background: root.dark_mode ? #161e2e : #ffffff;
-            border-radius: 10px;
+            height: 54px;
+            background: Theme.surface(root.dark_mode);
+            border-radius: Theme.r-lg;
             border-width: 1px;
-            border-color: root.dark_mode ? #26334d : #e2e8f0;
+            border-color: Theme.border(root.dark_mode);
 
             HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 14px;
+                padding-left: Theme.s-3;
+                padding-right: Theme.s-3;
+                spacing: Theme.s-1;
                 alignment: space-between;
 
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.s-1;
                     alignment: start;
 
-                    Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #1e293b : #f1f5f9;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #334155 : #cbd5e1;
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            Text {
-                                text: "📁 Open Folder";
-                                font-size: 12px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #e2e8f0 : #334155;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea { clicked => { root.open_output_folder(); } }
+                    UiButton {
+                        text: "Open folder";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/folder-open.svg");
+                        clicked => { root.open_output_folder(); }
                     }
 
-                    Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: root.dark_mode ? #1e293b : #f1f5f9;
-                        border-width: 1px;
-                        border-color: root.dark_mode ? #334155 : #cbd5e1;
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            Text {
-                                text: "📋 Copy Paths";
-                                font-size: 12px;
-                                font-weight: 700;
-                                color: root.dark_mode ? #e2e8f0 : #334155;
-                                vertical-alignment: center;
-                            }
-                        }
-                        TouchArea { clicked => { root.copy_output_paths(); } }
+                    UiButton {
+                        text: "Copy paths";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/copy.svg");
+                        clicked => { root.copy_output_paths(); }
                     }
                 }
 
-                Rectangle {
-                    height: 34px;
-                    border-radius: 6px;
-                    background: root.is_finished ? #2563eb : (root.dark_mode ? #334155 : #e2e8f0);
-                    HorizontalLayout {
-                        padding-left: 14px;
-                        padding-right: 14px;
-                        Text {
-                            text: root.is_finished ? "✓ Close Window" : "✕ Close";
-                            font-size: 12px;
-                            font-weight: 700;
-                            color: root.is_finished ? #ffffff : (root.dark_mode ? #cbd5e1 : #475569);
-                            vertical-alignment: center;
-                        }
-                    }
-                    TouchArea { clicked => { root.close_window(); } }
+                UiButton {
+                    text: root.is_finished ? "Close window" : "Close";
+                    kind: root.is_finished ? ButtonKind.Primary : ButtonKind.Secondary;
+                    dark: root.dark_mode;
+                    has-icon: true;
+                    icon: root.is_finished ? @image-url("icons/check.svg") : @image-url("icons/x.svg");
+                    clicked => { root.close_window(); }
                 }
             }
         }

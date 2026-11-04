@@ -4,12 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-static RE_DRIVE_LETTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]:\\").unwrap());
+static RE_DRIVE_LETTER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z]:\\").expect("drive-letter pattern is a valid regex"));
 static RE_VALID_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\|(?:[^\\/:*?<>|\r\n]+[\\/])+)?(?:[^\\/:*?<>|\r\n]+[\\/])*[^\\/:*?<>|\r\n]+$").unwrap()
+    Regex::new(r"^(?i)(?:\\\\[^\\/:*?<>|\r\n]+\\|[a-zA-Z]:\\|(?:[^\\/:*?<>|\r\n]+[\\/])+)?(?:[^\\/:*?<>|\r\n]+[\\/])*[^\\/:*?<>|\r\n]+$")
+        .expect("valid-path pattern is a valid regex")
 });
-static RE_DATE_FMT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(d:(?P<format>[^)]*)\)").unwrap());
+static RE_DATE_FMT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(d:(?P<format>[^)]*)\)").expect("date-format pattern is a valid regex")
+});
 
 pub fn is_path_drive_letter_valid(path: &str) -> bool {
     RE_DRIVE_LETTER.is_match(path)

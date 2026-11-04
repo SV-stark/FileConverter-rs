@@ -1,0 +1,88 @@
+// ---------------------------------------------------------------------------
+// Design tokens: the single source of truth for colour, spacing, radius,
+// type scale and motion.
+//
+// Rule: no raw hex colour belongs outside this file.
+//
+// Colour is exposed as a pure function of `dark` rather than mutable global
+// state. Both windows are alive at the same time (Settings + Progress), so a
+// writable `Theme.dark` would have two owners and one of them would lose.
+// Call sites read naturally as `Theme.surface(root.dark_mode)`.
+// ---------------------------------------------------------------------------
+
+export global Theme {
+    // --- Surfaces ----------------------------------------------------------
+    public pure function bg(dark: bool) -> color { return dark ? #0b0f19 : #f4f6f8; }
+    public pure function surface(dark: bool) -> color { return dark ? #121a28 : #ffffff; }
+    public pure function surface2(dark: bool) -> color { return dark ? #0f1725 : #f8fafc; }
+    public pure function surface3(dark: bool) -> color { return dark ? #1b2537 : #eef2f7; }
+
+    // --- Lines -------------------------------------------------------------
+    public pure function border(dark: bool) -> color { return dark ? #1f2a3c : #e4e8ee; }
+    public pure function borderStrong(dark: bool) -> color { return dark ? #2c3a52 : #d3dae3; }
+
+    // --- Text --------------------------------------------------------------
+    public pure function text(dark: bool) -> color { return dark ? #e9eef7 : #0d1117; }
+    public pure function textDim(dark: bool) -> color { return dark ? #9aabc4 : #5b6572; }
+    public pure function textMute(dark: bool) -> color { return dark ? #6b7c96 : #8b95a3; }
+
+    // --- Accent (one accent, four tones) -----------------------------------
+    public pure function accent(dark: bool) -> color { return dark ? #5b9bff : #2563eb; }
+    public pure function accentHover(dark: bool) -> color { return dark ? #7cb0ff : #1d4ed8; }
+    public pure function accentPressed(dark: bool) -> color { return dark ? #4a86e8 : #1e40af; }
+    public pure function accentSoft(dark: bool) -> color { return dark ? #16243c : #eaf1ff; }
+
+    // --- Semantic ----------------------------------------------------------
+    public pure function success(dark: bool) -> color { return dark ? #34d399 : #0e9f6e; }
+    public pure function successSoft(dark: bool) -> color { return dark ? #0d2b23 : #e6f7f1; }
+    public pure function danger(dark: bool) -> color { return dark ? #ff7b7b : #dc2f36; }
+    public pure function dangerSoft(dark: bool) -> color { return dark ? #2b1416 : #fdeced; }
+    public pure function warn(dark: bool) -> color { return dark ? #fbbf24 : #b45309; }
+    public pure function warnSoft(dark: bool) -> color { return dark ? #2b1f0b : #fdf3e3; }
+
+    // --- Category accents (the only place a second hue is allowed) ---------
+    public pure function catAudio(dark: bool) -> color { return dark ? #a78bfa : #7c3aed; }
+    public pure function catVideo(dark: bool) -> color { return dark ? #f472b6 : #db2777; }
+    public pure function catImage(dark: bool) -> color { return dark ? #34d399 : #0e9f6e; }
+    public pure function catDoc(dark: bool) -> color { return dark ? #fbbf24 : #b45309; }
+
+    // --- Ink on filled surfaces -------------------------------------------
+    out property <color> on-accent: #ffffff;
+
+    // --- Elevation ---------------------------------------------------------
+    public pure function shadow(dark: bool) -> color { return dark ? #00000055 : #0d111714; }
+
+    // --- Radius ------------------------------------------------------------
+    out property <length> r-xs: 6px;
+    out property <length> r-sm: 8px;
+    out property <length> r-md: 10px;
+    out property <length> r-lg: 12px;
+    out property <length> r-xl: 16px;
+
+    // --- Spacing (4px grid) ------------------------------------------------
+    out property <length> s-1: 4px;
+    out property <length> s-2: 8px;
+    out property <length> s-3: 12px;
+    out property <length> s-4: 16px;
+    out property <length> s-5: 20px;
+    out property <length> s-6: 24px;
+    out property <length> s-8: 32px;
+
+    // --- Type scale (one family, two weights) ------------------------------
+    out property <length> t-xs: 10px;
+    out property <length> t-sm: 11px;
+    out property <length> t-base: 12px;
+    out property <length> t-md: 13px;
+    out property <length> t-lg: 15px;
+    out property <length> t-xl: 17px;
+    out property <length> t-2xl: 22px;
+
+    // Body 400, emphasis 600. Anything heavier reads as a marketing banner.
+    out property <int> w-regular: 400;
+    out property <int> w-medium: 500;
+    out property <int> w-semibold: 600;
+
+    // --- Motion ------------------------------------------------------------
+    out property <duration> fast: 110ms;
+    out property <duration> base: 170ms;
+}

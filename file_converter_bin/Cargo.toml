@@ -6,6 +6,9 @@ description = "Desktop application and CLI for FileConverter-rs"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/SV-stark/FileConverter-rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 slint.workspace = true
 file_converter_core.workspace = true

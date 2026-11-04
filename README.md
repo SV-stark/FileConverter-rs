@@ -139,7 +139,7 @@ FileConverter-rs/
 * **Lossless PNG Optimization (`oxipng`)**: Configurable multi-level compression, metadata stripping, and interlace controls.
 * **$O(1)$ Hash Map Lookups (`ahash`)**: `AHashMap` preset indexing eliminating string scanning bottlenecks.
 * **Poison-Free Mutexes (`parking_lot`)**: Fast, lightweight synchronization primitives.
-* **Zero-Copy File I/O (`memmap2`)**: Memory-mapped page buffers minimizing memory footprint.
+* **Zero-Copy File I/O (owned buffers)**: image decoders operate on owned, `std::fs::read`-built byte vectors, keeping the memory footprint bounded without leaving the codebase.
 * **SIMD Rescaling (`fast_image_resize`)**: Vectorized image resampling supporting AVX2, SSE4.1, and NEON.
 * **Resilient Multi-Source Downloader (`ureq` + `zip`)**: Automatic FFmpeg extraction with PE header validation and fallback mirrors.
 

@@ -1,0 +1,233 @@
+// ---------------------------------------------------------------------------
+// Shared primitives. Every control in the app is one of these, so hover,
+// focus-less states, radii, padding and type come from a single definition
+// instead of being re-typed per screen.
+//
+// Components take `dark` explicitly: colour lives in `Theme` as pure
+// functions, so there is no hidden global that two windows could fight over.
+// ---------------------------------------------------------------------------
+
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+export enum ButtonKind {
+    Primary,
+    Secondary,
+    Ghost,
+    Danger,
+}
+
+export component UiButton inherits Rectangle {
+    in property <string> text <=> lbl.text;
+    in property <ButtonKind> kind: ButtonKind.Primary;
+    in property <bool> dark: false;
+    in property <bool> enabled-ui: true;
+    in property <length> h: 34px;
+    in property <length> pad-x: Theme.s-3;
+    in property <bool> has-icon: false;
+    in property <image> icon;
+    callback clicked();
+
+    height: root.h;
+    border-radius: Theme.r-sm;
+    border-width: root.kind == ButtonKind.Ghost ? 0px : 1px;
+    border-color: root.kind == ButtonKind.Primary || root.kind == ButtonKind.Danger
+        ? transparent
+        : Theme.border(root.dark);
+    background: root.kind == ButtonKind.Primary ? Theme.accent(root.dark)
+        : root.kind == ButtonKind.Danger ? Theme.dangerSoft(root.dark)
+        : root.kind == ButtonKind.Ghost ? transparent
+        : Theme.surface(root.dark);
+    opacity: root.enabled-ui ? 1.0 : 0.45;
+
+    animate background { duration: Theme.fast; easing: ease-out; }
+    animate border-color { duration: Theme.fast; easing: ease-out; }
+
+    HorizontalLayout {
+        alignment: center;
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        spacing: Theme.s-2;
+
+        if root.has-icon : Icon {
+            source: root.icon;
+            size: 14px;
+            tint: root.kind == ButtonKind.Primary ? Theme.on-accent
+                : root.kind == ButtonKind.Danger ? Theme.danger(root.dark)
+                : Theme.textDim(root.dark);
+        }
+
+        lbl := Text {
+            font-size: Theme.t-md;
+            font-weight: Theme.w-medium;
+            vertical-alignment: center;
+            color: root.kind == ButtonKind.Primary ? Theme.on-accent
+                : root.kind == ButtonKind.Danger ? Theme.danger(root.dark)
+                : root.kind == ButtonKind.Ghost ? Theme.textDim(root.dark)
+                : Theme.text(root.dark);
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { if (root.enabled-ui) { root.clicked(); } }
+    }
+
+    states [
+        hover when ta.has-hover && root.enabled-ui : {
+            background: root.kind == ButtonKind.Primary ? Theme.accentHover(root.dark)
+                : root.kind == ButtonKind.Danger ? Theme.dangerSoft(root.dark)
+                : Theme.surface3(root.dark);
+            border-color: root.kind == ButtonKind.Secondary ? Theme.borderStrong(root.dark) : transparent;
+        }
+        pressed when ta.pressed && root.enabled-ui : {
+            background: root.kind == ButtonKind.Primary ? Theme.accentPressed(root.dark) : Theme.surface3(root.dark);
+        }
+    ]
+}
+
+// Square, icon-only control: theme toggle, row actions, close.
+export component UiIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> dark: false;
+    in property <length> size: 32px;
+    in property <color> tint: Theme.textDim(root.dark);
+    in property <bool> active: false;
+    callback clicked();
+
+    width: root.size;
+    height: root.size;
+    border-radius: Theme.r-sm;
+    background: root.active ? Theme.accentSoft(root.dark) : transparent;
+    animate background { duration: Theme.fast; }
+
+    Icon {
+        source: root.icon;
+        size: 15px;
+        tint: root.tint;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    states [
+        hover when ta.has-hover : { background: Theme.surface3(root.dark); }
+    ]
+}
+
+export component UiChip inherits Rectangle {
+    in property <string> text <=> lbl.text;
+    in property <bool> selected: false;
+    in property <bool> dark: false;
+    in property <color> tone: Theme.accent(root.dark);
+    in property <length> h: 26px;
+    in property <length> pad-x: Theme.s-2;
+    in property <bool> interactive: true;
+    callback clicked();
+
+    height: root.h;
+    border-radius: root.h / 2;
+    border-width: root.selected ? 0px : 1px;
+    border-color: Theme.border(root.dark);
+    background: root.selected ? root.tone : Theme.surface3(root.dark);
+
+    animate background { duration: Theme.fast; easing: ease-out; }
+    animate border-color { duration: Theme.fast; }
+
+    HorizontalLayout {
+        alignment: center;
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+
+        lbl := Text {
+            font-size: Theme.t-sm;
+            font-weight: root.selected ? Theme.w-semibold : Theme.w-medium;
+            vertical-alignment: center;
+            color: root.selected ? Theme.on-accent : Theme.textDim(root.dark);
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: root.interactive ? pointer : default;
+        clicked => { if (root.interactive) { root.clicked(); } }
+    }
+
+    states [
+        hover when ta.has-hover && !root.selected && root.interactive : {
+            border-color: Theme.borderStrong(root.dark);
+        }
+    ]
+}
+
+// Card = surface + hairline + optional elevation. `@children` land inside the
+// padded vertical layout, so screens never redraw the container by hand.
+export component UiCard inherits Rectangle {
+    in property <bool> dark: false;
+    in property <length> pad: Theme.s-3;
+    in property <length> gap: Theme.s-2;
+    in property <bool> elevated: false;
+    in property <length> radius: Theme.r-lg;
+    in property <color> fill: Theme.surface(root.dark);
+
+    border-radius: root.radius;
+    background: root.fill;
+    border-width: 1px;
+    border-color: Theme.border(root.dark);
+    drop-shadow-color: root.elevated ? Theme.shadow(root.dark) : transparent;
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 2px;
+
+    VerticalLayout {
+        padding: root.pad;
+        spacing: root.gap;
+        @children
+    }
+}
+
+export component UiDivider inherits Rectangle {
+    in property <bool> dark: false;
+    height: 1px;
+    background: Theme.border(root.dark);
+}
+
+// Small status pill: "Done", "2 new files", validation notices.
+export component UiBadge inherits Rectangle {
+    in property <string> text <=> lbl.text;
+    in property <color> fg: Theme.textDim(false);
+    in property <color> bg: transparent;
+    in property <length> h: 20px;
+
+    height: root.h;
+    border-radius: Theme.r-xs;
+    background: root.bg;
+
+    HorizontalLayout {
+        alignment: center;
+        padding-left: Theme.s-2;
+        padding-right: Theme.s-2;
+        lbl := Text {
+            font-size: Theme.t-sm;
+            font-weight: Theme.w-semibold;
+            vertical-alignment: center;
+            color: root.fg;
+        }
+    }
+}
+
+// Field label used by the preset form: fixed gutter so every control in a
+// column starts at the same x.
+export component UiFieldLabel inherits Text {
+    in property <bool> dark: false;
+    width: 112px;
+    font-size: Theme.t-md;
+    font-weight: Theme.w-medium;
+    color: Theme.textDim(root.dark);
+    vertical-alignment: center;
+    wrap: no-wrap;
+    overflow: elide;
+    horizontal-stretch: 0;
+}

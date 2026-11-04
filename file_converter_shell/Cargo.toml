@@ -6,6 +6,9 @@ description = "Windows Explorer context menu shell extension for FileConverter-r
 license = "GPL-3.0-or-later"
 repository = "https://github.com/SV-stark/FileConverter-rs"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib"]
 
