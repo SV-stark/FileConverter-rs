@@ -3,14 +3,14 @@
 //!
 //! Kept apart from the Slint wiring so every rule is unit-tested.
 
-use file_converter_core::settings::{CompactStr, ConversionPreset, Settings};
+use file_converter_core::settings::{CompactStr, ConversionPreset, Settings, split_name_parts};
 use file_converter_core::types::{
     FileCategory, OutputType, get_extension_category, is_output_type_compatible_with_category,
 };
 
 /// Splits `"Scale 75%/To Mp4"` into `("Scale 75%", "To Mp4")`.
 pub fn split_preset_name(name: &str) -> (String, String) {
-    let mut parts: Vec<&str> = name.split('/').collect();
+    let mut parts = split_name_parts(name);
     let short = parts.pop().unwrap_or("").to_string();
     let folder = parts
         .iter()
@@ -24,8 +24,8 @@ pub fn split_preset_name(name: &str) -> (String, String) {
 /// Inverse of [`split_preset_name`]: empty folder segments are dropped and
 /// every part is trimmed, so `" A / /B"` + `" x "` becomes `"A/B/x"`.
 pub fn join_preset_name(folder: &str, short: &str) -> String {
-    let mut parts: Vec<&str> = folder
-        .split('/')
+    let mut parts: Vec<&str> = split_name_parts(folder)
+        .into_iter()
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .collect();
@@ -267,6 +267,19 @@ mod tests {
         assert_eq!(join_preset_name(" A / /B ", " To Png "), "A/B/To Png");
         let (folder, short) = split_preset_name("A/B/To Png");
         assert_eq!(join_preset_name(&folder, &short), "A/B/To Png");
+
+        // Slashes inside brackets belong to the name.
+        assert_eq!(
+            split_preset_name("Docs/To Pdf (from Markdown/EPUB)"),
+            (
+                "Docs".to_string(),
+                "To Pdf (from Markdown/EPUB)".to_string()
+            )
+        );
+        assert_eq!(
+            join_preset_name("Docs", "To Pdf (from Markdown/EPUB)"),
+            "Docs/To Pdf (from Markdown/EPUB)"
+        );
     }
 
     #[test]

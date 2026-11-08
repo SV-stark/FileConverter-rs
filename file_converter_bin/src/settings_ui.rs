@@ -25,7 +25,7 @@ use crate::{
     hw_accel_label, initialize_user_settings_if_needed, is_preset_compatible_with_file,
     is_windows_dark_mode, load_history, open_file_dialog, open_path_with_shell, open_url,
     parse_hw_accel_label, persist_theme_preference, preset_file_dialog,
-    register_shell_extension_dll, reveal_in_explorer, save_history, show_error_box,
+    register_shell_extension_dll, reveal_in_explorer, save_history, shell_menu, show_error_box,
     spawn_conversion_process, unique_preset_name, unregister_shell_extension_dll,
 };
 
@@ -458,6 +458,41 @@ fn load_settings_or_defaults() -> Settings {
     }
 }
 
+/// Shows the state of the Explorer right-click menu in Preferences.
+fn refresh_shell_menu(w: &SettingsWindow) -> shell_menu::MenuHealth {
+    let health = shell_menu::current();
+    w.set_shell_menu_status(health.message().into());
+    w.set_shell_menu_ok(health.is_ok());
+    w.set_shell_menu_added(health.is_added());
+    w.set_shell_menu_action(health.action_label().into());
+    health
+}
+
+/// Adds/repairs or removes the right-click menu without freezing the window
+/// (Windows' permission prompt can stay open for a while), then shows the
+/// outcome and the new state.
+fn change_shell_menu(w: &SettingsWindow, remove: bool) {
+    if w.get_shell_menu_busy() {
+        return;
+    }
+    w.set_shell_menu_busy(true);
+    let weak = w.as_weak();
+    std::thread::spawn(move || {
+        let message = if remove {
+            unregister_shell_extension_dll()
+        } else {
+            register_shell_extension_dll()
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_shell_menu_busy(false);
+                refresh_shell_menu(&w);
+                show_status(&w, message);
+            }
+        });
+    });
+}
+
 fn check_for_updates_async(w: &SettingsWindow, announce_up_to_date: bool) {
     let weak = w.as_weak();
     std::thread::spawn(move || {
@@ -550,6 +585,15 @@ pub(crate) fn run(initial_files: Option<Vec<String>>) {
     wire_history(&window, &state);
     wire_window(&window, &state);
 
+    if refresh_shell_menu(&window).is_broken() {
+        // The usual reason for "my presets aren't in the right-click menu":
+        // say so up front instead of leaving it to be found in Preferences.
+        show_status(
+            &window,
+            "The Explorer right-click menu needs a repair: see Preferences.",
+        );
+    }
+
     if check_upgrade {
         check_for_updates_async(&window, false);
     }
@@ -630,7 +674,7 @@ fn wire_window(window: &SettingsWindow, state: &Rc<State>) {
         let weak = window.as_weak();
         window.on_register_shell(move || {
             if let Some(w) = weak.upgrade() {
-                show_status(&w, register_shell_extension_dll());
+                change_shell_menu(&w, false);
             }
         });
     }
@@ -638,7 +682,7 @@ fn wire_window(window: &SettingsWindow, state: &Rc<State>) {
         let weak = window.as_weak();
         window.on_unregister_shell(move || {
             if let Some(w) = weak.upgrade() {
-                show_status(&w, unregister_shell_extension_dll());
+                change_shell_menu(&w, true);
             }
         });
     }

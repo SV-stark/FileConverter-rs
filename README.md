@@ -35,8 +35,8 @@ This project modernizes and accelerates the core conversion pipelines, Windows E
 | Feature / Subsystem | Original C# FileConverter | Rust Rewrite (`FileConverter-rs`) |
 | :--- | :--- | :--- |
 | **Settings Schema** | XML (`Settings.default.xml` / `user.xml`) | **100% XML schema parity** via `quick-xml` & `serde` |
-| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit`, `IContextMenu`, & Windows 11 `IExplorerCommand` |
-| **Windows Explorer Integration** | Legacy *"Show more options"* only | Native COM `shellex` + **Direct Windows 11 Context Menu** |
+| **Explorer Context Menu** | SharpShell C# COM Extension | **Pure-Rust `windows` Crate COM DLL** (`cdylib`) with embedded default presets, type-safe `IShellExtInit` & `IContextMenu`, cached icons (no GDI leaks) |
+| **Windows Explorer Integration** | *"Show more options"* menu | Same place (*"Show more options"* / Shift+right-click on Windows 11), plus a health check and one-click repair in Preferences |
 | **Settings Dashboard** | WPF Settings Window (`SettingsWindow.xaml`) | **Native Desktop GUI Window** (`Slint UI` Fluent Design) |
 | **Conversion Progress** | WPF Progress Window (`ProgressDialog.xaml`) | **Native Desktop Progress Window** with per-job live progress, cancel controls, dropzone actions & dynamic status indicators |
 | **Image Conversion & PNG Compression** | External ImageMagick CLI binaries | **Pure-Rust Engine** (`image.rs`) using SIMD `fast_image_resize`, `jxl-oxide` (JPEG XL), `oxipng` multi-level lossless PNG compression, and native multi-resolution ICO / GIF writers |
@@ -56,8 +56,11 @@ This project modernizes and accelerates the core conversion pipelines, Windows E
 1. Select one or multiple files in **Windows Explorer**.
 2. **Right-click** the selection:
    - **On Windows 10**: Hover over the **`File Converter`** cascading context menu.
-   - **On Windows 11**: Click **`File Converter`** directly on the main context menu (or expand *"Show more options"*).
-3. Select your desired target format (e.g., *"To Mp3"*, *"To Png"*, *"To Pdf"*).
+   - **On Windows 11**: Click *"Show more options"* (or hold **Shift** while right-clicking), then **`File Converter`**.
+3. Select your desired target format (e.g., *"To Mp3"*, *"To Png"*, *"To Png (paged)"* for a PDF). Presets in folders (*Scale 75%*, *Rotate left*…) open as sub-menus; presets that only fit some of the selected files are greyed out.
+
+> [!TIP]
+> Don't see **File Converter** in the menu, or does it open the settings window instead of listing presets? Open FileConverter → **Preferences → Explorer right-click menu**: it tells you what's wrong and **Repair the menu** fixes it (old entries from earlier versions included).
 4. The **Native Progress Window** will pop up, displaying individual progress bars per file, cancel buttons (`✕ Cancel`), and real-time status summary.
 5. Once conversion completes, output files are placed directly alongside source files (or formatted per your path template settings), and the window automatically closes.
 
@@ -163,7 +166,7 @@ regsvr32.exe /s file_converter_shell.dll
 regsvr32.exe /u /s file_converter_shell.dll
 ```
 
-Or open `file_converter_bin.exe` and click **"⚙️ Register Shell Extension"**.
+Or open `file_converter_bin.exe` → **Preferences → Explorer right-click menu** and click **Add to the menu** / **Repair the menu**.
 
 ---
 

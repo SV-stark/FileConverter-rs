@@ -1915,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_bin"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "clap",
  "file_converter_core",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_core"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_shell"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "file_converter_core",
  "scopeguard",

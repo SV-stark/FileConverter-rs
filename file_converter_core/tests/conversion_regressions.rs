@@ -1157,6 +1157,33 @@ fn test_settings_load_applies_csharp_fixups() {
 }
 
 #[test]
+fn test_slashes_inside_brackets_are_not_folders() {
+    use file_converter_core::settings::split_name_parts;
+
+    // The shipped "To Pdf (from Markdown/Typst/EPUB)" used to show up in the
+    // right-click menu as "To Pdf (from Markdown" > "Typst" > "EPUB)".
+    let p = preset(
+        "To Pdf (from Markdown/Typst/EPUB)",
+        OutputType::Pdf,
+        &["md"],
+    );
+    assert_eq!(p.short_name(), "To Pdf (from Markdown/Typst/EPUB)");
+    assert!(p.folders().is_empty());
+
+    let p = preset(
+        "Docs/Web/To Html (from EPUB/Markdown)",
+        OutputType::Html,
+        &["md"],
+    );
+    assert_eq!(p.short_name(), "To Html (from EPUB/Markdown)");
+    assert_eq!(p.folders(), ["Docs", "Web"]);
+
+    assert_eq!(split_name_parts("A/[x/y]/B"), ["A", "[x/y]", "B"]);
+    // An unbalanced ")" can't make the depth negative and swallow later slashes.
+    assert_eq!(split_name_parts("a)/b/c"), ["a)", "b", "c"]);
+}
+
+#[test]
 fn test_preset_file_export_import_roundtrip() {
     use file_converter_core::settings::{load_presets_file, save_presets_file};
 

@@ -239,16 +239,44 @@ impl Settings {
     }
 }
 
+/// Splits a preset name into its `/`-separated parts, ignoring slashes inside
+/// brackets: `"Scale 75%/To Pdf (from Markdown/EPUB)"` ->
+/// `["Scale 75%", "To Pdf (from Markdown/EPUB)"]`.
+///
+/// A plain `split('/')` turned the shipped "To Pdf (from Markdown/Typst/EPUB)"
+/// preset into the folders "To Pdf (from Markdown" > "Typst" and the item
+/// "EPUB)" in the right-click menu and the settings list.
+pub fn split_name_parts(name: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in name.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => {
+                parts.push(&name[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&name[start..]);
+    parts
+}
+
 impl ConversionPreset {
     /// The preset name without its folders: `"Scale 75%/To Mp4"` -> `"To Mp4"`.
     pub fn short_name(&self) -> &str {
-        self.name.rsplit('/').next().unwrap_or(&self.name)
+        split_name_parts(&self.name)
+            .pop()
+            .unwrap_or(self.name.as_str())
     }
 
     /// The folders a preset is filed under (`"Scale 75%/To Mp4"` ->
     /// `["Scale 75%"]`). The C# original shows them as sub-menus.
     pub fn folders(&self) -> Vec<&str> {
-        let mut parts: Vec<&str> = self.name.split('/').collect();
+        let mut parts = split_name_parts(&self.name);
         parts.pop();
         parts.retain(|p| !p.trim().is_empty());
         parts

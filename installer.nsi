@@ -1,5 +1,5 @@
 !define APP_NAME "FileConverter"
-!define APP_VERSION "0.11.0"
+!define APP_VERSION "0.11.1"
 !define APP_PUBLISHER "FileConverter Authors"
 !define APP_WEBSITE "https://github.com/SV-stark/FileConverter-rs"
 
@@ -34,9 +34,18 @@ Section "Install"
     SetRegView 64
     SetOutPath "$INSTDIR"
     
+    ; Explorer keeps the right-click menu DLL loaded, so an upgrade cannot
+    ; overwrite it ("Error opening file for writing"). A loaded DLL can still
+    ; be renamed: move it aside, install the new one, and delete the old one
+    ; now or at the next restart.
+    IfFileExists "$INSTDIR\file_converter_shell.dll" 0 +3
+        Delete "$INSTDIR\file_converter_shell.old.dll"
+        Rename "$INSTDIR\file_converter_shell.dll" "$INSTDIR\file_converter_shell.old.dll"
+
     ; Copy build outputs and logo assets
     File "target\release\file_converter_bin.exe"
     File "target\release\file_converter_shell.dll"
+    Delete /REBOOTOK "$INSTDIR\file_converter_shell.old.dll"
     File "Settings.default.xml"
     File "icon.ico"
     File "icon.png"
@@ -81,6 +90,7 @@ Section "Uninstall"
     Delete "$INSTDIR\icon.png"
     Delete "$INSTDIR\file_converter_bin.exe"
     Delete /REBOOTOK "$INSTDIR\file_converter_shell.dll"
+    Delete /REBOOTOK "$INSTDIR\file_converter_shell.old.dll"
     Delete "$INSTDIR\Settings.default.xml"
     Delete "$INSTDIR\uninstall.exe"
     

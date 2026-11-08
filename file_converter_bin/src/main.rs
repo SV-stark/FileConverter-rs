@@ -17,6 +17,7 @@ use slint::Model;
 
 mod settings_logic;
 mod settings_ui;
+mod shell_menu;
 
 /// Title of the settings window. The drag-and-drop hook and the owner of
 /// native dialogs find the window by it, so it must match `appwindow.slint`.
@@ -76,76 +77,26 @@ fn initialize_user_settings_if_needed() -> Result<Settings, String> {
     Ok(settings)
 }
 
-/// Runs `regsvr32.exe` (elevated) to register or unregister the shell
-/// extension DLL. Both write to HKLM, so both need administrator rights:
-/// unregistering used to run without elevation and silently do nothing.
-fn register_shell_extension(unregister: bool) -> std::io::Result<()> {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::core::PCWSTR;
-
-    let mut exe_dir = env::current_exe().unwrap_or_default();
-    exe_dir.pop();
-    let dll_path = exe_dir.join("file_converter_shell.dll");
-
-    if !dll_path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Shell DLL not found at {}", dll_path.display()),
-        ));
-    }
-
-    let switches = if unregister { "/u /s" } else { "/s" };
-    let params: Vec<u16> = format!("{switches} \"{}\"\0", dll_path.display())
-        .encode_utf16()
-        .collect();
-    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
-    let file: Vec<u16> = "regsvr32.exe"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-
-    // SAFETY: `ShellExecuteW` is a Win32 shim; all pointers reference
-    // null-terminated buffers that live until the call returns, and no
-    // caller-owned memory is aliased.
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(verb.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR(params.as_ptr()),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-
-    if (result.0 as usize) > 32 {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "The request was canceled or failed (code {}).",
-            result.0 as usize
-        )))
-    }
-}
-
+/// Adds (or repairs) the Explorer right-click menu and waits for Windows to
+/// finish; returns the message to show.
 fn register_shell_extension_dll() -> String {
-    match register_shell_extension(false) {
-        Ok(()) => {
-            "Adding File Converter to the Explorer menu. Accept the Windows prompt to finish."
-                .to_string()
-        }
-        Err(e) => e.to_string(),
+    match shell_menu::run_regsvr32(false) {
+        Ok(()) => match shell_menu::current() {
+            health if health.is_ok() => {
+                "File Converter is in the right-click menu. Right-click a file to try it."
+                    .to_string()
+            }
+            health => health.message(),
+        },
+        Err(e) => e,
     }
 }
 
+/// Removes the Explorer right-click menu; returns the message to show.
 fn unregister_shell_extension_dll() -> String {
-    match register_shell_extension(true) {
-        Ok(()) => {
-            "Removing File Converter from the Explorer menu. Accept the Windows prompt to finish."
-                .to_string()
-        }
-        Err(e) => e.to_string(),
+    match shell_menu::run_regsvr32(true) {
+        Ok(()) => "File Converter was removed from the right-click menu.".to_string(),
+        Err(e) => e,
     }
 }
 

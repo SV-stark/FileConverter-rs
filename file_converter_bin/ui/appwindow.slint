@@ -427,6 +427,13 @@ export component SettingsWindow inherits Window {
     in-out property <[string]> theme_modes: ["Follow Windows", "Light", "Dark"];
     in-out property <int> theme_mode_index: 0;
 
+    // Explorer right-click menu
+    in-out property <string> shell_menu_status: "";
+    in-out property <bool> shell_menu_ok: false;
+    in-out property <bool> shell_menu_added: false;
+    in-out property <string> shell_menu_action: "Add to the menu";
+    in-out property <bool> shell_menu_busy: false;
+
     // Files staged for conversion (dropped or picked)
     in-out property <int> pending_files_count: 0;
     in-out property <string> pending_files_summary: "";
@@ -1630,23 +1637,31 @@ export component SettingsWindow inherits Window {
                         UiSection {
                             dark: root.dark_mode;
                             title: "Explorer right-click menu";
-                            subtitle: "Adds a \"File Converter\" sub-menu with your presets when you right-click files in Explorer. Windows asks for administrator permission.";
+                            subtitle: "Right-click files in Explorer and pick a preset to convert them straight away, without opening this window. Changing the menu asks for administrator permission.";
+
+                            if root.shell_menu_status != "" : UiNotice {
+                                dark: root.dark_mode;
+                                warning: !root.shell_menu_ok;
+                                text: root.shell_menu_busy ? "Waiting for Windows… accept the permission prompt to continue." : root.shell_menu_status;
+                            }
 
                             HorizontalLayout {
                                 spacing: Theme.s-2;
                                 alignment: start;
                                 UiButton {
-                                    text: "Add to the menu";
-                                    kind: ButtonKind.Secondary;
+                                    text: root.shell_menu_action;
+                                    kind: root.shell_menu_ok ? ButtonKind.Secondary : ButtonKind.Primary;
                                     dark: root.dark_mode;
+                                    enabled-ui: !root.shell_menu_busy;
                                     has-icon: true;
                                     icon: @image-url("icons/plug.svg");
                                     clicked => { root.register_shell(); }
                                 }
-                                UiButton {
+                                if root.shell_menu_added : UiButton {
                                     text: "Remove from the menu";
                                     kind: ButtonKind.Ghost;
                                     dark: root.dark_mode;
+                                    enabled-ui: !root.shell_menu_busy;
                                     has-icon: true;
                                     icon: @image-url("icons/x.svg");
                                     clicked => { root.unregister_shell(); }

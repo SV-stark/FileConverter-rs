@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-08
+
+### Explorer right-click menu (quick conversion without opening the app)
+- **Leftover entries removed.** Older versions registered a flat
+  "File Converter" verb (`*\shell\FileConverter`, also under
+  `AllFilesystemObjects`, `Directory`, `Drive` and `Folder`) whose command was
+  `file_converter_bin.exe -settings`. It sat above the real preset menu, so
+  right-clicking a PDF and choosing "File Converter" opened the full settings
+  window instead of offering "To Png (paged)". Registering now deletes every
+  File Converter menu key under both `HKLM\Software\Classes` and
+  `HKCU\Software\Classes` before writing the single
+  `*\shellex\ContextMenuHandlers` handler (C# parity: all files). The unused
+  property-sheet handler, which loaded the DLL into every Properties dialog, is
+  no longer registered.
+- **Same menu as the C# original.** Presets that fit only part of a mixed
+  selection are now listed greyed out instead of hidden; the menu appears when
+  any selected file type has a preset. Each file type is checked once, so
+  selecting thousands of files costs the same as selecting one.
+- **Preset folders fixed.** Slashes inside brackets no longer split a name, so
+  "To Pdf (from Markdown/Typst/EPUB)" is one item, not the folders
+  "To Pdf (from Markdown" > "Typst" > "EPUB)" (menu and settings list).
+- **GDI handle leak fixed.** `MIIM_BITMAP` does not hand the bitmap to the
+  menu, so the per-item bitmaps created on every right-click leaked inside
+  explorer.exe. Icons are now created once per process (and freed when the DLL
+  unloads): the app icon on "File Converter", folder icons on sub-menus,
+  rounded category badges on presets and a gear on "Configure presets...".
+  200 simulated right-clicks: 0 GDI objects leaked, ~2 ms each.
+- The converter next to the DLL is preferred over a stale `AppPath` value, so
+  an old install can no longer be launched by a newer menu.
+- `GetCommandString` returns `E_NOTIMPL` instead of `S_OK` with an unfilled
+  buffer.
+
+### Settings window
+- Preferences → "Explorer right-click menu" now shows whether the menu works
+  (ready / not added / broken / old leftover entry / using another copy) with
+  a matching button ("Add to the menu", "Repair the menu", "Add again"). It
+  waits for Windows' permission prompt and regsvr32 to finish and reports the
+  real outcome (declined prompt, load failure, success) instead of
+  "accept the prompt to finish". A broken menu is announced when the window
+  opens.
+
 ### Security
 - **`zip` 4.6.1 → 9.4.2** and **`ebook-rs` 0.16.6 → 0.18.0**, closing 1 critical,
   3 high and 1 moderate advisory: a ZIP64 size overflow that allowed a denial

@@ -1,8 +1,15 @@
 //! Windows Explorer context-menu shell extension (in-process COM DLL).
 //!
-//! Implements `IShellExtInit`, `IContextMenu`, `IExplorerCommand`, and
-//! `IShellPropSheetExt` so right-clicking files in Explorer offers the
-//! configured FileConverter conversion presets without leaving the shell.
+//! Right-clicking files in Explorer shows a "File Converter" sub-menu listing
+//! the conversion presets that fit the selection, exactly like the C#
+//! original: presets filed in folders appear as nested sub-menus, presets that
+//! only fit part of a mixed selection are shown greyed out, and the list ends
+//! with "Configure presets...". Choosing a preset starts the conversion
+//! straight away; the settings window is never opened for it.
+//!
+//! The menu is a classic `IContextMenu` handler registered under
+//! `HKCR\*\shellex\ContextMenuHandlers`. On Windows 11 it is in the full menu
+//! ("Show more options", or Shift+right-click), the same place as the C# app.
 
 #![allow(
     // The `windows` crate's generated COM plumbing forces snake_case / non-CamelCase
@@ -17,7 +24,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::SystemTime;
 
 use file_converter_core::settings::{ConversionPreset, Settings};
@@ -31,9 +38,13 @@ mod windows_core {
     pub use windows::core::*;
 }
 use windows::Win32::Foundation::{
-    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, HMODULE, LPARAM, S_FALSE, S_OK,
+    BOOL, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_NOTIMPL, HANDLE, HMODULE,
+    LPARAM, S_FALSE, S_OK,
 };
-use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, HBITMAP, HDC, HGDIOBJ, SelectObject,
+};
 use windows::Win32::System::Com::{
     CoTaskMemAlloc, CoTaskMemFree, DVASPECT_CONTENT, FORMATETC, IBindCtx, IClassFactory,
     IClassFactory_Impl, IDataObject, STGMEDIUM, TYMED_HGLOBAL,
@@ -66,19 +77,34 @@ use windows::Win32::System::Registry::HKEY;
 use windows::Win32::UI::Controls::HPROPSHEETPAGE;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMINVOKECOMMANDINFO, DragQueryFileW, ECF_DEFAULT, ECS_ENABLED, HDROP, IContextMenu,
-    IContextMenu_Impl, IEnumExplorerCommand, IExplorerCommand, IExplorerCommand_Impl,
+    CMINVOKECOMMANDINFO, DragQueryFileW, ECF_DEFAULT, ECS_ENABLED, ExtractIconExW, HDROP,
+    IContextMenu, IContextMenu_Impl, IEnumExplorerCommand, IExplorerCommand, IExplorerCommand_Impl,
     IShellExtInit, IShellExtInit_Impl, IShellItemArray, IShellPropSheetExt,
-    IShellPropSheetExt_Impl, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SIGDN_FILESYSPATH,
+    IShellPropSheetExt_Impl, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify, SHGSI_ICON,
+    SHGSI_SMALLICON, SHGetStockIconInfo, SHSTOCKICONID, SHSTOCKICONINFO, SIGDN_FILESYSPATH,
 };
 
 type LPFNADDPROPSHEETPAGE = Option<unsafe extern "system" fn(HPROPSHEETPAGE, LPARAM) -> BOOL>;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, DestroyMenu, HMENU, InsertMenuItemW, MENUITEMINFOW, MFT_SEPARATOR, MFT_STRING,
-    MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STRING, MIIM_SUBMENU,
+    CreatePopupMenu, DI_NORMAL, DestroyIcon, DestroyMenu, DrawIconEx, GetSystemMetrics, HICON,
+    HMENU, InsertMenuItemW, MENUITEMINFOW, MFS_DISABLED, MFT_SEPARATOR, MFT_STRING, MIIM_BITMAP,
+    MIIM_FTYPE, MIIM_ID, MIIM_STATE, MIIM_STRING, MIIM_SUBMENU, SM_CXSMICON,
 };
 
 const CLSID_FILE_CONVERTER: GUID = GUID::from_u128(0xAF9B72B5_F4E4_44B0_A3D9_B55B748EFE90);
+const CLSID_STR: &str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
+
+/// Every class the extension (or an older version of it, or the C#
+/// original) has ever been registered under. Registration cleans all of them
+/// so leftovers can't show a second "File Converter" entry.
+const ALL_ASSOCIATIONS: [&str; 6] = [
+    "*",
+    "AllFilesystemObjects",
+    "Directory",
+    "Directory\\Background",
+    "Drive",
+    "Folder",
+];
 
 // Atomic DLL instance handle & active COM object counters
 static G_DLL_INSTANCE: AtomicUsize = AtomicUsize::new(0);
@@ -112,6 +138,31 @@ pub unsafe extern "system" fn DllMain(
         unsafe {
             let _ = DisableThreadLibraryCalls(hinst_dll);
         }
+    } else if fdw_reason == 0 && _lpv_reserved.is_null() {
+        // DLL_PROCESS_DETACH because Explorer unloaded us (not process exit):
+        // give back the cached menu bitmaps so each unload/reload cycle does
+        // not leave eight GDI handles behind. `OnceLock::get` neither locks
+        // nor allocates.
+        if let Some(icons) = MENU_BITMAPS.get() {
+            for raw in [
+                icons.app,
+                icons.folder,
+                icons.settings,
+                icons.audio,
+                icons.video,
+                icons.image,
+                icons.pdf,
+                icons.document,
+            ] {
+                if raw != 0 {
+                    // SAFETY: the bitmaps are ours and no menu can still be
+                    // showing them once the DLL is being unloaded.
+                    unsafe {
+                        let _ = DeleteObject(HBITMAP(raw as *mut c_void));
+                    }
+                }
+            }
+        }
     }
     1
 }
@@ -123,46 +174,254 @@ pub unsafe extern "system" fn DllMain(
 /// duplicates that used to exist here silently shipped stale presets.
 const DEFAULT_SETTINGS_XML: &str = include_str!("../../Settings.default.xml");
 
-const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+// ---------------------------------------------------------------------------
+// Menu icons
+// ---------------------------------------------------------------------------
+
+/// Menu bitmaps, created once per Explorer process and kept for its lifetime.
+///
+/// `MIIM_BITMAP` does **not** hand the bitmap to the menu (`DestroyMenu` never
+/// deletes it), so creating fresh bitmaps on every right-click leaked GDI
+/// handles inside explorer.exe until it hit the 10,000 limit and menus and
+/// icons stopped drawing. Stored as raw handle values because `HBITMAP` is not
+/// `Send`/`Sync`; 0 means "no icon".
+struct MenuBitmaps {
+    app: usize,
+    folder: usize,
+    settings: usize,
+    audio: usize,
+    video: usize,
+    image: usize,
+    pdf: usize,
+    document: usize,
 }
 
-fn create_category_icon(output_type: OutputType) -> HBITMAP {
-    // 32bpp GDI Bitmap memory layout: Byte 0 = B, Byte 1 = G, Byte 2 = R, Byte 3 = 0
-    let color: u32 = match output_type {
-        OutputType::Aac
-        | OutputType::Flac
-        | OutputType::Mp3
-        | OutputType::Ogg
-        | OutputType::Wav => rgb(255, 140, 0), // Vibrant Amber / Orange (Audio)
-        OutputType::Avi
-        | OutputType::Mkv
-        | OutputType::Mp4
-        | OutputType::Ogv
-        | OutputType::Webm => rgb(32, 96, 224), // Vivid Blue (Video)
-        OutputType::Avif
-        | OutputType::Ico
-        | OutputType::Jpg
-        | OutputType::Jxl
-        | OutputType::Png
-        | OutputType::Webp
-        | OutputType::Gif => rgb(48, 176, 32), // Emerald Green (Image)
-        OutputType::Pdf => rgb(216, 32, 32), // Crimson Red (PDF / Document)
-        _ => rgb(112, 112, 112),             // Slate Gray
-    };
+static MENU_BITMAPS: OnceLock<MenuBitmaps> = OnceLock::new();
 
-    let mut pixels = [color; 16 * 16];
-    let border_color = rgb(48, 48, 48);
-    for y in 0..16 {
-        for x in 0..16 {
-            if x == 0 || x == 15 || y == 0 || y == 15 {
-                pixels[y * 16 + x] = border_color;
-            }
+fn menu_bitmaps() -> &'static MenuBitmaps {
+    MENU_BITMAPS.get_or_init(|| {
+        // SAFETY: GetSystemMetrics has no preconditions.
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(12, 64);
+        let app = app_icon(size).map_or(0, |b| b.0 as usize);
+        MenuBitmaps {
+            app,
+            // SIID_FOLDER = 3. The stock "settings" icon draws blank in
+            // menus on Windows 11, so the gear is drawn here instead.
+            folder: stock_icon(SHSTOCKICONID(3), size).map_or(0, |b| b.0 as usize),
+            settings: gear_bitmap(size).map_or(0, |b| b.0 as usize),
+            audio: badge_bitmap(rgb(232, 128, 0), size).map_or(0, |b| b.0 as usize),
+            video: badge_bitmap(rgb(40, 104, 224), size).map_or(0, |b| b.0 as usize),
+            image: badge_bitmap(rgb(40, 160, 64), size).map_or(0, |b| b.0 as usize),
+            pdf: badge_bitmap(rgb(208, 40, 40), size).map_or(0, |b| b.0 as usize),
+            document: badge_bitmap(rgb(112, 112, 128), size).map_or(0, |b| b.0 as usize),
+        }
+    })
+}
+
+fn category_bitmap(output_type: OutputType) -> HBITMAP {
+    let icons = menu_bitmaps();
+    let raw = match output_type {
+        OutputType::Pdf => icons.pdf,
+        other => match other.kind() {
+            "Audio" => icons.audio,
+            "Video" => icons.video,
+            "Image" => icons.image,
+            _ => icons.document,
+        },
+    };
+    HBITMAP(raw as *mut c_void)
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
+    [r, g, b]
+}
+
+/// Creates an empty top-down 32-bit premultiplied-alpha DIB section, the
+/// format menus alpha-blend, and returns it with a pointer to its pixels.
+fn create_argb_bitmap(size: i32) -> Option<(HBITMAP, *mut u32)> {
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size, // negative = top-down rows
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `info` is a valid BITMAPINFO for the duration of the call and
+    // `bits` receives the pixel pointer owned by the returned section.
+    let bmp = unsafe {
+        CreateDIBSection(
+            HDC::default(),
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            HANDLE::default(),
+            0,
+        )
+    }
+    .ok()?;
+    if bits.is_null() {
+        // SAFETY: `bmp` was just created and is not selected anywhere.
+        unsafe {
+            let _ = DeleteObject(bmp);
+        }
+        return None;
+    }
+    Some((bmp, bits as *mut u32))
+}
+
+/// A small rounded square in the category colour, anti-aliased.
+fn badge_bitmap(color: [u8; 3], size: i32) -> Option<HBITMAP> {
+    let (bmp, bits) = create_argb_bitmap(size)?;
+    let s = size as f32;
+    let inset = (s * 0.12).round();
+    let (lo, hi) = (inset, s - inset);
+    let radius = ((hi - lo) * 0.28).max(2.0);
+    // SAFETY: the DIB section holds exactly `size * size` 32-bit pixels.
+    let pixels = unsafe { std::slice::from_raw_parts_mut(bits, (size * size) as usize) };
+    for y in 0..size {
+        for x in 0..size {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            // Signed distance to the rounded rectangle.
+            let cx = px.clamp(lo + radius, hi - radius);
+            let cy = py.clamp(lo + radius, hi - radius);
+            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - radius;
+            let coverage = (0.5 - d).clamp(0.0, 1.0);
+            // A slightly lighter top half gives the badge some depth.
+            let lift = if py < s / 2.0 { 18.0 } else { 0.0 };
+            let ch = |c: u8| ((c as f32 + lift).min(255.0) * coverage).round() as u32;
+            let a = (coverage * 255.0).round() as u32;
+            pixels[(y * size + x) as usize] =
+                (a << 24) | (ch(color[0]) << 16) | (ch(color[1]) << 8) | ch(color[2]);
         }
     }
-    // SAFETY: pixels is a valid 16x16 32bpp buffer that remains alive during CreateBitmap.
-    unsafe { CreateBitmap(16, 16, 1, 32, Some(pixels.as_ptr() as *const c_void)) }
+    Some(bmp)
 }
+
+/// A grey eight-tooth gear for "Configure presets...", anti-aliased. Mid grey
+/// reads on both the light and the dark Explorer menu.
+fn gear_bitmap(size: i32) -> Option<HBITMAP> {
+    let (bmp, bits) = create_argb_bitmap(size)?;
+    let s = size as f32;
+    let c = s / 2.0;
+    let body = s * 0.30;
+    let tooth = s * 0.12;
+    let hole = s * 0.13;
+    let [r, g, b] = rgb(110, 110, 120);
+    // SAFETY: the DIB section holds exactly `size * size` 32-bit pixels.
+    let pixels = unsafe { std::slice::from_raw_parts_mut(bits, (size * size) as usize) };
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+            let dist = (dx * dx + dy * dy).sqrt();
+            let angle = dy.atan2(dx);
+            // Teeth: a smoothed square wave around the rim.
+            let wave = ((angle * 8.0).cos() * 3.0).clamp(-1.0, 1.0) * 0.5 + 0.5;
+            let outer = body + tooth * wave;
+            let coverage = (outer - dist + 0.5)
+                .clamp(0.0, 1.0)
+                .min((dist - hole + 0.5).clamp(0.0, 1.0));
+            let a = (coverage * 255.0).round() as u32;
+            let ch = |v: u8| (v as f32 * coverage).round() as u32;
+            pixels[(y * size + x) as usize] = (a << 24) | (ch(r) << 16) | (ch(g) << 8) | ch(b);
+        }
+    }
+    Some(bmp)
+}
+
+/// Draws an icon into a new premultiplied-alpha bitmap and destroys the icon.
+fn icon_to_bitmap(icon: HICON, size: i32) -> Option<HBITMAP> {
+    let _destroy = scopeguard::guard(icon, |i| {
+        // SAFETY: the icon was created for us and is not used after this.
+        unsafe {
+            let _ = DestroyIcon(i);
+        }
+    });
+    let (bmp, _bits) = create_argb_bitmap(size)?;
+    // SAFETY: a memory DC is created, the fresh DIB section is selected into
+    // it for the draw and deselected before the DC is deleted.
+    unsafe {
+        let dc = CreateCompatibleDC(HDC::default());
+        if dc.is_invalid() {
+            let _ = DeleteObject(bmp);
+            return None;
+        }
+        let old = SelectObject(dc, HGDIOBJ(bmp.0));
+        let drawn = DrawIconEx(
+            dc,
+            0,
+            0,
+            icon,
+            size,
+            size,
+            0,
+            windows::Win32::Graphics::Gdi::HBRUSH::default(),
+            DI_NORMAL,
+        );
+        SelectObject(dc, old);
+        let _ = DeleteDC(dc);
+        if drawn.is_err() {
+            let _ = DeleteObject(bmp);
+            return None;
+        }
+    }
+    Some(bmp)
+}
+
+fn stock_icon(id: SHSTOCKICONID, size: i32) -> Option<HBITMAP> {
+    let mut info = SHSTOCKICONINFO {
+        cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `info` is a correctly sized, writable SHSTOCKICONINFO.
+    unsafe { SHGetStockIconInfo(id, SHGSI_ICON | SHGSI_SMALLICON, &mut info) }.ok()?;
+    if info.hIcon.is_invalid() {
+        return None;
+    }
+    icon_to_bitmap(info.hIcon, size)
+}
+
+/// The File Converter icon, taken from the converter executable.
+fn app_icon(size: i32) -> Option<HBITMAP> {
+    let bin = get_bin_path();
+    if !bin.exists() {
+        return None;
+    }
+    let wide: Vec<u16> = bin.as_os_str().encode_wide_nul();
+    let mut small = HICON::default();
+    // SAFETY: `wide` is a NUL-terminated path that outlives the call and
+    // `small` receives at most one icon handle, which we then own.
+    let count = unsafe { ExtractIconExW(PCWSTR(wide.as_ptr()), 0, None, Some(&mut small), 1) };
+    if count == 0 || small.is_invalid() {
+        return None;
+    }
+    icon_to_bitmap(small, size)
+}
+
+/// `OsStr` -> NUL-terminated UTF-16.
+trait EncodeWideNul {
+    fn encode_wide_nul(&self) -> Vec<u16>;
+}
+
+impl EncodeWideNul for std::ffi::OsStr {
+    fn encode_wide_nul(&self) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        self.encode_wide().chain(std::iter::once(0)).collect()
+    }
+}
+
+fn wide_nul(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Selection and menu contents
+// ---------------------------------------------------------------------------
 
 fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
     let mut files = Vec::new();
@@ -189,28 +448,22 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
                     });
 
                     let file_count = DragQueryFileW(HDROP(ptr), 0xFFFFFFFF, None);
+                    files.reserve(file_count as usize);
                     for i in 0..file_count {
                         let size = DragQueryFileW(HDROP(ptr), i, None);
-                        if size > 0 {
-                            let mut buf = vec![0u16; size as usize + 1];
-                            let written = DragQueryFileW(HDROP(ptr), i, Some(&mut buf));
-                            // The fill must actually happen: otherwise `buf` stays
-                            // zeroed and yields an empty path, which would make
-                            // every preset look compatible with the selection.
-                            if written == 0 {
-                                continue;
-                            }
-                            let len = (written as usize).min(buf.len() - 1);
-                            if let Some(null_pos) = buf[..len].iter().position(|&x| x == 0) {
-                                let os_str = OsString::from_wide(&buf[..null_pos]);
-                                if let Ok(path_str) = os_str.into_string()
-                                    // Folders and other non-file items have no
-                                    // extension, so they would match every preset.
-                                    && Path::new(&path_str).is_file()
-                                {
-                                    files.push(path_str);
-                                }
-                            }
+                        if size == 0 {
+                            continue;
+                        }
+                        let mut buf = vec![0u16; size as usize + 1];
+                        let written = DragQueryFileW(HDROP(ptr), i, Some(&mut buf));
+                        // The fill must actually happen: otherwise `buf` stays
+                        // zeroed and yields an empty path.
+                        if written == 0 {
+                            continue;
+                        }
+                        let len = (written as usize).min(buf.len() - 1);
+                        if let Ok(path_str) = OsString::from_wide(&buf[..len]).into_string() {
+                            files.push(path_str);
                         }
                     }
                 }
@@ -220,11 +473,86 @@ fn get_selected_files_from_data_object(data_obj: &IDataObject) -> Vec<String> {
     files
 }
 
+/// One preset in the File Converter sub-menu.
+#[derive(Debug, Clone, PartialEq)]
+struct MenuEntry {
+    /// Full preset name, passed to the converter (`"Scale 75%/To Png"`).
+    preset_name: String,
+    /// Sub-menus it is filed under (`["Scale 75%"]`).
+    folders: Vec<String>,
+    /// Text shown in the menu (`"To Png"`).
+    label: String,
+    output_type: OutputType,
+    /// False when the preset only fits some of the selected files: it is
+    /// shown greyed out, as in the C# original.
+    enabled: bool,
+}
+
+/// The lower-cased extensions of the selection, each listed once. Items
+/// without an extension (folders, extension-less files) are ignored, as in
+/// the C# original.
+fn selection_extensions(files: &[String]) -> Vec<String> {
+    let mut exts: Vec<String> = Vec::new();
+    for file in files {
+        let Some(ext) = Path::new(file).extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if ext.is_empty() {
+            continue;
+        }
+        let ext = ext.to_ascii_lowercase();
+        if !exts.contains(&ext) {
+            exts.push(ext);
+        }
+    }
+    exts
+}
+
+/// What the File Converter sub-menu lists for a selection (C# parity).
+///
+/// A preset is listed when it fits at least one of the selected file types
+/// and enabled only when it fits all of them. Each file type is checked once,
+/// so selecting thousands of photos costs no more than selecting one.
+fn plan_menu(presets: &[ConversionPreset], files: &[String]) -> Vec<MenuEntry> {
+    let exts = selection_extensions(files);
+    if exts.is_empty() {
+        return Vec::new();
+    }
+    let samples: Vec<String> = exts.iter().map(|e| format!("x.{e}")).collect();
+
+    let mut entries = Vec::new();
+    for preset in presets {
+        if preset.short_name().trim().is_empty() {
+            continue;
+        }
+        let declared: Vec<String> = preset.input_types.iter().map(|s| s.to_string()).collect();
+        let fitting = samples
+            .iter()
+            .filter(|sample| is_preset_applicable_to_file(preset.output_type, &declared, sample))
+            .count();
+        if fitting == 0 {
+            continue;
+        }
+        entries.push(MenuEntry {
+            preset_name: preset.name.to_string(),
+            folders: preset
+                .folders()
+                .iter()
+                .map(|f| f.trim().to_string())
+                .collect(),
+            label: preset.short_name().trim().to_string(),
+            output_type: preset.output_type,
+            enabled: fitting == samples.len(),
+        });
+    }
+    entries
+}
+
 #[implement(IShellExtInit, IContextMenu, IShellPropSheetExt, IExplorerCommand)]
 struct FileConverterShellExt {
     selected_files: RwLock<Vec<String>>,
-    active_presets: RwLock<Vec<String>>,
-    configure_cmd_offset: RwLock<Option<usize>>,
+    /// The entries shown by the last `QueryContextMenu`, in command-id order.
+    menu_entries: RwLock<Vec<MenuEntry>>,
 }
 
 impl FileConverterShellExt {
@@ -232,8 +560,7 @@ impl FileConverterShellExt {
         G_OBJECT_COUNT.fetch_add(1, Ordering::Relaxed);
         Self {
             selected_files: RwLock::new(Vec::new()),
-            active_presets: RwLock::new(Vec::new()),
-            configure_cmd_offset: RwLock::new(None),
+            menu_entries: RwLock::new(Vec::new()),
         }
     }
 }
@@ -309,9 +636,8 @@ fn get_cached_settings() -> Arc<Settings> {
     loaded
 }
 
+#[cfg(test)]
 fn is_preset_compatible_with_file(preset: &ConversionPreset, file_path: &str) -> bool {
-    // Single source of truth: the same check the scheduler uses before queueing
-    // a job, so the context menu can never offer a preset that would be rejected.
     let declared: Vec<String> = preset.input_types.iter().map(|s| s.to_string()).collect();
     is_preset_applicable_to_file(preset.output_type, &declared, file_path)
 }
@@ -348,13 +674,14 @@ fn write_selection_to_temp_list(
 
         // `create_new` fails if the path already exists, so an attacker-planted
         // file (or a concurrent invocation) is never truncated or followed.
-        let Ok(mut file) = std::fs::OpenOptions::new()
+        let Ok(file) = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&candidate)
         else {
             continue;
         };
+        let mut file = std::io::BufWriter::new(file);
 
         let mut ok = true;
         for path in selected_files {
@@ -382,81 +709,169 @@ fn write_selection_to_temp_list(
     None
 }
 
+/// Windows' command-line limit is 32,767 characters, but the C# original
+/// switches to a list file at 8,000 and so do we.
+const MAX_COMMAND_LINE: usize = 8000;
+
+/// Starts the converter for `files` with `preset_name`.
+fn launch_conversion(preset_name: &str, files: &[String]) -> Result<()> {
+    // Folders can be part of a mixed selection; only files are converted.
+    // Checked here, once, rather than on every right-click.
+    let files: Vec<String> = files
+        .iter()
+        .filter(|f| Path::new(f).is_file())
+        .cloned()
+        .collect();
+    if files.is_empty() {
+        return Err(E_FAIL.into());
+    }
+
+    let bin_path = get_bin_path();
+    if !bin_path.exists() {
+        dbg_log!("Converter binary not found: {}", bin_path.display());
+        return Err(E_FAIL.into());
+    }
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.arg("--conversion-preset").arg(preset_name);
+
+    let total_len = preset_name.len() + 30 + files.iter().map(|f| f.len() + 3).sum::<usize>();
+    let list = (total_len >= MAX_COMMAND_LINE)
+        .then(|| write_selection_to_temp_list(preset_name, &files))
+        .flatten();
+    match list {
+        Some(temp_file_path) => {
+            cmd.arg("--input-files").arg(&temp_file_path);
+        }
+        None => {
+            cmd.args(&files);
+        }
+    }
+
+    cmd.spawn().map(|_| ()).map_err(|e| {
+        dbg_log!(
+            "Failed to spawn converter process {}: {:?}",
+            bin_path.display(),
+            e
+        );
+        E_FAIL.into()
+    })
+}
+
+fn open_settings_window() -> Result<()> {
+    let bin_path = get_bin_path();
+    if !bin_path.exists() {
+        dbg_log!(
+            "Converter binary not found for settings: {}",
+            bin_path.display()
+        );
+        return Err(E_FAIL.into());
+    }
+    Command::new(&bin_path)
+        .arg("--settings")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| {
+            dbg_log!("Failed to open settings window: {:?}", e);
+            E_FAIL.into()
+        })
+}
+
+/// Inserts a string item (with optional sub-menu, icon and command id).
+///
+/// # Safety
+/// `parent` must be a live menu handle.
+unsafe fn insert_item(
+    parent: HMENU,
+    text: &str,
+    id: Option<u32>,
+    sub_menu: Option<HMENU>,
+    bitmap: HBITMAP,
+    enabled: bool,
+) -> bool {
+    let mut wide = wide_nul(text);
+    let mut mii = MENUITEMINFOW {
+        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_STRING | MIIM_FTYPE,
+        fType: MFT_STRING,
+        dwTypeData: PWSTR(wide.as_mut_ptr()),
+        cch: (wide.len() - 1) as u32,
+        ..Default::default()
+    };
+    if let Some(id) = id {
+        mii.fMask |= MIIM_ID;
+        mii.wID = id;
+    }
+    if let Some(sub) = sub_menu {
+        mii.fMask |= MIIM_SUBMENU;
+        mii.hSubMenu = sub;
+    }
+    if !bitmap.0.is_null() {
+        mii.fMask |= MIIM_BITMAP;
+        mii.hbmpItem = bitmap;
+    }
+    if !enabled {
+        mii.fMask |= MIIM_STATE;
+        mii.fState = MFS_DISABLED;
+    }
+    // SAFETY: `mii` and `wide` outlive the call; the caller guarantees `parent`.
+    unsafe { InsertMenuItemW(parent, u32::MAX, true, &mii).is_ok() }
+}
+
 impl IContextMenu_Impl for FileConverterShellExt_Impl {
     fn QueryContextMenu(
         &self,
         hmenu: HMENU,
         indexmenu: u32,
         idcmdfirst: u32,
-        _idcmdlast: u32,
+        idcmdlast: u32,
         uflags: u32,
     ) -> Result<()> {
         const CMF_DEFAULTONLY: u32 = 0x0001;
+        // Returning MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0): nothing added.
+        let nothing_added = || Err(windows::core::Error::from_hresult(HRESULT(0)));
 
         if uflags & CMF_DEFAULTONLY != 0 {
-            return Ok(());
+            return nothing_added();
         }
 
-        let selected_files = match self.selected_files.read() {
-            Ok(lock) => lock.clone(),
-            Err(_) => return Ok(()),
+        let entries = {
+            let Ok(files) = self.selected_files.read() else {
+                return nothing_added();
+            };
+            if files.is_empty() {
+                return nothing_added();
+            }
+            plan_menu(&get_cached_settings().conversion_presets, &files)
         };
-
-        if selected_files.is_empty() {
-            return Ok(());
+        if entries.is_empty() {
+            return nothing_added();
         }
 
-        let settings = get_cached_settings();
-
-        let compatible_presets: Vec<&ConversionPreset> = settings
-            .conversion_presets
-            .iter()
-            .filter(|preset| {
-                selected_files
-                    .iter()
-                    .all(|file| is_preset_compatible_with_file(preset, file))
-            })
-            .collect();
-
-        if compatible_presets.is_empty() {
-            return Ok(());
-        }
-
-        if let Ok(mut lock) = self.active_presets.write() {
-            *lock = compatible_presets.iter().map(|p| p.name.clone()).collect();
-        }
-        if let Ok(mut lock) = self.configure_cmd_offset.write() {
-            *lock = None;
-        }
-
-        let presets_count = compatible_presets.len();
         // One id per preset, one for "Configure presets...", one for the
         // "File Converter" parent item.
-        let needed_count = (presets_count + 2) as u32;
+        let presets_count = entries.len() as u32;
+        let needed_count = presets_count + 2;
 
-        // The shell reserves the command-id range `[idcmdfirst, _idcmdlast]` for
-        // this handler. If it is not large enough we must add nothing at all:
-        // emitting ids outside the range collides with the next handler and
-        // dispatches `lpVerb` offsets that were never displayed.
+        // The shell reserves `[idcmdfirst, idcmdlast]` for this handler. If it
+        // is not large enough we must add nothing at all: ids outside the
+        // range collide with the next handler.
         let fits = idcmdfirst
-            .checked_add(needed_count)
-            .is_some_and(|end| end <= _idcmdlast);
+            .checked_add(needed_count - 1)
+            .is_some_and(|last_used| last_used <= idcmdlast);
         if !fits {
-            return Ok(());
+            return nothing_added();
         }
 
-        let cmd_id = idcmdfirst;
-        let configure_cmd_id = cmd_id + presets_count as u32;
+        let configure_cmd_id = idcmdfirst + presets_count;
         let parent_cmd_id = configure_cmd_id + 1;
+        let icons = menu_bitmaps();
+        let bmp = |raw: usize| HBITMAP(raw as *mut c_void);
 
-        // Same layout as the C# original: a single "File Converter" entry whose
-        // sub-menu lists the presets, with preset folders ("Scale 75%/To Mp4")
-        // shown as nested sub-menus, then a separator and "Configure presets...".
-        // (Previously up to five presets were spilled into Explorer's root menu
-        // and folder names were shown verbatim, e.g. "Scale 75%/To Mp4".)
+        // SAFETY: every menu handle used below is created here and either
+        // handed to the shell's menu or destroyed by the guard.
         unsafe {
             let h_sub_menu = CreatePopupMenu()?;
-
             // `DestroyMenu` on the error path destroys nested folder menus too;
             // without it the USER handles leak inside long-lived explorer.exe.
             let sub_menu_guard = scopeguard::guard(h_sub_menu, |h| {
@@ -466,11 +881,13 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             // Folder path ("A/B") -> its popup menu.
             let mut folder_menus: Vec<(String, HMENU)> = Vec::new();
 
-            for (i, preset) in compatible_presets.iter().enumerate() {
-                // Walk / create the folder chain for this preset.
+            for (i, entry) in entries.iter().enumerate() {
                 let mut parent = h_sub_menu;
                 let mut path = String::new();
-                for folder in preset.folders() {
+                for folder in &entry.folders {
+                    if folder.is_empty() {
+                        continue;
+                    }
                     if !path.is_empty() {
                         path.push('/');
                     }
@@ -480,22 +897,17 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                         parent = *menu;
                         continue;
                     }
-
                     let Ok(folder_menu) = CreatePopupMenu() else {
                         break;
                     };
-                    let mut folder_wide: Vec<u16> =
-                        folder.encode_utf16().chain(std::iter::once(0)).collect();
-                    let folder_mii = MENUITEMINFOW {
-                        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                        fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_FTYPE,
-                        fType: MFT_STRING,
-                        hSubMenu: folder_menu,
-                        dwTypeData: windows::core::PWSTR(folder_wide.as_mut_ptr()),
-                        cch: (folder_wide.len() - 1) as u32,
-                        ..Default::default()
-                    };
-                    if InsertMenuItemW(parent, u32::MAX, true, &folder_mii).is_ok() {
+                    if insert_item(
+                        parent,
+                        folder,
+                        None,
+                        Some(folder_menu),
+                        bmp(icons.folder),
+                        true,
+                    ) {
                         folder_menus.push((path.clone(), folder_menu));
                         parent = folder_menu;
                     } else {
@@ -504,33 +916,14 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                     }
                 }
 
-                let mut name_wide: Vec<u16> = preset
-                    .short_name()
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
-
-                let icon_bmp = create_category_icon(preset.output_type);
-                // The menu takes ownership of the bitmap on success; on failure
-                // the guard deletes it to avoid a GDI handle leak.
-                let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
-                    let _ = DeleteObject(b);
-                });
-
-                let mii = MENUITEMINFOW {
-                    cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                    fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
-                    fType: MFT_STRING,
-                    wID: cmd_id + i as u32,
-                    dwTypeData: windows::core::PWSTR(name_wide.as_mut_ptr()),
-                    cch: (name_wide.len() - 1) as u32,
-                    hbmpItem: icon_bmp,
-                    ..Default::default()
-                };
-
-                if InsertMenuItemW(parent, u32::MAX, true, &mii).is_ok() {
-                    scopeguard::ScopeGuard::into_inner(bitmap_guard);
-                }
+                insert_item(
+                    parent,
+                    &entry.label,
+                    Some(idcmdfirst + i as u32),
+                    None,
+                    category_bitmap(entry.output_type),
+                    entry.enabled,
+                );
             }
 
             let sep_mii = MENUITEMINFOW {
@@ -540,46 +933,46 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                 ..Default::default()
             };
             let _ = InsertMenuItemW(h_sub_menu, u32::MAX, true, &sep_mii);
+            insert_item(
+                h_sub_menu,
+                "Configure presets...",
+                Some(configure_cmd_id),
+                None,
+                bmp(icons.settings),
+                true,
+            );
 
-            let mut config_text_wide: Vec<u16> = "Configure presets...\0".encode_utf16().collect();
-            let config_mii = MENUITEMINFOW {
-                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
-                fType: MFT_STRING,
-                wID: configure_cmd_id,
-                dwTypeData: windows::core::PWSTR(config_text_wide.as_mut_ptr()),
-                cch: (config_text_wide.len() - 1) as u32,
-                ..Default::default()
-            };
-            let _ = InsertMenuItemW(h_sub_menu, u32::MAX, true, &config_mii);
-
-            if let Ok(mut lock) = self.configure_cmd_offset.write() {
-                *lock = Some(presets_count);
-            }
-
-            let mut parent_text_wide: Vec<u16> = "File Converter\0".encode_utf16().collect();
-            let parent_mii = MENUITEMINFOW {
+            let mut parent_text = wide_nul("File Converter");
+            let mut parent_mii = MENUITEMINFOW {
                 cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
                 fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_ID | MIIM_FTYPE,
                 fType: MFT_STRING,
                 wID: parent_cmd_id,
                 hSubMenu: h_sub_menu,
-                dwTypeData: windows::core::PWSTR(parent_text_wide.as_mut_ptr()),
-                cch: (parent_text_wide.len() - 1) as u32,
+                dwTypeData: PWSTR(parent_text.as_mut_ptr()),
+                cch: (parent_text.len() - 1) as u32,
                 ..Default::default()
             };
-
-            if InsertMenuItemW(hmenu, indexmenu, true, &parent_mii).is_ok() {
-                // The menu now owns the popup, so drop the destruction guard.
-                let _ = scopeguard::ScopeGuard::into_inner(sub_menu_guard);
-                // MAKE_HRESULT(SEVERITY_SUCCESS, 0, largest id offset + 1).
-                Err(windows::core::Error::from_hresult(HRESULT(
-                    needed_count as i32,
-                )))
-            } else {
-                Err(windows::core::Error::from_hresult(HRESULT(0)))
+            if icons.app != 0 {
+                parent_mii.fMask |= MIIM_BITMAP;
+                parent_mii.hbmpItem = bmp(icons.app);
             }
+
+            if InsertMenuItemW(hmenu, indexmenu, true, &parent_mii).is_err() {
+                return nothing_added();
+            }
+            // The shell's menu now owns the popup.
+            let _ = scopeguard::ScopeGuard::into_inner(sub_menu_guard);
         }
+
+        if let Ok(mut lock) = self.menu_entries.write() {
+            *lock = entries;
+        }
+
+        // MAKE_HRESULT(SEVERITY_SUCCESS, 0, largest id offset + 1).
+        Err(windows::core::Error::from_hresult(HRESULT(
+            needed_count as i32,
+        )))
     }
 
     fn InvokeCommand(&self, pici: *const CMINVOKECOMMANDINFO) -> Result<()> {
@@ -592,6 +985,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         // is not mutated while we read `lpVerb`, so the field read is valid.
         let verb_val = unsafe { (*pici).lpVerb.0 as usize };
         if verb_val >> 16 != 0 {
+            // A string verb: none of ours are addressed that way.
             return Err(E_FAIL.into());
         }
         let verb_offset = verb_val & 0xFFFF;
@@ -601,96 +995,31 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             .read()
             .map(|l| l.clone())
             .unwrap_or_default();
-        let mut presets = self
-            .active_presets
+        let mut entries = self
+            .menu_entries
             .read()
             .map(|l| l.clone())
             .unwrap_or_default();
-
-        if presets.is_empty() {
-            let settings = get_cached_settings();
-
-            presets = settings
-                .conversion_presets
-                .iter()
-                .filter(|preset| {
-                    // An empty selection would make `.all()` vacuously true and
-                    // offer every preset, so bail out instead of guessing.
-                    !selected_files.is_empty()
-                        && selected_files
-                            .iter()
-                            .all(|file| is_preset_compatible_with_file(preset, file))
-                })
-                .map(|p| p.name.clone())
-                .collect();
+        if entries.is_empty() {
+            entries = plan_menu(&get_cached_settings().conversion_presets, &selected_files);
         }
 
-        let presets_count = presets.len();
         dbg_log!(
             "InvokeCommand verb_offset={} presets_count={}",
             verb_offset,
-            presets_count
+            entries.len()
         );
 
-        if verb_offset < presets_count {
-            let preset_name = &presets[verb_offset];
-
-            let bin_path = get_bin_path();
-            if !bin_path.exists() {
-                dbg_log!("Converter binary not found: {}", bin_path.display());
-                return Err(E_FAIL.into());
-            }
-
-            let mut cmd = Command::new(&bin_path);
-            cmd.arg("--conversion-preset").arg(preset_name);
-
-            let mut total_len = preset_name.len() + 30;
-            for file in &selected_files {
-                total_len += file.len() + 3;
-            }
-
-            if total_len >= 8000 {
-                match write_selection_to_temp_list(preset_name, &selected_files) {
-                    Some(temp_file_path) => {
-                        cmd.arg("--input-files").arg(&temp_file_path);
-                    }
-                    None => {
-                        for file in &selected_files {
-                            cmd.arg(file);
-                        }
-                    }
+        match verb_offset.cmp(&entries.len()) {
+            std::cmp::Ordering::Less => {
+                let entry = &entries[verb_offset];
+                if !entry.enabled {
+                    return Err(E_FAIL.into());
                 }
-            } else {
-                for file in &selected_files {
-                    cmd.arg(file);
-                }
+                launch_conversion(&entry.preset_name, &selected_files)
             }
-
-            if cmd.spawn().is_ok() {
-                Ok(())
-            } else {
-                dbg_log!("Failed to spawn converter process: {}", bin_path.display());
-                Err(E_FAIL.into())
-            }
-        } else if verb_offset == presets_count {
-            let bin_path = get_bin_path();
-            if bin_path.exists() {
-                match Command::new(&bin_path).arg("-settings").spawn() {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        dbg_log!("Failed to open settings window: {:?}", e);
-                        Err(E_FAIL.into())
-                    }
-                }
-            } else {
-                dbg_log!(
-                    "Converter binary not found for settings: {}",
-                    bin_path.display()
-                );
-                Err(E_FAIL.into())
-            }
-        } else {
-            Ok(())
+            std::cmp::Ordering::Equal => open_settings_window(),
+            std::cmp::Ordering::Greater => Ok(()),
         }
     }
 
@@ -702,7 +1031,9 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         _pszname: PSTR,
         _cchmax: u32,
     ) -> Result<()> {
-        Ok(())
+        // Returning S_OK without filling the buffer handed Explorer whatever
+        // was in it (it uses the canonical verb to de-duplicate items).
+        Err(E_NOTIMPL.into())
     }
 }
 
@@ -723,7 +1054,7 @@ impl IShellPropSheetExt_Impl for FileConverterShellExt_Impl {
 }
 
 fn string_to_cotaskmem_pwstr(s: &str) -> Result<PWSTR> {
-    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide = wide_nul(s);
     let bytes = wide.len() * std::mem::size_of::<u16>();
     unsafe {
         let ptr = CoTaskMemAlloc(bytes) as *mut u16;
@@ -735,6 +1066,41 @@ fn string_to_cotaskmem_pwstr(s: &str) -> Result<PWSTR> {
     }
 }
 
+/// Files of an `IShellItemArray`.
+fn shell_item_array_files(items: Option<&IShellItemArray>) -> Vec<String> {
+    let mut files = Vec::new();
+    let Some(item_array) = items else {
+        return files;
+    };
+    // SAFETY: standard IShellItemArray enumeration; every returned string is
+    // freed with CoTaskMemFree after copying.
+    unsafe {
+        if let Ok(count) = item_array.GetCount() {
+            for i in 0..count {
+                let Ok(item) = item_array.GetItemAt(i) else {
+                    continue;
+                };
+                let Ok(path_pwstr) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
+                    continue;
+                };
+                if path_pwstr.is_null() {
+                    continue;
+                }
+                let path_str = path_pwstr.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(path_pwstr.0 as *const c_void));
+                if !path_str.is_empty() {
+                    files.push(path_str);
+                }
+            }
+        }
+    }
+    files
+}
+
+// The extension is not registered as an `ExplorerCommandHandler` any more (a
+// flat verb that opened the settings window instead of listing presets), but
+// the interface stays implemented so hosts that ask for it get sensible
+// answers: it opens the settings window with the selection staged.
 impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
     fn GetTitle(&self, _psiitemarray: Option<&IShellItemArray>) -> Result<PWSTR> {
         string_to_cotaskmem_pwstr("File Converter")
@@ -758,28 +1124,17 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
         psiitemarray: Option<&IShellItemArray>,
         _foktousecache: BOOL,
     ) -> Result<u32> {
-        let mut has_files = false;
-        if let Some(item_array) = psiitemarray {
-            unsafe {
-                if let Ok(count) = item_array.GetCount() {
-                    has_files = count > 0;
-                }
-            }
+        let mut files = shell_item_array_files(psiitemarray);
+        if files.is_empty() {
+            files = self
+                .selected_files
+                .read()
+                .map(|l| l.clone())
+                .unwrap_or_default();
         }
-        if !has_files {
-            if let Ok(lock) = self.selected_files.read() {
-                has_files = !lock.is_empty();
-            }
-        }
-
-        // Only advertise the verb when it can actually do something. Without this
-        // the entry is offered as enabled and then silently does nothing.
-        if has_files && !get_bin_path().exists() {
-            dbg_log!("Converter binary not found; hiding context menu verb");
-            has_files = false;
-        }
-
-        if has_files {
+        let usable = !plan_menu(&get_cached_settings().conversion_presets, &files).is_empty()
+            && get_bin_path().exists();
+        if usable {
             Ok(ECS_ENABLED.0 as u32)
         } else {
             Ok(windows::Win32::UI::Shell::ECS_HIDDEN.0 as u32)
@@ -791,27 +1146,7 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
         psiitemarray: Option<&IShellItemArray>,
         _pbc: Option<&IBindCtx>,
     ) -> Result<()> {
-        let mut files = Vec::new();
-        if let Some(item_array) = psiitemarray {
-            unsafe {
-                if let Ok(count) = item_array.GetCount() {
-                    for i in 0..count {
-                        if let Ok(item) = item_array.GetItemAt(i) {
-                            if let Ok(path_pwstr) = item.GetDisplayName(SIGDN_FILESYSPATH) {
-                                if !path_pwstr.is_null() {
-                                    let path_str = path_pwstr.to_string().unwrap_or_default();
-                                    CoTaskMemFree(Some(path_pwstr.0 as *const c_void));
-                                    if !path_str.is_empty() {
-                                        files.push(path_str);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let mut files = shell_item_array_files(psiitemarray);
         if files.is_empty() {
             if let Ok(lock) = self.selected_files.read() {
                 files = lock.clone();
@@ -824,9 +1159,7 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
         }
 
         let mut cmd = Command::new(&bin_path);
-        for file in files {
-            cmd.arg(file);
-        }
+        cmd.args(files);
         // Report the real outcome: swallowing the spawn error made the verb look
         // successful while nothing happened at all.
         match cmd.spawn() {
@@ -847,7 +1180,7 @@ impl IExplorerCommand_Impl for FileConverterShellExt_Impl {
     }
 
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
-        Err(windows::Win32::Foundation::E_NOTIMPL.into())
+        Err(E_NOTIMPL.into())
     }
 }
 
@@ -877,51 +1210,52 @@ fn wide_to_path(buf: &[u16]) -> PathBuf {
     PathBuf::from(OsString::from_wide(&buf[..len]))
 }
 
+/// Full path of this DLL, if known.
+fn module_path() -> Option<PathBuf> {
+    let read = |h: HMODULE| -> Option<PathBuf> {
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `h` is a live module handle and `buf` a writable buffer
+        // that outlives the call.
+        let len = unsafe { GetModuleFileNameW(h, &mut buf) };
+        (len > 0).then(|| wide_to_path(&buf))
+    };
+
+    let hinst = G_DLL_INSTANCE.load(Ordering::Relaxed);
+    if hinst != 0 {
+        if let Some(p) = read(HMODULE(hinst as *mut c_void)) {
+            return Some(p);
+        }
+    }
+    let dll_name = wide_nul("file_converter_shell.dll");
+    // SAFETY: `dll_name` is NUL-terminated and outlives the call.
+    let h = unsafe { GetModuleHandleW(PCWSTR(dll_name.as_ptr())) }.ok()?;
+    read(h)
+}
+
 fn get_bin_path() -> PathBuf {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
-    if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Software\\FileConverter") {
-        if let Ok(app_path) = hkcu.get_value::<String, _>("AppPath") {
-            let path = PathBuf::from(&app_path);
+    // The executable next to this DLL comes first: it is the copy this DLL
+    // was built and registered with. A stale `AppPath` (from an older install
+    // or a moved folder) used to win and launch the wrong version.
+    if let Some(dll_path) = module_path() {
+        if let Some(parent) = dll_path.parent() {
+            let path = parent.join("file_converter_bin.exe");
             if path.exists() {
                 return path;
             }
         }
     }
 
-    if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey("Software\\FileConverter") {
-        if let Ok(app_path) = hklm.get_value::<String, _>("AppPath") {
-            let path = PathBuf::from(&app_path);
-            if path.exists() {
-                return path;
-            }
-        }
-    }
-
-    let dll_hinst = G_DLL_INSTANCE.load(Ordering::Relaxed);
-    if dll_hinst != 0 {
-        let mut buf = vec![0u16; 512];
-        // SAFETY: `dll_hinst` came from the module handle captured in `DllMain`,
-        // which we store only when non-zero; `buf` is a valid writable 512-WCHAR
-        // buffer that outlives the call and `GetModuleFileNameW` null-terminates.
-        let len = unsafe { GetModuleFileNameW(HMODULE(dll_hinst as *mut c_void), &mut buf) };
-        if len > 0 {
-            let dll_path = wide_to_path(&buf);
-            if let Some(parent) = dll_path.parent() {
-                let path = parent.join("file_converter_bin.exe");
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        if let Ok(key) = RegKey::predef(hive).open_subkey("Software\\FileConverter") {
+            if let Ok(app_path) = key.get_value::<String, _>("AppPath") {
+                let path = PathBuf::from(&app_path);
                 if path.exists() {
                     return path;
                 }
             }
-        }
-    }
-
-    if let Ok(mut exe_path) = std::env::current_exe() {
-        exe_path.pop();
-        let path = exe_path.join("file_converter_bin.exe");
-        if path.exists() {
-            return path;
         }
     }
 
@@ -1040,6 +1374,25 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
+/// Removes every File Converter menu key under one `Software\Classes` root:
+/// the CLSID, the context-menu and property-sheet handlers and the static
+/// `shell\FileConverter` verbs older versions wrote. Those verbs were a flat
+/// "File Converter" item that opened the settings window, shown next to the
+/// real preset menu.
+#[cfg(target_os = "windows")]
+fn remove_menu_keys(root: &winreg::RegKey) {
+    let _ = root.delete_subkey_all(format!("CLSID\\{CLSID_STR}"));
+    for assoc in ALL_ASSOCIATIONS {
+        for sub in [
+            "shellex\\ContextMenuHandlers\\FileConverter",
+            "shellex\\PropertySheetHandlers\\FileConverter",
+            "shell\\FileConverter",
+        ] {
+            let _ = root.delete_subkey_all(format!("{assoc}\\{sub}"));
+        }
+    }
+}
+
 /// # Safety
 ///
 /// COM entry point invoked by `regsvr32.exe` to register this DLL. The
@@ -1049,205 +1402,90 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE};
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
 
-    let hmodule = G_DLL_INSTANCE.load(Ordering::Relaxed);
-    let mut module_path = PathBuf::new();
-
-    if hmodule != 0 {
-        let mut buf = vec![0u16; 512];
-        // SAFETY: `hmodule` is the module handle captured in `DllMain` and is
-        // only stored when non-zero; `buf` is a valid writable 512-WCHAR buffer
-        // that outlives the call and `GetModuleFileNameW` null-terminates it.
-        let len = unsafe { GetModuleFileNameW(HMODULE(hmodule as *mut c_void), &mut buf) };
-        if len > 0 {
-            module_path = wide_to_path(&buf);
-        }
-    }
-
-    if module_path.as_os_str().is_empty() {
-        let dll_name: Vec<u16> = "file_converter_shell.dll\0".encode_utf16().collect();
-        // SAFETY: `dll_name` is a valid null-terminated UTF-16 buffer that
-        // outlives the call; the returned `HMODULE` is either null (failure,
-        // handled by the `Ok` arm) or a live module handle.
-        if let Ok(h) = unsafe { GetModuleHandleW(windows::core::PCWSTR(dll_name.as_ptr())) } {
-            let mut buf = vec![0u16; 512];
-            // SAFETY: `h` is a valid module handle as above; `buf` lifetime and
-            // null-termination match `GetModuleFileNameW`'s contract.
-            let len = unsafe { GetModuleFileNameW(h, &mut buf) };
-            if len > 0 {
-                module_path = wide_to_path(&buf);
-            }
-        }
-    }
-
-    let mod_path_str = module_path.to_string_lossy().to_string();
-
-    if !mod_path_str.is_empty() {
-        if let Some(parent) = module_path.parent() {
-            let bin_exe = parent.join("file_converter_bin.exe");
-            let bin_path_str = bin_exe.to_string_lossy().to_string();
-
-            if let Ok((hkcu, _)) =
-                RegKey::predef(HKEY_CURRENT_USER).create_subkey("Software\\FileConverter")
-            {
-                let _ = hkcu.set_value("AppPath", &bin_path_str);
-            }
-            if let Ok((hklm, _)) =
-                RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey("Software\\FileConverter")
-            {
-                let _ = hklm.set_value("AppPath", &bin_path_str);
-            }
-        }
-    }
-
-    let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let hklm_classes =
-        RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags("Software\\Classes", KEY_WRITE);
-    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
-        .create_subkey("Software\\Classes")
-        .map(|(k, _)| k);
-
-    let clsid_key_path = format!("CLSID\\{}", clsid_str);
-    let clsid_inproc_path = format!("CLSID\\{}\\InprocServer32", clsid_str);
-
-    // A local mutable flag rather than discarding every write error: regsvr32
-    // previously reported success even when nothing could be written.
-    let mut write_failed = false;
-
-    let _ = hkcr.delete_subkey_all(&clsid_key_path);
-    if let Ok(ref root) = hklm_classes {
-        let _ = root.delete_subkey_all(&clsid_key_path);
-    }
-    if let Ok(ref root) = hkcu_classes {
-        let _ = root.delete_subkey_all(&clsid_key_path);
-    }
-    // Target HKLM\Software\Classes if writable (system-wide), otherwise fall back to
-    // HKCU\Software\Classes (per-user).
-    let root_classes = if let Ok(ref root) = hklm_classes {
-        root
-    } else if let Ok(ref root) = hkcu_classes {
-        root
-    } else {
-        write_failed = true;
-        &hkcr
-    };
-
-    if mod_path_str.is_empty() {
-        // Without the DLL's own path there is nothing meaningful to register, and
-        // writing a *relative* `command` value would make Explorer try to launch
-        // `%WINDIR%\file_converter_bin.exe`.
+    let Some(module_path) = module_path().filter(|p| !p.as_os_str().is_empty()) else {
+        // Without the DLL's own path there is nothing meaningful to register.
         dbg_log!("Module path unknown; aborting registration");
         return E_FAIL;
-    }
-
-    match root_classes.create_subkey(&clsid_key_path) {
-        Ok((key, _)) => {
-            if key.set_value("", &"FileConverter Shell Extension").is_err() {
-                write_failed = true;
-            }
-        }
-        Err(e) => {
-            dbg_log!("Failed to create {}: {:?}", clsid_key_path, e);
-            write_failed = true;
-        }
-    }
-    match root_classes.create_subkey(&clsid_inproc_path) {
-        Ok((key, _)) => {
-            if key.set_value("", &mod_path_str).is_err()
-                || key.set_value("ThreadingModel", &"Apartment").is_err()
-            {
-                write_failed = true;
-            }
-        }
-        Err(e) => {
-            dbg_log!("Failed to create {}: {:?}", clsid_inproc_path, e);
-            write_failed = true;
-        }
-    }
-
-    // Register handlers on files and all filesystem objects. Folders are
-    // deliberately not registered: they have no extension, so every preset would
-    // look applicable and the menu would offer conversions that cannot run.
-    let associations = ["*", "AllFilesystemObjects"];
-
+    };
     let Some(parent) = module_path.parent() else {
         dbg_log!("Module path has no parent directory; aborting registration");
         return E_FAIL;
     };
-    let bin_exe = parent.join("file_converter_bin.exe");
-    let bin_exe_str = bin_exe.to_string_lossy().to_string();
+    let mod_path_str = module_path.to_string_lossy().to_string();
+    let bin_path_str = parent
+        .join("file_converter_bin.exe")
+        .to_string_lossy()
+        .to_string();
 
-    for assoc in &associations {
-        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-        match root_classes.create_subkey(&path) {
-            Ok((key, _)) => {
-                if key.set_value("", &clsid_str).is_err() {
-                    write_failed = true;
-                }
-            }
-            Err(e) => {
-                dbg_log!("Failed to create {}: {:?}", path, e);
-                write_failed = true;
-            }
-        }
-
-        let prop_path = format!("{}\\shellex\\PropertySheetHandlers\\FileConverter", assoc);
-        match root_classes.create_subkey(&prop_path) {
-            Ok((key, _)) => {
-                if key.set_value("", &clsid_str).is_err() {
-                    write_failed = true;
-                }
-            }
-            Err(e) => {
-                dbg_log!("Failed to create {}: {:?}", prop_path, e);
-                write_failed = true;
-            }
-        }
-
-        // Modern Windows 11 Explorer Command & Shell Verb Handler
-        let shell_verb_path = format!("{}\\shell\\FileConverter", assoc);
-        match root_classes.create_subkey(&shell_verb_path) {
-            Ok((key, _)) => {
-                if key.set_value("", &"File Converter").is_err()
-                    || key.set_value("MUIVerb", &"File Converter").is_err()
-                    || key.set_value("Icon", &bin_exe_str).is_err()
-                    || key.set_value("ExplorerCommandHandler", &clsid_str).is_err()
-                {
-                    write_failed = true;
-                }
-            }
-            Err(e) => {
-                dbg_log!("Failed to create {}: {:?}", shell_verb_path, e);
-                write_failed = true;
-            }
-        }
-        let shell_verb_cmd_path = format!("{}\\shell\\FileConverter\\command", assoc);
-        match root_classes.create_subkey(&shell_verb_cmd_path) {
-            Ok((key, _)) => {
-                let cmd_str = format!("\"{}\" \"%1\"", bin_exe_str);
-                if key.set_value("", &cmd_str).is_err() {
-                    write_failed = true;
-                }
-            }
-            Err(e) => {
-                dbg_log!("Failed to create {}: {:?}", shell_verb_cmd_path, e);
-                write_failed = true;
-            }
-        }
+    if let Ok((hkcu, _)) =
+        RegKey::predef(HKEY_CURRENT_USER).create_subkey("Software\\FileConverter")
+    {
+        let _ = hkcu.set_value("AppPath", &bin_path_str);
+    }
+    if let Ok((hklm, _)) =
+        RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey("Software\\FileConverter")
+    {
+        let _ = hklm.set_value("AppPath", &bin_path_str);
     }
 
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    if let Ok((key, _)) = hklm
+    // HKLM\Software\Classes when elevated (system-wide), otherwise the
+    // per-user HKCU\Software\Classes. Both are cleaned first: a per-user
+    // CLSID left by an earlier non-elevated registration would otherwise
+    // shadow the machine-wide one and keep loading an old DLL.
+    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS)
+        .ok();
+    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey("Software\\Classes")
+        .map(|(k, _)| k)
+        .ok();
+    for root in [&hklm_classes, &hkcu_classes].into_iter().flatten() {
+        remove_menu_keys(root);
+    }
+    let Some(root) = hklm_classes.as_ref().or(hkcu_classes.as_ref()) else {
+        return E_FAIL;
+    };
+
+    // A local mutable flag rather than discarding every write error: regsvr32
+    // previously reported success even when nothing could be written.
+    let mut write_failed = false;
+    let mut write = |path: &str, values: &[(&str, &str)]| match root.create_subkey(path) {
+        Ok((key, _)) => {
+            for (name, value) in values {
+                if key.set_value(name, value).is_err() {
+                    write_failed = true;
+                }
+            }
+        }
+        Err(e) => {
+            dbg_log!("Failed to create {}: {:?}", path, e);
+            write_failed = true;
+        }
+    };
+
+    write(
+        &format!("CLSID\\{CLSID_STR}"),
+        &[("", "File Converter context menu")],
+    );
+    write(
+        &format!("CLSID\\{CLSID_STR}\\InprocServer32"),
+        &[("", &mod_path_str), ("ThreadingModel", "Apartment")],
+    );
+    // All files, like the C# original. Folders are deliberately left out: they
+    // have no extension, so no preset applies to them.
+    write(
+        "*\\shellex\\ContextMenuHandlers\\FileConverter",
+        &[("", CLSID_STR)],
+    );
+
+    if let Ok((key, _)) = RegKey::predef(HKEY_LOCAL_MACHINE)
         .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved")
-        && key
-            .set_value(clsid_str, &"File Converter Context Menu Handler")
-            .is_err()
     {
         // Non-elevated registration cannot write HKLM; that is expected and not a
         // hard failure because the per-user CLSID registration above still works.
-        dbg_log!("Could not write HKLM Approved entry (needs elevation)");
+        let _ = key.set_value(CLSID_STR, &"File Converter context menu");
     }
 
     // SAFETY: `SHChangeNotify` takes no caller-owned pointers; the
@@ -1274,67 +1512,21 @@ pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
 
-    let clsid_str = "{AF9B72B5-F4E4-44B0-A3D9-B55B748EFE90}";
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let hklm_classes = RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
-    let hkcu_classes = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS);
-
-    let clsid_key_path = format!("CLSID\\{}", clsid_str);
-    let _ = hkcr.delete_subkey_all(&clsid_key_path);
-    if let Ok(ref root) = hklm_classes {
-        let _ = root.delete_subkey_all(&clsid_key_path);
-    }
-    if let Ok(ref root) = hkcu_classes {
-        let _ = root.delete_subkey_all(&clsid_key_path);
-    }
-
-    let associations = [
-        "*",
-        "AllFilesystemObjects",
-        "Directory",
-        "Directory\\Background",
-        "Drive",
-        "Folder",
-    ];
-
-    for assoc in &associations {
-        let path = format!("{}\\shellex\\ContextMenuHandlers\\FileConverter", assoc);
-        let _ = hkcr.delete_subkey_all(&path);
-        if let Ok(ref root) = hklm_classes {
-            let _ = root.delete_subkey_all(&path);
-        }
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root.delete_subkey_all(&path);
-        }
-
-        let prop_path = format!("{}\\shellex\\PropertySheetHandlers\\FileConverter", assoc);
-        let _ = hkcr.delete_subkey_all(&prop_path);
-        if let Ok(ref root) = hklm_classes {
-            let _ = root.delete_subkey_all(&prop_path);
-        }
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root.delete_subkey_all(&prop_path);
-        }
-
-        let verb_path = format!("{}\\shell\\FileConverter", assoc);
-        let _ = hkcr.delete_subkey_all(&verb_path);
-        if let Ok(ref root) = hklm_classes {
-            let _ = root.delete_subkey_all(&verb_path);
-        }
-        if let Ok(ref root) = hkcu_classes {
-            let _ = root.delete_subkey_all(&verb_path);
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        if let Ok(root) =
+            RegKey::predef(hive).open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS)
+        {
+            remove_menu_keys(&root);
         }
     }
 
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    if let Ok(key) =
-        hklm.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved")
-    {
-        let _ = key.delete_value(clsid_str);
+    if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
+        KEY_ALL_ACCESS,
+    ) {
+        let _ = key.delete_value(CLSID_STR);
     }
 
     // SAFETY: `SHChangeNotify` takes no caller-owned pointers; the
@@ -1352,18 +1544,25 @@ mod tests {
     use super::*;
     use file_converter_core::types::InputPostConversionAction;
 
-    #[test]
-    fn test_shell_preset_compatibility_filtering() {
-        let preset = ConversionPreset {
-            name: "To MP3".to_string(),
-            output_type: OutputType::Mp3,
-            output_file_name_template: "(p)\\(f)".to_string(),
+    fn preset(name: &str, output_type: OutputType, inputs: &[&str]) -> ConversionPreset {
+        ConversionPreset {
+            name: name.to_string(),
+            output_type,
+            output_file_name_template: "(p)(f)".to_string(),
             is_default_settings: true,
-            input_types: vec!["flac".into(), "wav".into()],
+            input_types: inputs.iter().map(|s| (*s).into()).collect(),
             input_post_conversion_action: InputPostConversionAction::None,
             settings: vec![],
-        };
+        }
+    }
 
+    fn files(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_shell_preset_compatibility_filtering() {
+        let preset = preset("To MP3", OutputType::Mp3, &["flac", "wav"]);
         assert!(is_preset_compatible_with_file(
             &preset,
             "C:\\Music\\song.flac"
@@ -1379,17 +1578,86 @@ mod tests {
     }
 
     #[test]
+    fn test_pdf_gets_paged_png_with_folders() {
+        let presets = [
+            preset("To Png (paged)", OutputType::Png, &["pdf"]),
+            preset("Scale 75%/To Png", OutputType::Png, &["pdf", "jpg"]),
+            preset("To Mp3", OutputType::Mp3, &["flac"]),
+            preset(
+                "To Pdf (from Markdown/Typst/EPUB)",
+                OutputType::Pdf,
+                &["md", "pdf"],
+            ),
+        ];
+        let plan = plan_menu(&presets, &files(&["C:\\Docs\\report.PDF"]));
+        let labels: Vec<_> = plan.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "To Png (paged)",
+                "To Png",
+                "To Pdf (from Markdown/Typst/EPUB)"
+            ]
+        );
+        assert_eq!(plan[1].folders, ["Scale 75%"]);
+        // Slashes inside brackets are part of the name, not folders.
+        assert!(plan[2].folders.is_empty());
+        assert!(plan.iter().all(|e| e.enabled));
+        assert_eq!(plan[1].preset_name, "Scale 75%/To Png");
+    }
+
+    #[test]
+    fn test_mixed_selection_greys_out_partial_presets() {
+        let presets = [
+            preset("To Png", OutputType::Png, &["jpg", "pdf"]),
+            preset("To Png (paged)", OutputType::Png, &["pdf"]),
+            preset("To Mp3", OutputType::Mp3, &["flac"]),
+        ];
+        let plan = plan_menu(
+            &presets,
+            &files(&["C:\\a.pdf", "C:\\b.jpg", "C:\\c.JPG", "C:\\folder"]),
+        );
+        assert_eq!(plan.len(), 2);
+        assert!(plan[0].enabled, "fits both pdf and jpg");
+        assert!(!plan[1].enabled, "only fits the pdf");
+    }
+
+    #[test]
+    fn test_nothing_offered_for_unknown_or_extensionless_items() {
+        let presets = [preset("To Png", OutputType::Png, &["jpg"])];
+        assert!(plan_menu(&presets, &files(&["C:\\Folder"])).is_empty());
+        assert!(plan_menu(&presets, &files(&["C:\\notes.xyz"])).is_empty());
+        assert!(plan_menu(&presets, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_shipped_defaults_offer_paged_png_for_pdf() {
+        let plan = plan_menu(
+            &DEFAULT_SETTINGS.conversion_presets,
+            &files(&["C:\\Docs\\report.pdf"]),
+        );
+        assert!(
+            plan.iter()
+                .any(|e| e.preset_name == "To Png (paged)" && e.enabled),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
     fn test_shell_category_icon_creation() {
-        let hbmp_audio = create_category_icon(OutputType::Mp3);
-        assert!(!hbmp_audio.is_invalid());
-
-        let hbmp_video = create_category_icon(OutputType::Mp4);
-        assert!(!hbmp_video.is_invalid());
-
-        let hbmp_image = create_category_icon(OutputType::Png);
-        assert!(!hbmp_image.is_invalid());
-
-        let hbmp_pdf = create_category_icon(OutputType::Pdf);
-        assert!(!hbmp_pdf.is_invalid());
+        for t in [
+            OutputType::Mp3,
+            OutputType::Mp4,
+            OutputType::Png,
+            OutputType::Pdf,
+            OutputType::Txt,
+        ] {
+            assert!(!category_bitmap(t).is_invalid());
+        }
+        // Cached: asking twice returns the same handle instead of a new one.
+        assert_eq!(
+            category_bitmap(OutputType::Png).0,
+            category_bitmap(OutputType::Jpg).0
+        );
     }
 }
