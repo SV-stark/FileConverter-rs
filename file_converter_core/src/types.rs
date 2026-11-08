@@ -118,9 +118,19 @@ const VIDEO_SETTINGS: &[PresetSettingKey] = &[
     PresetSettingKey {
         key: "VideoEncodingSpeed",
         label: "Encoder speed",
-        hint: "UltraFast .. VerySlow (faster = smaller)",
+        hint: "Slower = smaller file at the same quality",
         group: "Video",
-        choices: &[],
+        choices: &[
+            "UltraFast",
+            "SuperFast",
+            "VeryFast",
+            "Faster",
+            "Fast",
+            "Medium",
+            "Slow",
+            "Slower",
+            "VerySlow",
+        ],
     },
     PresetSettingKey {
         key: "EnableAudio",
@@ -278,22 +288,64 @@ pub fn preset_setting_keys(output_type: OutputType) -> Vec<PresetSettingKey> {
 
     keys.extend_from_slice(ADVANCED_SETTINGS);
 
-    // The UI renders a `choices` list as one row of clickable chips, and Slint
-    // 1.9 has no wrapping layout, so a long list would overflow the preset pane.
-    // Demote anything longer to free text; such a descriptor must document the
-    // accepted values in its hint, since no chips will be drawn.
-    const MAX_CHIP_CHOICES: usize = 4;
-    for k in &mut keys {
-        if k.choices.len() > MAX_CHIP_CHOICES {
-            debug_assert!(!k.hint.is_empty(), "{} must document its values", k.key);
-            k.choices = &[];
-        }
-    }
-
+    // The editor draws up to four choices as chips and longer lists as a
+    // drop-down, so no list has to be demoted to free text any more.
     keys
 }
 
 impl OutputType {
+    /// Every real output format, in the order the preset editor lists them
+    /// (grouped by kind, then alphabetical).
+    pub const ALL: [OutputType; 21] = [
+        OutputType::Aac,
+        OutputType::Flac,
+        OutputType::Mp3,
+        OutputType::Ogg,
+        OutputType::Wav,
+        OutputType::Avi,
+        OutputType::Mkv,
+        OutputType::Mp4,
+        OutputType::Ogv,
+        OutputType::Webm,
+        OutputType::Avif,
+        OutputType::Gif,
+        OutputType::Ico,
+        OutputType::Jpg,
+        OutputType::Jxl,
+        OutputType::Png,
+        OutputType::Webp,
+        OutputType::Epub,
+        OutputType::Html,
+        OutputType::Pdf,
+        OutputType::Txt,
+    ];
+
+    /// The kind of file this format produces: "Audio", "Video", "Image",
+    /// "Document" (or "Misc" for `None`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            OutputType::Aac
+            | OutputType::Flac
+            | OutputType::Mp3
+            | OutputType::Ogg
+            | OutputType::Wav => "Audio",
+            OutputType::Avi
+            | OutputType::Mkv
+            | OutputType::Mp4
+            | OutputType::Ogv
+            | OutputType::Webm => "Video",
+            OutputType::Avif
+            | OutputType::Gif
+            | OutputType::Ico
+            | OutputType::Jpg
+            | OutputType::Jxl
+            | OutputType::Png
+            | OutputType::Webp => "Image",
+            OutputType::Epub | OutputType::Html | OutputType::Pdf | OutputType::Txt => "Document",
+            OutputType::None => "Misc",
+        }
+    }
+
     pub fn extension(&self) -> &'static str {
         match self {
             OutputType::Aac => "aac",

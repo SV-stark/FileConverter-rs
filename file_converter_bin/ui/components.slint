@@ -49,12 +49,17 @@ export component UiButton inherits Rectangle {
         padding-right: root.pad-x;
         spacing: Theme.s-2;
 
-        if root.has-icon : Icon {
-            source: root.icon;
-            size: 14px;
-            tint: root.kind == ButtonKind.Primary ? Theme.on-accent
-                : root.kind == ButtonKind.Danger ? Theme.danger(root.dark)
-                : Theme.textDim(root.dark);
+        // Wrapped so the fixed-size icon is centred vertically instead of
+        // sticking to the top of the button.
+        if root.has-icon : VerticalLayout {
+            alignment: center;
+            Icon {
+                source: root.icon;
+                size: 14px;
+                tint: root.kind == ButtonKind.Primary ? Theme.on-accent
+                    : root.kind == ButtonKind.Danger ? Theme.danger(root.dark)
+                    : Theme.textDim(root.dark);
+            }
         }
 
         lbl := Text {
@@ -214,6 +219,111 @@ export component UiBadge inherits Rectangle {
             font-weight: Theme.w-semibold;
             vertical-alignment: center;
             color: root.fg;
+        }
+    }
+}
+
+// A titled group of related controls (Windows 11 settings style): heading,
+// optional one-line explanation, then the controls.
+export component UiSection inherits Rectangle {
+    in property <bool> dark: false;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <length> gap: Theme.s-3;
+
+    border-radius: Theme.r-md;
+    background: Theme.surface2(root.dark);
+    border-width: 1px;
+    border-color: Theme.border(root.dark);
+
+    VerticalLayout {
+        padding: Theme.s-4;
+        spacing: root.gap;
+
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: Theme.t-md;
+                font-weight: Theme.w-semibold;
+                color: Theme.text(root.dark);
+            }
+            if root.subtitle != "" : Text {
+                text: root.subtitle;
+                font-size: Theme.t-sm;
+                color: Theme.textMute(root.dark);
+                wrap: word-wrap;
+            }
+        }
+
+        @children
+    }
+}
+
+// One preference line: title + explanation on the left, the control
+// (switch, spin box, drop-down, buttons) on the right.
+export component UiSettingRow inherits HorizontalLayout {
+    in property <bool> dark: false;
+    in property <string> title;
+    in property <string> hint;
+    in property <bool> enabled-ui: true;
+
+    spacing: Theme.s-4;
+    alignment: stretch;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        horizontal-stretch: 1;
+
+        Text {
+            text: root.title;
+            font-size: Theme.t-md;
+            font-weight: Theme.w-medium;
+            color: root.enabled-ui ? Theme.text(root.dark) : Theme.textMute(root.dark);
+            wrap: word-wrap;
+        }
+        if root.hint != "" : Text {
+            text: root.hint;
+            font-size: Theme.t-sm;
+            color: Theme.textMute(root.dark);
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+// Inline notice line: warnings in the preset editor, empty states.
+export component UiNotice inherits Rectangle {
+    in property <bool> dark: false;
+    in property <string> text <=> lbl.text;
+    in property <bool> warning: true;
+
+    border-radius: Theme.r-sm;
+    background: root.warning ? Theme.warnSoft(root.dark) : Theme.accentSoft(root.dark);
+
+    HorizontalLayout {
+        padding: Theme.s-2;
+        padding-left: Theme.s-3;
+        spacing: Theme.s-2;
+
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            horizontal-stretch: 0;
+            Icon {
+                source: root.warning ? @image-url("icons/alert-triangle.svg") : @image-url("icons/info.svg");
+                size: 14px;
+                tint: root.warning ? Theme.warn(root.dark) : Theme.accent(root.dark);
+            }
+        }
+        lbl := Text {
+            font-size: Theme.t-base;
+            font-weight: Theme.w-medium;
+            color: root.warning ? Theme.warn(root.dark) : Theme.accent(root.dark);
+            wrap: word-wrap;
+            vertical-alignment: center;
         }
     }
 }

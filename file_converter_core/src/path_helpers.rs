@@ -40,6 +40,16 @@ pub fn is_path_valid(path: &str) -> bool {
     RE_VALID_PATH.is_match(path)
 }
 
+/// True when two path strings name the same file. Windows paths are compared
+/// case-insensitively and with `/` and `\` treated alike.
+pub fn is_same_path(a: &str, b: &str) -> bool {
+    let normalize = |p: &str| {
+        let p = p.replace('/', "\\");
+        if cfg!(windows) { p.to_lowercase() } else { p }
+    };
+    normalize(a) == normalize(b)
+}
+
 pub fn generate_unique_path<P: AsRef<Path>>(path: P, blacklist: &[String]) -> PathBuf {
     let path = path.as_ref();
     let mut unique_path = path.to_path_buf();
@@ -129,15 +139,214 @@ pub fn get_special_folder_path(name: &str) -> String {
     }
 }
 
-fn translate_csharp_date_format(csharp_fmt: &str) -> String {
-    csharp_fmt
-        .replace("yyyy", "%Y")
-        .replace("yy", "%y")
-        .replace("MM", "%m")
-        .replace("dd", "%d")
-        .replace("HH", "%H")
-        .replace("mm", "%M")
-        .replace("ss", "%S")
+const DAY_NAMES: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// Formats `now` with a .NET `DateTime.ToString(format)` pattern, as the C#
+/// original does for the `(d:format)` template tag.
+///
+/// Supports every custom specifier (`d`..`dddd`, `M`..`MMMM`, `y`..`yyyyy`,
+/// `h`/`hh`/`H`/`HH`, `m`/`mm`, `s`/`ss`, `f`../`F`.., `t`/`tt`, `z`..`zzz`,
+/// `K`), quoted literals (`'...'`, `"..."`), `\` escapes, the `%` single-specifier
+/// prefix, and the single-letter standard formats (`d`, `D`, `t`, `T`, `s`, ...)
+/// using invariant-culture patterns. The previous implementation only rewrote a
+/// handful of two-letter tokens, so `(d:yyyyMMdd-HHmm)` worked but `(d:d MMM)`,
+/// `(d:dddd)` or `(d:'Week' ...)` produced garbage.
+pub fn format_csharp_datetime(now: &Zoned, format: &str) -> String {
+    // Standard (single character) formats, invariant culture.
+    let expanded: Option<&str> = match format {
+        "d" => Some("MM/dd/yyyy"),
+        "D" => Some("dddd, dd MMMM yyyy"),
+        "f" => Some("dddd, dd MMMM yyyy HH:mm"),
+        "F" => Some("dddd, dd MMMM yyyy HH:mm:ss"),
+        "g" => Some("MM/dd/yyyy HH:mm"),
+        "G" => Some("MM/dd/yyyy HH:mm:ss"),
+        "m" | "M" => Some("MMMM dd"),
+        "s" => Some("yyyy'-'MM'-'dd'T'HH':'mm':'ss"),
+        "t" => Some("HH:mm"),
+        "T" => Some("HH:mm:ss"),
+        "u" => Some("yyyy'-'MM'-'dd HH':'mm':'ss'Z'"),
+        "y" | "Y" => Some("yyyy MMMM"),
+        _ => None,
+    };
+    let format = expanded.unwrap_or(format);
+
+    let chars: Vec<char> = format.chars().collect();
+    let mut out = String::with_capacity(format.len() * 2);
+    let mut i = 0;
+
+    let year = i32::from(now.year());
+    let month = now.month() as usize;
+    let day = now.day();
+    let hour = now.hour();
+    let minute = now.minute();
+    let second = now.second();
+    let nanos = now.subsec_nanosecond().max(0) as u32;
+    let weekday = now.weekday().to_monday_zero_offset() as usize;
+    let offset_secs = now.offset().seconds();
+
+    while i < chars.len() {
+        let c = chars[i];
+        // Length of the run of identical characters starting at `i`.
+        let mut run = 1;
+        while i + run < chars.len() && chars[i + run] == c {
+            run += 1;
+        }
+
+        match c {
+            'd' => {
+                match run {
+                    1 => out.push_str(&day.to_string()),
+                    2 => out.push_str(&format!("{day:02}")),
+                    3 => out.push_str(&DAY_NAMES[weekday][..3]),
+                    _ => out.push_str(DAY_NAMES[weekday]),
+                }
+                i += run;
+            }
+            'M' => {
+                match run {
+                    1 => out.push_str(&month.to_string()),
+                    2 => out.push_str(&format!("{month:02}")),
+                    3 => out.push_str(&MONTH_NAMES[month - 1][..3]),
+                    _ => out.push_str(MONTH_NAMES[month - 1]),
+                }
+                i += run;
+            }
+            'y' => {
+                match run {
+                    1 => out.push_str(&(year % 100).to_string()),
+                    2 => out.push_str(&format!("{:02}", year % 100)),
+                    n => out.push_str(&format!("{year:0n$}")),
+                }
+                i += run;
+            }
+            'h' => {
+                let h12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+                if run == 1 {
+                    out.push_str(&h12.to_string());
+                } else {
+                    out.push_str(&format!("{h12:02}"));
+                }
+                i += run;
+            }
+            'H' => {
+                if run == 1 {
+                    out.push_str(&hour.to_string());
+                } else {
+                    out.push_str(&format!("{hour:02}"));
+                }
+                i += run;
+            }
+            'm' => {
+                if run == 1 {
+                    out.push_str(&minute.to_string());
+                } else {
+                    out.push_str(&format!("{minute:02}"));
+                }
+                i += run;
+            }
+            's' => {
+                if run == 1 {
+                    out.push_str(&second.to_string());
+                } else {
+                    out.push_str(&format!("{second:02}"));
+                }
+                i += run;
+            }
+            'f' | 'F' => {
+                let digits = run.min(7);
+                let frac = format!("{:09}", nanos);
+                let mut part = frac[..digits].to_string();
+                if c == 'F' {
+                    // `F` drops trailing zeros (and prints nothing for zero).
+                    while part.ends_with('0') {
+                        part.pop();
+                    }
+                }
+                out.push_str(&part);
+                i += run;
+            }
+            't' => {
+                let designator = if hour < 12 { "AM" } else { "PM" };
+                if run == 1 {
+                    out.push_str(&designator[..1]);
+                } else {
+                    out.push_str(designator);
+                }
+                i += run;
+            }
+            'z' => {
+                let sign = if offset_secs < 0 { '-' } else { '+' };
+                let abs = offset_secs.unsigned_abs();
+                let (oh, om) = (abs / 3600, (abs % 3600) / 60);
+                match run {
+                    1 => out.push_str(&format!("{sign}{oh}")),
+                    2 => out.push_str(&format!("{sign}{oh:02}")),
+                    _ => out.push_str(&format!("{sign}{oh:02}:{om:02}")),
+                }
+                i += run;
+            }
+            'K' => {
+                let sign = if offset_secs < 0 { '-' } else { '+' };
+                let abs = offset_secs.unsigned_abs();
+                out.push_str(&format!("{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60));
+                i += 1;
+            }
+            'g' => {
+                out.push_str("A.D.");
+                i += run;
+            }
+            '\'' | '"' => {
+                // Quoted literal: copy verbatim up to the matching quote.
+                i += 1;
+                while i < chars.len() && chars[i] != c {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                i += 1; // closing quote
+            }
+            '\\' => {
+                if i + 1 < chars.len() {
+                    out.push(chars[i + 1]);
+                }
+                i += 2;
+            }
+            '%' => {
+                // `%d` means "custom specifier d", not the standard format.
+                i += 1;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+
+    out
 }
 
 pub fn generate_file_path_from_template(
@@ -299,9 +508,7 @@ pub fn generate_file_path_from_template(
         let now = Zoned::now();
         output_path = RE_DATE_FMT
             .replace_all(&output_path, |caps: &regex::Captures| {
-                let fmt_str = translate_csharp_date_format(&caps["format"]);
-                now.strftime(&fmt_str)
-                    .to_string()
+                format_csharp_datetime(&now, &caps["format"])
                     .replace('/', "-")
                     .replace(':', "'")
             })

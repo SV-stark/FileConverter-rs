@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-11-08
+
+### Settings window redesign (UI and ease of use)
+- Kept Slint (no framework switch needed); the window was reorganised into
+  **Presets**, **History**, **Preferences** and a new **About** page, and its
+  minimum width dropped to fit 1366x768 laptops.
+- Fixed text boxes, drop-downs and switches drawing white-on-white when the
+  app theme differed from the Windows theme (the Fluent palette now follows
+  the app theme), and icons that sat too high in tabs and buttons.
+- **Unsaved changes** badge with **Discard**; Save is only active when there
+  is something to save, **Ctrl+S** saves, and closing with unsaved changes asks
+  first. Converting from the window saves pending edits first (the converter
+  reads the settings file).
+- Presets that would break the right-click menu (empty or duplicate name,
+  double quotes, empty output name) are flagged in the editor and block Save.
+- Preset editor in sections: name + **folder** field (folders = menu
+  sub-menus), output **format drop-down** of every format, file-name shortcuts
+  with a live example per format and a tag reference, input-type shortcuts
+  (**+ Audio / + Video / + Images / + Documents**) that only add compatible
+  types, and a warning for listed types the format can't be made from.
+- Option lists longer than four (e.g. video encoder speed) are drop-downs with
+  a "Default" entry; clicking a selected chip resets it to the default.
+- Preset list: colour-coded by kind, folder shown, **move up/down** buttons
+  (menu order), duplicates land next to the original, delete asks first,
+  "Restore built-in presets" adds back missing defaults.
+- History: search, All/Converted/Failed filter, open the file or show it in
+  Explorer, **Clear history**.
+- Preferences grouped Windows-11 style with switches; new **Theme** choice
+  (Follow Windows / Light / Dark), Explorer menu add/remove (both elevated now;
+  removing used to run without admin rights and silently fail), **Check now**
+  for updates, open the settings folder.
+- Messages appear as a toast that fades after five seconds instead of a
+  permanent status bar.
+- Dropping files selects a preset that can convert them when the current one
+  can't; "Convert files..." converts straight away.
+- Native dialogs are owned by the settings window (modal, centred), and the
+  drag-and-drop hook finds the window by process and title (the old fallback
+  could attach to a hidden helper window).
+- Toggling the theme writes only the theme, never unsaved preset edits.
+
+### Progress window
+- **Show** button on each converted file; **Retry failed** re-runs failed and
+  canceled files with the same preset.
+- The "some files were not converted" line is set once instead of every
+  100 ms (it used to overwrite messages such as "Copied 3 files"), and the
+  update timer goes idle once the batch is over.
+
+### Parity with the C# original
+- Explorer menu: always a single **File Converter** entry; preset folders
+  (`Scale 75%/To Mp4`) are nested sub-menus and **Configure presets...** is
+  always present (it used to appear only with more than five presets).
+- Inputs archived by `MoveInArchiveFolder` go to **Conversion Archives**.
+- Output files copy the input's **creation** time as well as access/modified.
+- When the output would overwrite the input and the preset archives/deletes it,
+  the input is moved aside first so the output keeps the original name (and is
+  restored if the conversion fails or is canceled).
+- `(d:format)` supports the full .NET date format syntax (`dddd`, `MMM`, `tt`,
+  quoted text, `\` escapes, standard formats like `d`/`s`).
+- `(n:i)`/`(n:c)` number the pages of a multi-page output 1..N; single outputs
+  keep batch numbering (page 1 of the 2nd file used to be "2 of N").
+- Settings load leniently: missing values get the original's defaults (auto
+  thread count, update check on, 3 s exit delay clamped to 0-10), legacy
+  `Bitrate`/`Encoding` keys are renamed, input types are lower-cased.
+- The progress window only auto-closes when **every** file succeeded.
+- Presets import/export through file pickers in the C# `<Presets>` format
+  (full settings files can be imported too).
+- Preferences now expose simultaneous conversions, hardware acceleration,
+  update check and the auto-close delay.
+
+### Faster
+- Progress rows are updated in place (no model rebuild every 100 ms) and both
+  the job list and history list are virtualised.
+- History is written once per batch instead of once per file.
+- Jobs run in list order on a fixed worker set; no per-batch thread pool.
+- The engine choice (file sniffing) is computed once per job.
+- The shell extension parses the built-in presets once per Explorer process and
+  caches the merged settings until the user file changes.
+
+### Easier / more robust
+- Progress window: per-file destination, elapsed and remaining time, full error
+  text, batch ETA, percentage in the title bar, **Cancel all**, auto-close
+  countdown with **Keep open**, and the title-bar X no longer kills running
+  conversions.
+- A crash inside one engine fails that file only instead of the whole batch.
+- Unknown preset / unreadable settings show an error dialog instead of nothing.
+- CLI output (`list-presets`, `convert --headless`) appears in the terminal.
+- Settings are saved atomically; large drag-and-drop batches use a list file.
+
 ## [0.10.1] - 2026-10-04
 
 ### Added - per-preset conversion settings editor (Preset Studio)

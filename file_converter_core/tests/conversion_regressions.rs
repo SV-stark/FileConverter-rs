@@ -934,23 +934,59 @@ fn test_preset_setting_descriptors_cover_every_output_type() {
     assert!(jpg.contains(&"JpegQuality"));
     assert!(!jpg.contains(&"AudioEncodingMode"));
 
-    // Slint 1.9 has no wrapping layout, so long choice lists would overflow the
-    // pane; `preset_setting_keys` demotes them to free text.
-    for ot in [
-        OutputType::Mp4,
-        OutputType::Png,
-        OutputType::Wav,
-        OutputType::Jpg,
-    ] {
+    // Long choice lists are drawn as a drop-down now, so they are kept instead
+    // of being demoted to free text. Every choice must be a non-empty value.
+    let mp4 = preset_setting_keys(OutputType::Mp4);
+    let speed = mp4
+        .iter()
+        .find(|k| k.key == "VideoEncodingSpeed")
+        .expect("video presets offer the encoder speed");
+    assert_eq!(speed.choices.len(), 9);
+    for ot in OutputType::ALL {
         for k in preset_setting_keys(ot) {
             assert!(
-                k.choices.len() <= 4,
-                "{ot:?}/{} has {} choices and would overflow the editor",
-                k.key,
-                k.choices.len()
+                k.choices.iter().all(|c| !c.trim().is_empty()),
+                "{ot:?}/{} has an empty choice",
+                k.key
             );
         }
     }
+}
+
+#[test]
+fn test_encoder_speed_choices_are_what_the_engine_reads() {
+    use file_converter_core::types::{OutputType, VideoEncodingSpeed, preset_setting_keys};
+
+    // The drop-down must only offer values the FFmpeg engine understands;
+    // anything else silently falls back to Medium.
+    let keys = preset_setting_keys(OutputType::Mkv);
+    let speed = keys
+        .iter()
+        .find(|k| k.key == "VideoEncodingSpeed")
+        .expect("video presets offer the encoder speed");
+    for choice in speed.choices {
+        assert!(
+            choice.parse::<VideoEncodingSpeed>().is_ok(),
+            "{choice:?} is not a VideoEncodingSpeed"
+        );
+    }
+}
+
+#[test]
+fn test_output_type_list_and_kinds() {
+    use file_converter_core::types::OutputType;
+
+    assert!(!OutputType::ALL.contains(&OutputType::None));
+    for ot in OutputType::ALL {
+        assert_ne!(ot.kind(), "Misc", "{ot:?} needs a kind");
+        assert!(!ot.extension().is_empty(), "{ot:?} needs an extension");
+        // The editor round-trips the enum name through the settings file.
+        assert_eq!(ot.as_ref().parse::<OutputType>(), Ok(ot));
+    }
+    assert_eq!(OutputType::Mp3.kind(), "Audio");
+    assert_eq!(OutputType::Webm.kind(), "Video");
+    assert_eq!(OutputType::Gif.kind(), "Image");
+    assert_eq!(OutputType::Pdf.kind(), "Document");
 }
 
 #[test]
@@ -1061,4 +1097,143 @@ fn test_version_comparison() {
     assert!(is_version_newer("0.9.1", "v0.9.2"));
     assert!(!is_version_newer("0.9.2", "0.9.2"));
     assert!(!is_version_newer("0.9.4", "0.9.3"));
+}
+
+#[test]
+fn test_csharp_date_format_tokens() {
+    use file_converter_core::path_helpers::format_csharp_datetime;
+
+    let now: jiff::Zoned = "2024-03-05T14:07:09[UTC]".parse().unwrap();
+    assert_eq!(
+        format_csharp_datetime(&now, "yyyyMMdd-HHmmss"),
+        "20240305-140709"
+    );
+    assert_eq!(
+        format_csharp_datetime(&now, "dddd d MMM yy"),
+        "Tuesday 5 Mar 24"
+    );
+    assert_eq!(
+        format_csharp_datetime(&now, "'Week' hh:mm tt"),
+        "Week 02:07 PM"
+    );
+    assert_eq!(format_csharp_datetime(&now, "MMMM"), "March");
+    assert_eq!(format_csharp_datetime(&now, "d"), "03/05/2024");
+    assert_eq!(format_csharp_datetime(&now, "%d"), "5");
+    assert_eq!(format_csharp_datetime(&now, r"\y\e\a\r yyyy"), "year 2024");
+}
+
+#[test]
+fn test_settings_load_applies_csharp_fixups() {
+    let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Settings SerializationVersion="4">
+    <DurationBetweenEndOfConversionsAndApplicationExit>50</DurationBetweenEndOfConversionsAndApplicationExit>
+    <ConversionPreset Name="Old/To Mp3" OutputType="Mp3">
+        <InputTypes>WAV</InputTypes>
+        <InputTypes>.Flac</InputTypes>
+        <InputTypes>wav</InputTypes>
+        <InputPostConversionAction>None</InputPostConversionAction>
+        <Settings Key="Bitrate" Value="256" />
+        <OutputFileNameTemplate>(p)(f)</OutputFileNameTemplate>
+    </ConversionPreset>
+</Settings>"#;
+
+    // Missing MaximumNumberOfSimultaneousConversions / CheckUpgradeAtStartup
+    // must not make the file unloadable.
+    let settings = Settings::load_from_str(xml).expect("lenient load");
+    assert_eq!(settings.maximum_number_of_simultaneous_conversions, 0);
+    assert!(settings.check_upgrade_at_startup);
+    assert_eq!(
+        settings.duration_between_end_of_conversions_and_application_exit,
+        10.0
+    );
+
+    let p = &settings.conversion_presets[0];
+    let inputs: Vec<&str> = p.input_types.iter().map(|s| s.as_str()).collect();
+    assert_eq!(inputs, ["wav", "flac"]);
+    assert_eq!(p.get_setting_value("AudioBitrate"), Some("256"));
+    assert_eq!(p.get_setting_value("Bitrate"), None);
+    assert_eq!(p.short_name(), "To Mp3");
+    assert_eq!(p.folders(), ["Old"]);
+}
+
+#[test]
+fn test_preset_file_export_import_roundtrip() {
+    use file_converter_core::settings::{load_presets_file, save_presets_file};
+
+    let mut a = preset("Folder/To Png", OutputType::Png, &["jpg"]);
+    a.set_setting_value("ImageScale", "0.5");
+    let b = preset("To Mp3", OutputType::Mp3, &["wav"]);
+
+    let path = temp_path("presets.xml");
+    save_presets_file(&path, &[a.clone(), b.clone()]).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("<Presets"), "{text}");
+    let loaded = load_presets_file(&path).unwrap();
+    assert_eq!(loaded, vec![a, b]);
+
+    // A whole settings file is importable too.
+    let defaults = Settings::load_from_str(include_str!("../../Settings.default.xml")).unwrap();
+    defaults.save_to_file(&path).unwrap();
+    let loaded = load_presets_file(&path).unwrap();
+    assert_eq!(loaded.len(), defaults.conversion_presets.len());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn test_batch_numbering_for_single_output_jobs() {
+    use file_converter_core::scheduler::ConversionJob;
+
+    let png = touch_temp("numbered.png", &[0x89, b'P', b'N', b'G']);
+    let mut p = preset("To Jpg", OutputType::Jpg, &["png"]);
+    p.output_file_name_template = "(p)(f) (n:i) of (n:c)".to_string();
+    let mut job = ConversionJob::new(2, p, png.clone());
+    job.prepare(1, 3).unwrap();
+    assert!(
+        job.output_file_paths[0].ends_with("numbered (2) of 3.jpg")
+            || job.output_file_paths[0].ends_with("2 of 3.jpg"),
+        "{:?}",
+        job.output_file_paths
+    );
+    let _ = std::fs::remove_file(png);
+}
+
+#[test]
+fn test_same_name_output_with_archive_keeps_name_and_timestamps() {
+    use file_converter_core::scheduler::{ConversionJob, DEFAULT_ARCHIVE_FOLDER_NAME, JobStatus};
+
+    // A real PNG converted "to Png" in place, with the input archived.
+    let dir = temp_path("archive_case");
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("photo.png");
+    image::RgbImage::from_pixel(4, 4, image::Rgb([200, 10, 10]))
+        .save(&input)
+        .unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&input)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let mut p = preset("To Png", OutputType::Png, &["png"]);
+    p.input_post_conversion_action = InputPostConversionAction::MoveInArchiveFolder;
+    let input_str = input.to_string_lossy().to_string();
+    let mut job = ConversionJob::new(1, p, input_str.clone());
+    job.prepare(0, 1).unwrap();
+    assert!(job.replaces_input);
+    assert_eq!(job.output_file_paths, vec![input_str.clone()]);
+
+    job.run(HardwareAccelerationMode::Off);
+    assert_eq!(*job.status.lock(), JobStatus::Done);
+
+    // Output under the original name, input archived under its original name.
+    assert!(input.is_file());
+    let archived = dir.join(DEFAULT_ARCHIVE_FOLDER_NAME).join("photo.png");
+    assert!(archived.is_file(), "archived copy missing");
+    assert!(!dir.join("photo_TEMP.png").exists());
+    assert_eq!(std::fs::metadata(&input).unwrap().modified().unwrap(), old);
+    assert!(job.elapsed().is_some());
+
+    let _ = std::fs::remove_dir_all(dir);
 }

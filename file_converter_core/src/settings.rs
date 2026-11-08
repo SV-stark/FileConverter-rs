@@ -12,18 +12,24 @@ use crate::types::{HardwareAccelerationMode, InputPostConversionAction, OutputTy
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Settings {
-    #[serde(rename = "@SerializationVersion")]
+    #[serde(rename = "@SerializationVersion", default)]
     pub serialization_version: i32,
 
+    /// `0` means "automatic" (half the logical CPUs), as in the C# original.
+    /// Defaulted so a hand-edited or older file without it still loads
+    /// instead of failing outright.
+    #[serde(default)]
     pub maximum_number_of_simultaneous_conversions: usize,
 
     #[serde(default)]
     pub exit_application_when_conversions_finished: bool,
 
-    #[serde(default)]
+    /// Seconds, clamped to 0..=10 on load (C# parity). Defaults to 3.
+    #[serde(default = "default_exit_delay")]
     pub duration_between_end_of_conversions_and_application_exit: f32,
 
-    #[serde(default)]
+    /// On by default, like the C# original.
+    #[serde(default = "default_true")]
     pub check_upgrade_at_startup: bool,
 
     #[serde(default)]
@@ -72,12 +78,78 @@ pub struct ConversionPreset {
     #[serde(rename = "InputTypes", default)]
     pub input_types: Vec<CompactStr>,
 
+    #[serde(default)]
     pub input_post_conversion_action: InputPostConversionAction,
 
     #[serde(rename = "Settings", default)]
     pub settings: Vec<PresetSetting>,
 
+    #[serde(default = "default_output_template")]
     pub output_file_name_template: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_exit_delay() -> f32 {
+    3.0
+}
+
+fn default_output_template() -> String {
+    "(p)(f)".to_string()
+}
+
+/// A standalone preset file, as written by the C# "Export preset" command:
+/// `<Presets><ConversionPreset .../>...</Presets>`.
+///
+/// Reading also accepts a full `<Settings>` file (unknown elements are
+/// ignored), so either kind of file can be imported.
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct PresetsFile {
+    #[serde(rename = "ConversionPreset", default)]
+    presets: Vec<ConversionPreset>,
+}
+
+/// Writes `bytes` to `path` atomically: a crash or full disk mid-write can
+/// no longer leave a truncated, unloadable settings file behind.
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    {
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+/// Reads the presets from a preset file or a full settings file.
+pub fn load_presets_file<P: AsRef<Path>>(path: P) -> Result<Vec<ConversionPreset>> {
+    let content = std::fs::read_to_string(path)?;
+    let content = content.trim_start_matches('\u{feff}');
+    let file: PresetsFile = from_str(content)?;
+    let mut presets = file.presets;
+    for preset in &mut presets {
+        preset.normalize();
+    }
+    Ok(presets)
+}
+
+/// Writes presets in the C#-compatible `<Presets>` export format.
+pub fn save_presets_file<P: AsRef<Path>>(path: P, presets: &[ConversionPreset]) -> Result<()> {
+    let file = PresetsFile {
+        presets: presets.to_vec(),
+    };
+    let xml = to_string_with_root("Presets", &file)?;
+    let mut bytes = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_vec();
+    bytes.extend_from_slice(xml.as_bytes());
+    write_atomically(path.as_ref(), &bytes)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -92,9 +164,27 @@ impl Settings {
     pub const CURRENT_VERSION: i32 = 4;
 
     pub fn load_from_str(content: &str) -> Result<Self> {
+        // Files written by some editors start with a UTF-8 byte-order mark.
+        let content = content.trim_start_matches('\u{feff}');
         let mut settings: Settings = from_str(content)?;
         settings.migrate();
+        settings.normalize();
         Ok(settings)
+    }
+
+    /// Applies the load-time fix-ups the C# original performs in
+    /// `OnDeserializationComplete`: clamp the exit delay, lower-case input
+    /// types and translate legacy setting keys.
+    pub fn normalize(&mut self) {
+        let delay = self.duration_between_end_of_conversions_and_application_exit;
+        self.duration_between_end_of_conversions_and_application_exit = if delay.is_finite() {
+            delay.clamp(0.0, 10.0)
+        } else {
+            3.0
+        };
+        for preset in &mut self.conversion_presets {
+            preset.normalize();
+        }
     }
 
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -106,11 +196,9 @@ impl Settings {
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let xml_str = to_string_with_root("Settings", self)?;
-        // Add XML header
-        let mut file = File::create(path)?;
-        file.write_all(b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")?;
-        file.write_all(xml_str.as_bytes())?;
-        Ok(())
+        let mut bytes = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n".to_vec();
+        bytes.extend_from_slice(xml_str.as_bytes());
+        write_atomically(path.as_ref(), &bytes)
     }
 
     pub fn merge(&mut self, default: Settings) {
@@ -152,6 +240,46 @@ impl Settings {
 }
 
 impl ConversionPreset {
+    /// The preset name without its folders: `"Scale 75%/To Mp4"` -> `"To Mp4"`.
+    pub fn short_name(&self) -> &str {
+        self.name.rsplit('/').next().unwrap_or(&self.name)
+    }
+
+    /// The folders a preset is filed under (`"Scale 75%/To Mp4"` ->
+    /// `["Scale 75%"]`). The C# original shows them as sub-menus.
+    pub fn folders(&self) -> Vec<&str> {
+        let mut parts: Vec<&str> = self.name.split('/').collect();
+        parts.pop();
+        parts.retain(|p| !p.trim().is_empty());
+        parts
+    }
+
+    /// Load-time fix-ups (C# parity): input types are trimmed, lower-cased and
+    /// de-duplicated, and the legacy `Bitrate` / `Encoding` keys written by old
+    /// versions are renamed to `AudioBitrate` / `AudioEncodingMode`.
+    pub fn normalize(&mut self) {
+        let mut seen: Vec<CompactStr> = Vec::with_capacity(self.input_types.len());
+        for t in &self.input_types {
+            let t = t.trim().trim_start_matches('.').to_lowercase();
+            if !t.is_empty() && !seen.iter().any(|s| s == t.as_str()) {
+                seen.push(CompactStr::new(t));
+            }
+        }
+        self.input_types = seen;
+
+        for (legacy, current) in [
+            ("Bitrate", "AudioBitrate"),
+            ("Encoding", "AudioEncodingMode"),
+        ] {
+            if let Some(pos) = self.settings.iter().position(|s| s.key == legacy) {
+                let value = self.settings.remove(pos).value;
+                if self.get_setting_value(current).is_none() {
+                    self.set_setting_value(current, &value);
+                }
+            }
+        }
+    }
+
     pub fn get_settings_map(&self) -> AHashMap<CompactStr, CompactStr> {
         self.settings
             .iter()

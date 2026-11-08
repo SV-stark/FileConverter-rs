@@ -1875,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_bin"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "clap",
  "file_converter_core",
@@ -1894,7 +1894,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_core"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1902,7 +1902,6 @@ dependencies = [
  "compact_str 0.9.1",
  "ebook-rs",
  "fast_image_resize",
- "filetime",
  "hayro",
  "hayro-interpret",
  "heic",
@@ -1921,6 +1920,7 @@ dependencies = [
  "rayon",
  "regex",
  "resvg 0.45.1",
+ "scopeguard",
  "serde",
  "serde_json",
  "sha2",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "file_converter_shell"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "file_converter_core",
  "scopeguard",

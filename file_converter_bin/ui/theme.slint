@@ -45,6 +45,16 @@ export global Theme {
     public pure function catVideo(dark: bool) -> color { return dark ? #f472b6 : #db2777; }
     public pure function catImage(dark: bool) -> color { return dark ? #34d399 : #0e9f6e; }
     public pure function catDoc(dark: bool) -> color { return dark ? #fbbf24 : #b45309; }
+    public pure function catMisc(dark: bool) -> color { return dark ? #9aabc4 : #5b6572; }
+
+    // Category name ("Audio", "Video", "Image", "Document", ...) -> its hue.
+    public pure function category(name: string, dark: bool) -> color {
+        return name == "Audio" ? Theme.catAudio(dark)
+            : name == "Video" ? Theme.catVideo(dark)
+            : name == "Image" ? Theme.catImage(dark)
+            : name == "Document" ? Theme.catDoc(dark)
+            : Theme.catMisc(dark);
+    }
 
     // --- Ink on filled surfaces -------------------------------------------
     out property <color> on-accent: #ffffff;

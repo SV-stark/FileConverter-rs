@@ -17,7 +17,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::SystemTime;
 
 use file_converter_core::settings::{ConversionPreset, Settings};
@@ -263,11 +263,19 @@ impl IShellExtInit_Impl for FileConverterShellExt_Impl {
     }
 }
 
-// In-memory thread-safe cached settings loader to avoid disk I/O on UI thread
-static CACHED_SETTINGS: LazyLock<RwLock<Option<(SystemTime, Settings)>>> =
-    LazyLock::new(|| RwLock::new(None));
+/// The embedded default presets, parsed once per Explorer process instead of
+/// on every right-click (the XML is ~100 KB).
+static DEFAULT_SETTINGS: LazyLock<Settings> = LazyLock::new(create_default_settings);
 
-fn get_cached_settings() -> Settings {
+// In-memory thread-safe cache of the *merged* (user + default) settings, keyed
+// on the user file's modification time. Right-clicks no longer re-read,
+// re-parse and re-merge anything unless the file actually changed.
+/// Merged settings plus the user file's modification time they were read at.
+type SettingsCache = Option<(SystemTime, Arc<Settings>)>;
+
+static CACHED_SETTINGS: LazyLock<RwLock<SettingsCache>> = LazyLock::new(|| RwLock::new(None));
+
+fn get_cached_settings() -> Arc<Settings> {
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let user_settings_path = Path::new(&local_app_data)
         .join("FileConverter")
@@ -281,19 +289,21 @@ fn get_cached_settings() -> Settings {
     if let Ok(guard) = CACHED_SETTINGS.read() {
         if let Some((cached_mtime, ref settings)) = *guard {
             if cached_mtime == mtime {
-                return settings.clone();
+                return Arc::clone(settings);
             }
         }
     }
 
-    let loaded = if user_settings_path.exists() {
-        Settings::load_from_file(&user_settings_path).unwrap_or_else(|_| create_default_settings())
+    let mut loaded = if user_settings_path.exists() {
+        Settings::load_from_file(&user_settings_path).unwrap_or_else(|_| DEFAULT_SETTINGS.clone())
     } else {
-        create_default_settings()
+        DEFAULT_SETTINGS.clone()
     };
+    loaded.merge(DEFAULT_SETTINGS.clone());
+    let loaded = Arc::new(loaded);
 
     if let Ok(mut guard) = CACHED_SETTINGS.write() {
-        *guard = Some((mtime, loaded.clone()));
+        *guard = Some((mtime, Arc::clone(&loaded)));
     }
 
     loaded
@@ -396,12 +406,11 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             return Ok(());
         }
 
-        let mut settings = get_cached_settings();
-        settings.merge(create_default_settings());
+        let settings = get_cached_settings();
 
-        let compatible_presets: Vec<_> = settings
+        let compatible_presets: Vec<&ConversionPreset> = settings
             .conversion_presets
-            .into_iter()
+            .iter()
             .filter(|preset| {
                 selected_files
                     .iter()
@@ -421,19 +430,14 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
         }
 
         let presets_count = compatible_presets.len();
-        let needed_count = if presets_count <= 5 {
-            presets_count as u32
-        } else {
-            (presets_count + 2) as u32
-        };
+        // One id per preset, one for "Configure presets...", one for the
+        // "File Converter" parent item.
+        let needed_count = (presets_count + 2) as u32;
 
         // The shell reserves the command-id range `[idcmdfirst, _idcmdlast]` for
         // this handler. If it is not large enough we must add nothing at all:
         // emitting ids outside the range collides with the next handler and
         // dispatches `lpVerb` offsets that were never displayed.
-        //
-        // The previous guard `if _idcmdlast >= idcmdfirst && (...)` short-circuited
-        // to *false* when no range was reserved, letting the fall-through path run.
         let fits = idcmdfirst
             .checked_add(needed_count)
             .is_some_and(|end| end <= _idcmdlast);
@@ -443,135 +447,137 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
 
         let cmd_id = idcmdfirst;
         let configure_cmd_id = cmd_id + presets_count as u32;
+        let parent_cmd_id = configure_cmd_id + 1;
 
-        let mut parent_text_wide: Vec<u16> = "File Converter\0".encode_utf16().collect();
-
+        // Same layout as the C# original: a single "File Converter" entry whose
+        // sub-menu lists the presets, with preset folders ("Scale 75%/To Mp4")
+        // shown as nested sub-menus, then a separator and "Configure presets...".
+        // (Previously up to five presets were spilled into Explorer's root menu
+        // and folder names were shown verbatim, e.g. "Scale 75%/To Mp4".)
         unsafe {
-            if presets_count <= 5 {
-                // Count only the items Explorer was actually told about.
-                let mut inserted_count: u32 = 0;
-                for (i, preset) in compatible_presets.iter().enumerate() {
-                    let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
-                    name_wide.push(0);
+            let h_sub_menu = CreatePopupMenu()?;
 
-                    let icon_bmp = create_category_icon(preset.output_type);
+            // `DestroyMenu` on the error path destroys nested folder menus too;
+            // without it the USER handles leak inside long-lived explorer.exe.
+            let sub_menu_guard = scopeguard::guard(h_sub_menu, |h| {
+                let _ = DestroyMenu(h);
+            });
 
-                    // The menu takes ownership of the bitmap on success; on failure
-                    // the guard deletes it to avoid a GDI handle leak.
-                    let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
-                        let _ = DeleteObject(b);
-                    });
+            // Folder path ("A/B") -> its popup menu.
+            let mut folder_menus: Vec<(String, HMENU)> = Vec::new();
 
-                    let mii = MENUITEMINFOW {
+            for (i, preset) in compatible_presets.iter().enumerate() {
+                // Walk / create the folder chain for this preset.
+                let mut parent = h_sub_menu;
+                let mut path = String::new();
+                for folder in preset.folders() {
+                    if !path.is_empty() {
+                        path.push('/');
+                    }
+                    path.push_str(folder);
+
+                    if let Some((_, menu)) = folder_menus.iter().find(|(p, _)| *p == path) {
+                        parent = *menu;
+                        continue;
+                    }
+
+                    let Ok(folder_menu) = CreatePopupMenu() else {
+                        break;
+                    };
+                    let mut folder_wide: Vec<u16> =
+                        folder.encode_utf16().chain(std::iter::once(0)).collect();
+                    let folder_mii = MENUITEMINFOW {
                         cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                        fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
+                        fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_FTYPE,
                         fType: MFT_STRING,
-                        wID: cmd_id + i as u32,
-                        dwTypeData: windows::core::PWSTR(name_wide.as_mut_ptr()),
-                        cch: (name_wide.len() - 1) as u32,
-                        hbmpItem: icon_bmp,
+                        hSubMenu: folder_menu,
+                        dwTypeData: windows::core::PWSTR(folder_wide.as_mut_ptr()),
+                        cch: (folder_wide.len() - 1) as u32,
                         ..Default::default()
                     };
-
-                    let inserted = InsertMenuItemW(hmenu, indexmenu + i as u32, true, &mii);
-                    if inserted.is_ok() {
-                        scopeguard::ScopeGuard::into_inner(bitmap_guard);
-                        inserted_count += 1;
+                    if InsertMenuItemW(parent, u32::MAX, true, &folder_mii).is_ok() {
+                        folder_menus.push((path.clone(), folder_menu));
+                        parent = folder_menu;
+                    } else {
+                        let _ = DestroyMenu(folder_menu);
+                        break;
                     }
                 }
 
-                Err(windows::core::Error::from_hresult(HRESULT(
-                    inserted_count as i32,
-                )))
-            } else {
-                let h_sub_menu = CreatePopupMenu()?;
+                let mut name_wide: Vec<u16> = preset
+                    .short_name()
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
 
-                // `DestroyMenu` on the error path: without this the USER handle
-                // leaked on every failed insertion (a per-right-click leak inside
-                // the long-lived explorer.exe process).
-                let sub_menu_guard = scopeguard::guard(h_sub_menu, |h| {
-                    let _ = DestroyMenu(h);
+                let icon_bmp = create_category_icon(preset.output_type);
+                // The menu takes ownership of the bitmap on success; on failure
+                // the guard deletes it to avoid a GDI handle leak.
+                let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
+                    let _ = DeleteObject(b);
                 });
 
-                let mut inserted_count: u32 = 0;
-                for (i, preset) in compatible_presets.iter().enumerate() {
-                    let mut name_wide: Vec<u16> = preset.name.encode_utf16().collect();
-                    name_wide.push(0);
-
-                    let icon_bmp = create_category_icon(preset.output_type);
-
-                    let bitmap_guard = scopeguard::guard(icon_bmp, |b| {
-                        let _ = DeleteObject(b);
-                    });
-
-                    let mii = MENUITEMINFOW {
-                        cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                        fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
-                        fType: MFT_STRING,
-                        wID: cmd_id + i as u32,
-                        dwTypeData: windows::core::PWSTR(name_wide.as_mut_ptr()),
-                        cch: (name_wide.len() - 1) as u32,
-                        hbmpItem: icon_bmp,
-                        ..Default::default()
-                    };
-
-                    let inserted = InsertMenuItemW(h_sub_menu, i as u32, true, &mii);
-                    if inserted.is_ok() {
-                        scopeguard::ScopeGuard::into_inner(bitmap_guard);
-                        inserted_count += 1;
-                    }
-                }
-
-                let sep_mii = MENUITEMINFOW {
+                let mii = MENUITEMINFOW {
                     cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                    fMask: MIIM_FTYPE,
-                    fType: MFT_SEPARATOR,
-                    ..Default::default()
-                };
-                if InsertMenuItemW(h_sub_menu, inserted_count, true, &sep_mii).is_ok() {
-                    inserted_count += 1;
-                }
-
-                let mut config_text_wide: Vec<u16> = "Configure...\0".encode_utf16().collect();
-                let config_mii = MENUITEMINFOW {
-                    cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                    fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
+                    fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE | MIIM_BITMAP,
                     fType: MFT_STRING,
-                    wID: configure_cmd_id,
-                    dwTypeData: windows::core::PWSTR(config_text_wide.as_mut_ptr()),
-                    cch: (config_text_wide.len() - 1) as u32,
-                    ..Default::default()
-                };
-                if InsertMenuItemW(h_sub_menu, inserted_count, true, &config_mii).is_ok() {
-                    inserted_count += 1;
-                }
-
-                if let Ok(mut lock) = self.configure_cmd_offset.write() {
-                    *lock = Some(presets_count);
-                }
-
-                let parent_cmd_id = configure_cmd_id + 1;
-                let parent_mii = MENUITEMINFOW {
-                    cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                    fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_ID | MIIM_FTYPE,
-                    fType: MFT_STRING,
-                    wID: parent_cmd_id,
-                    hSubMenu: h_sub_menu,
-                    dwTypeData: windows::core::PWSTR(parent_text_wide.as_mut_ptr()),
-                    cch: (parent_text_wide.len() - 1) as u32,
+                    wID: cmd_id + i as u32,
+                    dwTypeData: windows::core::PWSTR(name_wide.as_mut_ptr()),
+                    cch: (name_wide.len() - 1) as u32,
+                    hbmpItem: icon_bmp,
                     ..Default::default()
                 };
 
-                if InsertMenuItemW(hmenu, indexmenu, true, &parent_mii).is_ok() {
-                    // The menu now owns the popup, so drop the destruction guard.
-                    let h_sub_menu = scopeguard::ScopeGuard::into_inner(sub_menu_guard);
-                    let _ = h_sub_menu;
-                    inserted_count += 1;
+                if InsertMenuItemW(parent, u32::MAX, true, &mii).is_ok() {
+                    scopeguard::ScopeGuard::into_inner(bitmap_guard);
                 }
+            }
 
+            let sep_mii = MENUITEMINFOW {
+                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_FTYPE,
+                fType: MFT_SEPARATOR,
+                ..Default::default()
+            };
+            let _ = InsertMenuItemW(h_sub_menu, u32::MAX, true, &sep_mii);
+
+            let mut config_text_wide: Vec<u16> = "Configure presets...\0".encode_utf16().collect();
+            let config_mii = MENUITEMINFOW {
+                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_STRING | MIIM_ID | MIIM_FTYPE,
+                fType: MFT_STRING,
+                wID: configure_cmd_id,
+                dwTypeData: windows::core::PWSTR(config_text_wide.as_mut_ptr()),
+                cch: (config_text_wide.len() - 1) as u32,
+                ..Default::default()
+            };
+            let _ = InsertMenuItemW(h_sub_menu, u32::MAX, true, &config_mii);
+
+            if let Ok(mut lock) = self.configure_cmd_offset.write() {
+                *lock = Some(presets_count);
+            }
+
+            let mut parent_text_wide: Vec<u16> = "File Converter\0".encode_utf16().collect();
+            let parent_mii = MENUITEMINFOW {
+                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                fMask: MIIM_STRING | MIIM_SUBMENU | MIIM_ID | MIIM_FTYPE,
+                fType: MFT_STRING,
+                wID: parent_cmd_id,
+                hSubMenu: h_sub_menu,
+                dwTypeData: windows::core::PWSTR(parent_text_wide.as_mut_ptr()),
+                cch: (parent_text_wide.len() - 1) as u32,
+                ..Default::default()
+            };
+
+            if InsertMenuItemW(hmenu, indexmenu, true, &parent_mii).is_ok() {
+                // The menu now owns the popup, so drop the destruction guard.
+                let _ = scopeguard::ScopeGuard::into_inner(sub_menu_guard);
+                // MAKE_HRESULT(SEVERITY_SUCCESS, 0, largest id offset + 1).
                 Err(windows::core::Error::from_hresult(HRESULT(
-                    inserted_count as i32,
+                    needed_count as i32,
                 )))
+            } else {
+                Err(windows::core::Error::from_hresult(HRESULT(0)))
             }
         }
     }
@@ -602,12 +608,11 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
             .unwrap_or_default();
 
         if presets.is_empty() {
-            let mut settings = get_cached_settings();
-            settings.merge(create_default_settings());
+            let settings = get_cached_settings();
 
             presets = settings
                 .conversion_presets
-                .into_iter()
+                .iter()
                 .filter(|preset| {
                     // An empty selection would make `.all()` vacuously true and
                     // offer every preset, so bail out instead of guessing.
@@ -616,7 +621,7 @@ impl IContextMenu_Impl for FileConverterShellExt_Impl {
                             .iter()
                             .all(|file| is_preset_compatible_with_file(preset, file))
                 })
-                .map(|p| p.name)
+                .map(|p| p.name.clone())
                 .collect();
         }
 

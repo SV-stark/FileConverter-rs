@@ -2,34 +2,40 @@
 // FileConverter-rs UI.
 //
 // Structure: tokens (theme.slint) -> primitives (components.slint) -> rows
-// defined once at the bottom of this file -> two windows.
+// defined once at the top of this file -> two windows.
 //
-// Every colour comes from Theme, every control from components.slint. Nothing
-// below contains a raw hex value or a hand-built button.
+// Every colour comes from Theme, every control from components.slint or the
+// Fluent std-widgets. Nothing below contains a raw hex value.
 // ---------------------------------------------------------------------------
 
-import { LineEdit, ScrollView, ProgressIndicator, CheckBox } from "std-widgets.slint";
+import { LineEdit, ScrollView, ProgressIndicator, ListView, SpinBox, ComboBox, Switch, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { ButtonKind, UiBadge, UiButton, UiCard, UiChip, UiDivider, UiFieldLabel, UiIconButton } from "components.slint";
-import { Icon, IconCopy, IconDownload, IconFolder, IconFolderOpen, IconMoon, IconPlug, IconPlus, IconSave, IconSun, IconTrash, IconUpload, IconX, IconZap } from "icons.slint";
+import { ButtonKind, UiBadge, UiButton, UiCard, UiChip, UiDivider, UiFieldLabel, UiIconButton, UiNotice, UiSection, UiSettingRow } from "components.slint";
+import { Icon, IconFolder, IconInfo, IconSearch, IconZap } from "icons.slint";
 
 export struct PresetData {
     original_index: int,
+    // Full name including folders ("Scale 75%/To Mp4"): what the menu and CLI use.
     name: string,
+    short_name: string,
+    folder: string,
     category: string,
-    output_type: string,
     output_ext: string,
     input_types: string,
-    output_file_name_template: string,
-    input_post_conversion_action: string,
+    is_default: bool,
 }
 
 export struct HistoryItemData {
     timestamp: string,
     preset_name: string,
+    input_name: string,
     input_path: string,
+    output_name: string,
+    // First output file, for "Open" / "Show in folder".
     output_path: string,
     status: string,
+    message: string,
+    ok: bool,
 }
 
 export struct JobProgressData {
@@ -39,12 +45,15 @@ export struct JobProgressData {
     output_path: string,
     progress: float,
     status_text: string,
+    // Second line: destination, elapsed / remaining time, or the full error.
+    detail: string,
     is_done: bool,
     is_failed: bool,
 }
 
 // One editable conversion setting of the selected preset (quality, bitrate,
-// scale, ...). `choices` is empty for free-text values.
+// scale, ...). `choices` is empty for free-text values; up to four choices are
+// drawn as chips, longer lists as a drop-down.
 export struct PresetSettingData {
     key: string,
     label: string,
@@ -78,10 +87,13 @@ component NavTab inherits Rectangle {
         padding-right: Theme.s-3;
         spacing: Theme.s-2;
 
-        Icon {
-            source: root.icon;
-            size: 14px;
-            tint: root.selected ? Theme.accent(root.dark) : Theme.textMute(root.dark);
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                source: root.icon;
+                size: 14px;
+                tint: root.selected ? Theme.accent(root.dark) : Theme.textMute(root.dark);
+            }
         }
 
         lbl := Text {
@@ -108,47 +120,63 @@ component PresetRow inherits Rectangle {
     in property <PresetData> data;
     callback clicked();
 
-    height: 52px;
+    height: 54px;
     border-radius: Theme.r-sm;
-    background: root.selected ? Theme.accentSoft(root.dark) : Theme.surface2(root.dark);
+    background: root.selected ? Theme.accentSoft(root.dark) : transparent;
     border-width: 1px;
-    border-color: root.selected ? Theme.accent(root.dark) : Theme.border(root.dark);
+    border-color: root.selected ? Theme.accent(root.dark) : transparent;
     animate background { duration: Theme.fast; easing: ease-out; }
     animate border-color { duration: Theme.fast; easing: ease-out; }
 
     HorizontalLayout {
-        padding-left: Theme.s-3;
+        padding-left: Theme.s-2;
         padding-right: Theme.s-2;
         spacing: Theme.s-2;
+
+        // Category colour bar: scanning a long list by type at a glance.
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Rectangle {
+                width: 3px;
+                height: 30px;
+                border-radius: 2px;
+                background: Theme.category(root.data.category, root.dark);
+            }
+        }
 
         VerticalLayout {
             alignment: center;
             spacing: 2px;
+            horizontal-stretch: 1;
 
             Text {
-                text: root.data.name;
+                text: root.data.short_name;
                 font-size: Theme.t-md;
                 font-weight: Theme.w-semibold;
                 color: Theme.text(root.dark);
                 overflow: elide;
             }
             Text {
-                text: root.data.output_ext + " · " + root.data.input_types;
+                text: (root.data.folder != "" ? root.data.folder + "  ›  " : "")
+                    + (root.data.input_types != "" ? root.data.input_types : "any file");
                 font-size: Theme.t-sm;
                 color: Theme.textMute(root.dark);
                 overflow: elide;
-                // Caps the minimum width so the elide above can take effect
-                // instead of inflating the 320px sidebar.
-                max-width: 210px;
+                // Caps the minimum width so the elide can take effect instead
+                // of inflating the sidebar.
+                max-width: 190px;
             }
         }
 
-        UiChip {
-            text: root.data.category;
-            dark: root.dark;
-            h: 22px;
+        VerticalLayout {
+            alignment: center;
             horizontal-stretch: 0;
-            interactive: false;
+            UiBadge {
+                text: root.data.output_ext;
+                fg: Theme.category(root.data.category, root.dark);
+                bg: Theme.surface3(root.dark);
+            }
         }
     }
 
@@ -165,8 +193,10 @@ component PresetRow inherits Rectangle {
 component HistoryRow inherits Rectangle {
     in property <bool> dark: false;
     in property <HistoryItemData> data;
+    callback open(string);
+    callback reveal(string);
 
-    height: 54px;
+    height: 60px;
     border-radius: Theme.r-sm;
     background: Theme.surface2(root.dark);
     border-width: 1px;
@@ -174,43 +204,59 @@ component HistoryRow inherits Rectangle {
 
     HorizontalLayout {
         padding-left: Theme.s-4;
-        padding-right: Theme.s-4;
+        padding-right: Theme.s-2;
         spacing: Theme.s-3;
 
         VerticalLayout {
             alignment: center;
             spacing: 2px;
+            horizontal-stretch: 1;
 
-            Text {
-                text: root.data.preset_name + " · " + root.data.timestamp;
-                font-size: Theme.t-md;
-                font-weight: Theme.w-semibold;
-                color: Theme.text(root.dark);
+            HorizontalLayout {
+                spacing: Theme.s-2;
+                Text {
+                    text: root.data.input_name;
+                    font-size: Theme.t-md;
+                    font-weight: Theme.w-semibold;
+                    color: Theme.text(root.dark);
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                UiBadge {
+                    text: root.data.status;
+                    horizontal-stretch: 0;
+                    fg: root.data.ok ? Theme.success(root.dark) : Theme.danger(root.dark);
+                    bg: root.data.ok ? Theme.successSoft(root.dark) : Theme.dangerSoft(root.dark);
+                }
             }
             Text {
-                text: root.data.input_path;
+                text: root.data.ok
+                    ? root.data.preset_name + " · " + root.data.timestamp + (root.data.output_name != "" ? " · → " + root.data.output_name : "")
+                    : root.data.preset_name + " · " + root.data.timestamp + (root.data.message != "" ? " · " + root.data.message : "");
                 font-size: Theme.t-sm;
-                color: Theme.textMute(root.dark);
+                color: root.data.ok ? Theme.textMute(root.dark) : Theme.danger(root.dark);
                 overflow: elide;
             }
         }
 
-        HorizontalLayout {
-            spacing: Theme.s-1;
+        VerticalLayout {
             alignment: center;
             horizontal-stretch: 0;
+            HorizontalLayout {
+                spacing: Theme.s-1;
 
-            Icon {
-                source: root.data.status == "Done" ? @image-url("icons/check.svg") : @image-url("icons/x.svg");
-                size: 13px;
-                tint: root.data.status == "Done" ? Theme.success(root.dark) : Theme.danger(root.dark);
-            }
-            Text {
-                text: root.data.status;
-                font-size: Theme.t-base;
-                font-weight: Theme.w-semibold;
-                vertical-alignment: center;
-                color: root.data.status == "Done" ? Theme.success(root.dark) : Theme.danger(root.dark);
+                if root.data.ok && root.data.output_path != "" : UiIconButton {
+                    icon: @image-url("icons/file.svg");
+                    dark: root.dark;
+                    clicked => { root.open(root.data.output_path); }
+                }
+                UiIconButton {
+                    icon: @image-url("icons/folder-open.svg");
+                    dark: root.dark;
+                    clicked => {
+                        root.reveal(root.data.output_path != "" ? root.data.output_path : root.data.input_path);
+                    }
+                }
             }
         }
     }
@@ -220,12 +266,13 @@ component JobRow inherits Rectangle {
     in property <bool> dark: false;
     in property <JobProgressData> data;
     callback cancel(int);
+    callback reveal(int);
 
-    height: 62px;
+    height: 80px;
     border-radius: Theme.r-sm;
     background: Theme.surface2(root.dark);
     border-width: 1px;
-    border-color: Theme.border(root.dark);
+    border-color: root.data.is_failed ? Theme.dangerSoft(root.dark) : Theme.border(root.dark);
 
     VerticalLayout {
         padding-left: Theme.s-4;
@@ -258,6 +305,13 @@ component JobRow inherits Rectangle {
             }
         }
 
+        Text {
+            text: root.data.detail;
+            font-size: Theme.t-sm;
+            color: root.data.is_failed ? Theme.danger(root.dark) : Theme.textMute(root.dark);
+            overflow: elide;
+        }
+
         HorizontalLayout {
             spacing: Theme.s-2;
             alignment: space-between;
@@ -277,32 +331,18 @@ component JobRow inherits Rectangle {
                 icon: @image-url("icons/x.svg");
                 clicked => { root.cancel(root.data.id); }
             }
+
+            if root.data.is_done : UiButton {
+                text: "Show";
+                kind: ButtonKind.Ghost;
+                dark: root.dark;
+                h: 24px;
+                pad-x: Theme.s-2;
+                has-icon: true;
+                icon: @image-url("icons/folder-open.svg");
+                clicked => { root.reveal(root.data.id); }
+            }
         }
-    }
-}
-
-// A single toggleable preference block.
-component PrefCard inherits UiCard {
-    in property <string> title;
-    in property <string> hint;
-    in-out property <bool> checked;
-    callback toggled(bool);
-
-    pad: Theme.s-4;
-    gap: Theme.s-2;
-    fill: Theme.surface2(root.dark);
-    radius: Theme.r-md;
-
-    CheckBox {
-        text: root.title;
-        checked <=> root.checked;
-        toggled => { root.toggled(self.checked); }
-    }
-    Text {
-        text: root.hint;
-        font-size: Theme.t-base;
-        color: Theme.textMute(root.dark);
-        wrap: word-wrap;
     }
 }
 
@@ -311,62 +351,106 @@ component PrefCard inherits UiCard {
 // ---------------------------------------------------------------------------
 
 export component SettingsWindow inherits Window {
-    title: "File Converter — Settings & Studio";
-    preferred-width: 1280px;
-    preferred-height: 800px;
-    min-width: 1180px;
-    min-height: 620px;
+    // Keep this title constant: the native drag-and-drop hook and the dialog
+    // owner lookup find the window by it.
+    title: "File Converter Settings";
+    preferred-width: 1180px;
+    preferred-height: 780px;
+    min-width: 960px;
+    min-height: 600px;
     default-font-family: "Segoe UI Variable Text";
     default-font-size: Theme.t-md;
+    // The Fluent widgets (text boxes, drop-downs, switches) follow Windows'
+    // theme unless told otherwise; with the app in light mode on a dark
+    // Windows they drew white text on white boxes. Keep them in step.
+    init => { Palette.color-scheme = root.dark_mode ? ColorScheme.dark : ColorScheme.light; }
+    changed dark_mode => { Palette.color-scheme = root.dark_mode ? ColorScheme.dark : ColorScheme.light; }
     background: Theme.bg(root.dark_mode);
+    forward-focus: shortcuts;
 
     in-out property <bool> dark_mode: false;
-    in-out property <int> active_tab: 0; // 0: Presets & Studio, 1: History Log, 2: Preferences
+    in-out property <int> active_tab: 0; // 0 Presets, 1 History, 2 Preferences, 3 About
     in-out property <string> active_category: "All";
     in-out property <[PresetData]> presets: [];
+    in-out property <int> preset_total: 0;
     in-out property <int> selected_preset_index: 0;
     in-out property <string> search_query: "";
-    in-out property <string> status_msg: "Ready";
-    in-out property <string> preview_path: "C:\\Output\\sample_track.mp3";
-    in-out property <[HistoryItemData]> history_items: [];
+    // Transient message shown as a toast; cleared by the app after a few seconds.
+    in-out property <string> status_msg: "";
+    // True while there are changes that have not been written to disk.
+    in-out property <bool> dirty: false;
+    in-out property <string> app_version: "";
+    in-out property <string> settings_path: "";
+    in-out property <string> project_url: "";
 
-    // Editable conversion settings of the selected preset, grouped for display.
+    // History page
+    in-out property <[HistoryItemData]> history_items: [];
+    in-out property <int> history_total: 0;
+    in-out property <string> history_query: "";
+    in-out property <string> history_filter: "All";
+
+    // Preset editor
     in-out property <[PresetSettingData]> edit_settings: [];
     in-out property <string> new_setting_key: "";
     in-out property <string> new_setting_value: "";
     in-out property <string> settings_notice: "";
-
-    // Form editing properties for selected preset
+    in-out property <bool> settings_notice_ok: true;
     in-out property <string> edit_name: "";
-    in-out property <string> edit_output_type: "";
+    in-out property <string> edit_folder: "";
+    in-out property <string> edit_category: "";
+    in-out property <string> edit_ext: "";
+    in-out property <bool> edit_is_default: false;
+    in-out property <[string]> output_type_labels: [];
+    in-out property <int> edit_output_index: 0;
     in-out property <string> edit_input_types: "";
     in-out property <string> edit_template: "";
     in-out property <string> edit_post_action: "";
+    in-out property <string> preview_input: "C:\\Music\\Album\\sample_track.flac";
+    in-out property <string> preview_path: "";
+    in-out property <string> preset_warning: "";
+    in-out property <string> input_warning: "";
 
-    // Update notification properties
+    // Update notification
     in-out property <string> update_available_text: "";
     in-out property <string> update_download_url: "";
 
-    // Global UX settings properties
+    // Preferences
     in-out property <bool> auto_start_on_file_drop: false;
     in-out property <bool> copy_files_in_clipboard_after_conversion: true;
     in-out property <bool> exit_application_when_conversions_finished: true;
     in-out property <float> exit_delay_seconds: 2.0;
+    in-out property <int> max_simultaneous_conversions: 0;
+    in-out property <int> cpu_count: 8;
+    in-out property <[string]> hw_accel_modes: ["Auto", "Off", "CUDA", "AMF", "QSV"];
+    in-out property <string> hw_accel_mode: "Auto";
+    in-out property <bool> check_upgrade_at_startup: true;
+    in-out property <[string]> theme_modes: ["Follow Windows", "Light", "Dark"];
+    in-out property <int> theme_mode_index: 0;
 
-    // Fast file selection & drag-and-drop properties
+    // Files staged for conversion (dropped or picked)
     in-out property <int> pending_files_count: 0;
     in-out property <string> pending_files_summary: "";
 
     callback save_settings();
+    callback discard_changes();
     callback register_shell();
+    callback unregister_shell();
     callback new_preset();
     callback duplicate_preset(int);
     callback delete_preset(int);
+    callback move_preset(int);
     callback import_presets();
     callback export_presets();
     callback select_preset(int);
     callback preset_field_changed();
-    callback drop_files();
+    callback set_output_type_index(int);
+    callback add_input_category(string);
+    callback clear_input_types();
+    callback set_post_action(string);
+    callback set_path_template(string);
+    callback set_preset_setting(string, string);
+    callback remove_preset_setting(string);
+    callback add_preset_setting(string, string);
     callback select_files();
     callback native_files_dropped([string]);
     callback start_pending_conversion();
@@ -374,969 +458,1377 @@ export component SettingsWindow inherits Window {
     callback toggle_auto_start(bool);
     callback toggle_copy_clipboard(bool);
     callback toggle_auto_close(bool);
+    callback set_exit_delay(int);
+    callback set_max_conversions(int);
+    callback set_hw_accel(string);
+    callback toggle_check_upgrade(bool);
+    callback check_updates_now();
+    callback set_theme_mode(int);
+    callback toggle_theme(bool);
     callback open_update_url(string);
     callback search_query_changed(string);
     callback filter_category_changed(string);
-    callback set_output_type(string);
-    callback set_post_action(string);
-    callback set_path_template(string);
-    callback toggle_theme(bool);
-    callback set_preset_setting(string, string);
-    callback remove_preset_setting(string);
-    callback add_preset_setting(string, string);
+    callback history_query_changed(string);
+    callback history_filter_changed(string);
+    callback refresh_history();
+    callback clear_history();
+    callback open_path(string);
+    callback reveal_path(string);
+    callback open_settings_folder();
+    callback restore_default_presets();
 
-    VerticalLayout {
-        padding: Theme.s-4;
-        spacing: Theme.s-3;
+    shortcuts := FocusScope {
+        width: 100%;
+        height: 100%;
 
-        // -------------------------------------------------------------- nav
-        Rectangle {
-            height: 56px;
-            border-radius: Theme.r-lg;
-            background: Theme.surface(root.dark_mode);
-            border-width: 1px;
-            border-color: Theme.border(root.dark_mode);
-            drop-shadow-color: Theme.shadow(root.dark_mode);
-            drop-shadow-blur: 14px;
-            drop-shadow-offset-y: 1px;
+        // Ctrl+S saves from anywhere (text fields pass unknown shortcuts up).
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "s" || event.text == "S" || event.text == "\u{13}")) {
+                root.save_settings();
+                return accept;
+            }
+            return reject;
+        }
 
-            HorizontalLayout {
-                padding-left: Theme.s-4;
-                padding-right: Theme.s-2;
-                spacing: Theme.s-3;
-                // `space-between` pushed the action buttons past the window
-                // edge, so the row stays start-aligned and the actions are
-                // pushed right by a stretch spacer instead.
-                alignment: start;
+        // Explicit size: without it the layout takes its *preferred* width
+        // (long wrapped hints laid out on one line) and runs past the window.
+        VerticalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding: Theme.s-4;
+            spacing: Theme.s-3;
+
+            // ---------------------------------------------------------- header
+            Rectangle {
+                height: 56px;
+                border-radius: Theme.r-lg;
+                background: Theme.surface(root.dark_mode);
+                border-width: 1px;
+                border-color: Theme.border(root.dark_mode);
+                drop-shadow-color: Theme.shadow(root.dark_mode);
+                drop-shadow-blur: 14px;
+                drop-shadow-offset-y: 1px;
 
                 HorizontalLayout {
+                    padding-left: Theme.s-3;
+                    padding-right: Theme.s-2;
+                    spacing: Theme.s-3;
+                    // Default (stretch) alignment: with `start` the spacer
+                    // below never grew and Save sat in the middle.
+
+                    HorizontalLayout {
+                        spacing: Theme.s-2;
+                        alignment: center;
+                        horizontal-stretch: 0;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: Theme.r-xs;
+                                background: Theme.accentSoft(root.dark_mode);
+
+                                IconZap {
+                                    size: 15px;
+                                    tint: Theme.accent(root.dark_mode);
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "File Converter";
+                            font-size: Theme.t-lg;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.text(root.dark_mode);
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        Rectangle {
+                            width: 1px;
+                            height: 22px;
+                            background: Theme.border(root.dark_mode);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.s-1;
+                        alignment: center;
+                        horizontal-stretch: 0;
+
+                        VerticalLayout {
+                            alignment: center;
+                            NavTab {
+                                text: "Presets";
+                                icon: @image-url("icons/sliders.svg");
+                                dark: root.dark_mode;
+                                selected: root.active_tab == 0;
+                                clicked => { root.active_tab = 0; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            NavTab {
+                                text: "History";
+                                icon: @image-url("icons/history.svg");
+                                dark: root.dark_mode;
+                                selected: root.active_tab == 1;
+                                clicked => { root.active_tab = 1; root.refresh_history(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            NavTab {
+                                text: "Preferences";
+                                icon: @image-url("icons/settings.svg");
+                                dark: root.dark_mode;
+                                selected: root.active_tab == 2;
+                                clicked => { root.active_tab = 2; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            NavTab {
+                                text: "About";
+                                icon: @image-url("icons/info.svg");
+                                dark: root.dark_mode;
+                                selected: root.active_tab == 3;
+                                clicked => { root.active_tab = 3; }
+                            }
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    HorizontalLayout {
+                        spacing: Theme.s-1;
+                        alignment: end;
+                        horizontal-stretch: 0;
+
+                        if root.dirty : VerticalLayout {
+                            alignment: center;
+                            UiBadge {
+                                text: "Unsaved changes";
+                                fg: Theme.warn(root.dark_mode);
+                                bg: Theme.warnSoft(root.dark_mode);
+                                h: 24px;
+                            }
+                        }
+                        if root.dirty : VerticalLayout {
+                            alignment: center;
+                            UiButton {
+                                text: "Discard";
+                                kind: ButtonKind.Ghost;
+                                dark: root.dark_mode;
+                                has-icon: true;
+                                icon: @image-url("icons/rotate-ccw.svg");
+                                pad-x: Theme.s-2;
+                                clicked => { root.discard_changes(); }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            UiIconButton {
+                                icon: root.dark_mode ? @image-url("icons/sun.svg") : @image-url("icons/moon.svg");
+                                dark: root.dark_mode;
+                                clicked => {
+                                    root.dark_mode = !root.dark_mode;
+                                    root.toggle_theme(root.dark_mode);
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            UiButton {
+                                text: "Save";
+                                kind: ButtonKind.Primary;
+                                dark: root.dark_mode;
+                                enabled-ui: root.dirty;
+                                has-icon: true;
+                                icon: @image-url("icons/save.svg");
+                                clicked => { root.save_settings(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --------------------------------------------------- update banner
+            if root.update_available_text != "" : Rectangle {
+                height: 42px;
+                background: Theme.accentSoft(root.dark_mode);
+                border-radius: Theme.r-md;
+                border-width: 1px;
+                border-color: Theme.accent(root.dark_mode);
+
+                HorizontalLayout {
+                    padding-left: Theme.s-4;
+                    padding-right: Theme.s-2;
                     spacing: Theme.s-2;
-                    alignment: center;
-                    horizontal-stretch: 0;
 
-                    Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: Theme.r-xs;
-                        background: Theme.accentSoft(root.dark_mode);
-
-                        IconZap {
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        IconInfo {
                             size: 15px;
                             tint: Theme.accent(root.dark_mode);
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
                         }
                     }
-
                     Text {
-                        text: "File Converter";
-                        font-size: Theme.t-lg;
-                        font-weight: Theme.w-semibold;
-                        color: Theme.text(root.dark_mode);
+                        text: root.update_available_text;
+                        font-size: Theme.t-md;
+                        font-weight: Theme.w-medium;
+                        color: Theme.accent(root.dark_mode);
                         vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
                     }
-                }
-
-                Rectangle {
-                    width: 1px;
-                    height: 22px;
-                    background: Theme.border(root.dark_mode);
-                    vertical-stretch: 0;
-                }
-
-                // Navigation tabs
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    alignment: center;
-                    horizontal-stretch: 0;
-
-                    NavTab {
-                        text: "Presets";
-                        icon: @image-url("icons/sliders.svg");
-                        dark: root.dark_mode;
-                        selected: root.active_tab == 0;
-                        clicked => { root.active_tab = 0; }
-                    }
-                    NavTab {
-                        text: "History";
-                        icon: @image-url("icons/history.svg");
-                        dark: root.dark_mode;
-                        selected: root.active_tab == 1;
-                        clicked => { root.active_tab = 1; }
-                    }
-                    NavTab {
-                        text: "Preferences";
-                        icon: @image-url("icons/settings.svg");
-                        dark: root.dark_mode;
-                        selected: root.active_tab == 2;
-                        clicked => { root.active_tab = 2; }
-                    }
-                }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                // Header actions
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    alignment: end;
-                    horizontal-stretch: 0;
-
-                    UiIconButton {
-                        icon: root.dark_mode ? @image-url("icons/sun.svg") : @image-url("icons/moon.svg");
-                        dark: root.dark_mode;
-                        clicked => {
-                            root.dark_mode = !root.dark_mode;
-                            root.toggle_theme(root.dark_mode);
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        UiButton {
+                            text: "Download";
+                            kind: ButtonKind.Primary;
+                            dark: root.dark_mode;
+                            h: 28px;
+                            has-icon: true;
+                            icon: @image-url("icons/download.svg");
+                            clicked => { root.open_update_url(root.update_download_url); }
                         }
                     }
-
-                    UiButton {
-                        text: "Shell integration";
-                        kind: ButtonKind.Ghost;
-                        dark: root.dark_mode;
-                        has-icon: true;
-                        icon: @image-url("icons/plug.svg");
-                        clicked => { root.register_shell(); }
-                    }
-
-                    UiButton {
-                        text: "Save";
-                        kind: ButtonKind.Primary;
-                        dark: root.dark_mode;
-                        has-icon: true;
-                        icon: @image-url("icons/save.svg");
-                        clicked => { root.save_settings(); }
-                    }
                 }
             }
-        }
 
-        // ------------------------------------------------------- update banner
-        if root.update_available_text != "" : Rectangle {
-            height: 42px;
-            background: Theme.warnSoft(root.dark_mode);
-            border-radius: Theme.r-md;
-            border-width: 1px;
-            border-color: Theme.warn(root.dark_mode);
-
-            HorizontalLayout {
-                padding-left: Theme.s-4;
-                padding-right: Theme.s-2;
-                alignment: space-between;
-
-                Text {
-                    text: root.update_available_text;
-                    font-size: Theme.t-md;
-                    font-weight: Theme.w-medium;
-                    color: Theme.warn(root.dark_mode);
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-
-                UiButton {
-                    text: "Download update";
-                    kind: ButtonKind.Ghost;
-                    dark: root.dark_mode;
-                    h: 28px;
-                    has-icon: true;
-                    icon: @image-url("icons/download.svg");
-                    clicked => { root.open_update_url(root.update_download_url); }
-                }
-            }
-        }
-
-        // ------------------------------------------------------- status line
-        if root.status_msg != "" : Rectangle {
-            height: 30px;
-            background: Theme.accentSoft(root.dark_mode);
-            border-radius: Theme.r-sm;
-
-            HorizontalLayout {
-                padding-left: Theme.s-3;
-                padding-right: Theme.s-3;
-                Text {
-                    text: root.status_msg;
-                    font-size: Theme.t-base;
-                    font-weight: Theme.w-medium;
-                    color: Theme.accent(root.dark_mode);
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
-        }
-
-        // --------------------------------------------- staged files quick bar
-        if root.pending_files_count > 0 : Rectangle {
-            height: 52px;
-            background: Theme.successSoft(root.dark_mode);
-            border-radius: Theme.r-md;
-            border-width: 1px;
-            border-color: Theme.success(root.dark_mode);
-
-            HorizontalLayout {
-                padding-left: Theme.s-4;
-                padding-right: Theme.s-2;
-                spacing: Theme.s-3;
-                alignment: space-between;
+            // ------------------------------------------- staged files quick bar
+            if root.pending_files_count > 0 : Rectangle {
+                height: 52px;
+                background: Theme.successSoft(root.dark_mode);
+                border-radius: Theme.r-md;
+                border-width: 1px;
+                border-color: Theme.success(root.dark_mode);
 
                 HorizontalLayout {
+                    padding-left: Theme.s-4;
+                    padding-right: Theme.s-2;
                     spacing: Theme.s-2;
-                    alignment: start;
 
-                    IconFolder {
-                        size: 15px;
-                        tint: Theme.success(root.dark_mode);
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        IconFolder {
+                            size: 15px;
+                            tint: Theme.success(root.dark_mode);
+                        }
                     }
                     Text {
-                        text: root.pending_files_count + " file(s) ready · " + root.pending_files_summary;
+                        text: root.pending_files_count + (root.pending_files_count == 1 ? " file ready · " : " files ready · ") + root.pending_files_summary;
                         font-size: Theme.t-md;
                         font-weight: Theme.w-medium;
                         color: Theme.success(root.dark_mode);
                         vertical-alignment: center;
                         overflow: elide;
+                        horizontal-stretch: 1;
                     }
-                }
-
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    alignment: end;
-                    horizontal-stretch: 0;
-
-                    UiButton {
-                        text: "Convert with " + root.edit_name;
-                        kind: ButtonKind.Primary;
-                        dark: root.dark_mode;
-                        h: 30px;
-                        has-icon: true;
-                        icon: @image-url("icons/zap.svg");
-                        clicked => { root.start_pending_conversion(); }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        UiButton {
+                            text: "Convert with " + root.edit_name;
+                            kind: ButtonKind.Primary;
+                            dark: root.dark_mode;
+                            h: 30px;
+                            has-icon: true;
+                            icon: @image-url("icons/zap.svg");
+                            clicked => { root.start_pending_conversion(); }
+                        }
                     }
-
-                    UiButton {
-                        text: "Clear";
-                        kind: ButtonKind.Ghost;
-                        dark: root.dark_mode;
-                        h: 30px;
-                        has-icon: true;
-                        icon: @image-url("icons/x.svg");
-                        clicked => { root.clear_pending_files(); }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        UiButton {
+                            text: "Clear";
+                            kind: ButtonKind.Ghost;
+                            dark: root.dark_mode;
+                            h: 30px;
+                            has-icon: true;
+                            icon: @image-url("icons/x.svg");
+                            clicked => { root.clear_pending_files(); }
+                        }
                     }
                 }
             }
-        }
 
-        // ------------------------------------------------------ tab 0: studio
-        if root.active_tab == 0 : HorizontalLayout {
-            spacing: Theme.s-3;
+            // ------------------------------------------------ tab 0: presets
+            if root.active_tab == 0 : HorizontalLayout {
+                spacing: Theme.s-3;
 
-            // ---- sidebar: preset library
-            UiCard {
-                width: 320px;
-                horizontal-stretch: 0;
-                dark: root.dark_mode;
-                pad: Theme.s-3;
-                gap: Theme.s-2;
+                // ---- sidebar: preset library
+                UiCard {
+                    width: 300px;
+                    horizontal-stretch: 0;
+                    dark: root.dark_mode;
+                    pad: Theme.s-3;
+                    gap: Theme.s-2;
 
-                LineEdit {
-                    placeholder-text: "Search presets or formats...";
-                    text <=> root.search_query;
-                    edited(text) => { root.search_query_changed(text); }
-                }
-
-                // Category filter. Split over two rows: five chips do not fit
-                // in the 320px sidebar and were being clipped.
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    alignment: start;
-
-                    UiChip {
-                        text: "All";
-                        dark: root.dark_mode;
-                        selected: root.active_category == "All";
-                        clicked => { root.active_category = "All"; root.filter_category_changed("All"); }
+                    LineEdit {
+                        placeholder-text: "Search by name or extension";
+                        text <=> root.search_query;
+                        edited(text) => { root.search_query_changed(text); }
                     }
-                    UiChip {
-                        text: "Audio";
-                        dark: root.dark_mode;
-                        tone: Theme.catAudio(root.dark_mode);
-                        selected: root.active_category == "Audio";
-                        clicked => { root.active_category = "Audio"; root.filter_category_changed("Audio"); }
-                    }
-                    UiChip {
-                        text: "Video";
-                        dark: root.dark_mode;
-                        tone: Theme.catVideo(root.dark_mode);
-                        selected: root.active_category == "Video";
-                        clicked => { root.active_category = "Video"; root.filter_category_changed("Video"); }
-                    }
-                }
 
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    alignment: start;
-
-                    UiChip {
-                        text: "Image";
-                        dark: root.dark_mode;
-                        tone: Theme.catImage(root.dark_mode);
-                        selected: root.active_category == "Image";
-                        clicked => { root.active_category = "Image"; root.filter_category_changed("Image"); }
-                    }
-                    UiChip {
-                        text: "Doc";
-                        dark: root.dark_mode;
-                        tone: Theme.catDoc(root.dark_mode);
-                        selected: root.active_category == "Doc";
-                        clicked => { root.active_category = "Doc"; root.filter_category_changed("Doc"); }
-                    }
-                }
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text {
-                        text: "Presets";
-                        font-size: Theme.t-base;
-                        font-weight: Theme.w-semibold;
-                        color: Theme.textMute(root.dark_mode);
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: root.presets.length + "";
-                        font-size: Theme.t-base;
-                        font-weight: Theme.w-semibold;
-                        color: Theme.textMute(root.dark_mode);
-                        vertical-alignment: center;
-                    }
-                }
-
-                ScrollView {
-                    min-width: 0px;
-
-                    VerticalLayout {
+                    HorizontalLayout {
                         spacing: Theme.s-1;
-                        for preset in root.presets : PresetRow {
-                            data: preset;
+                        alignment: start;
+
+                        UiChip {
+                            text: "All";
                             dark: root.dark_mode;
-                            selected: preset.original_index == root.selected_preset_index;
-                            clicked => {
-                                root.selected_preset_index = preset.original_index;
-                                root.select_preset(preset.original_index);
+                            h: 24px;
+                            selected: root.active_category == "All";
+                            clicked => { root.active_category = "All"; root.filter_category_changed("All"); }
+                        }
+                        UiChip {
+                            text: "Audio";
+                            dark: root.dark_mode;
+                            h: 24px;
+                            tone: Theme.catAudio(root.dark_mode);
+                            selected: root.active_category == "Audio";
+                            clicked => { root.active_category = "Audio"; root.filter_category_changed("Audio"); }
+                        }
+                        UiChip {
+                            text: "Video";
+                            dark: root.dark_mode;
+                            h: 24px;
+                            tone: Theme.catVideo(root.dark_mode);
+                            selected: root.active_category == "Video";
+                            clicked => { root.active_category = "Video"; root.filter_category_changed("Video"); }
+                        }
+                        UiChip {
+                            text: "Image";
+                            dark: root.dark_mode;
+                            h: 24px;
+                            tone: Theme.catImage(root.dark_mode);
+                            selected: root.active_category == "Image";
+                            clicked => { root.active_category = "Image"; root.filter_category_changed("Image"); }
+                        }
+                        UiChip {
+                            text: "Doc";
+                            dark: root.dark_mode;
+                            h: 24px;
+                            tone: Theme.catDoc(root.dark_mode);
+                            selected: root.active_category == "Doc";
+                            clicked => { root.active_category = "Doc"; root.filter_category_changed("Doc"); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.s-1;
+
+                        Text {
+                            text: root.presets.length == root.preset_total
+                                ? root.preset_total + " presets"
+                                : root.presets.length + " of " + root.preset_total + " presets";
+                            font-size: Theme.t-base;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.textMute(root.dark_mode);
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        // Order = order in the right-click menu.
+                        UiIconButton {
+                            icon: @image-url("icons/arrow-up.svg");
+                            dark: root.dark_mode;
+                            size: 26px;
+                            clicked => { root.move_preset(-1); }
+                        }
+                        UiIconButton {
+                            icon: @image-url("icons/arrow-down.svg");
+                            dark: root.dark_mode;
+                            size: 26px;
+                            clicked => { root.move_preset(1); }
+                        }
+                    }
+
+                    if root.presets.length == 0 : Text {
+                        text: "No preset matches your search.";
+                        font-size: Theme.t-base;
+                        color: Theme.textMute(root.dark_mode);
+                        horizontal-alignment: center;
+                    }
+
+                    // ListView only creates the visible rows.
+                    ListView {
+                        min-width: 0px;
+                        vertical-stretch: 1;
+                        for preset in root.presets : Rectangle {
+                            height: 56px;
+                            PresetRow {
+                                y: 1px;
+                                width: parent.width;
+                                data: preset;
+                                dark: root.dark_mode;
+                                selected: preset.original_index == root.selected_preset_index;
+                                clicked => {
+                                    root.select_preset(preset.original_index);
+                                }
                             }
+                        }
+                    }
+
+                    UiDivider { dark: root.dark_mode; }
+
+                    HorizontalLayout {
+                        spacing: Theme.s-1;
+                        UiButton {
+                            text: "New";
+                            kind: ButtonKind.Secondary;
+                            dark: root.dark_mode;
+                            h: 30px;
+                            pad-x: Theme.s-2;
+                            has-icon: true;
+                            icon: @image-url("icons/plus.svg");
+                            clicked => { root.new_preset(); }
+                        }
+                        UiButton {
+                            text: "Duplicate";
+                            kind: ButtonKind.Secondary;
+                            dark: root.dark_mode;
+                            h: 30px;
+                            pad-x: Theme.s-2;
+                            has-icon: true;
+                            icon: @image-url("icons/copy.svg");
+                            clicked => { root.duplicate_preset(root.selected_preset_index); }
+                        }
+                        UiButton {
+                            text: "Delete";
+                            kind: ButtonKind.Danger;
+                            dark: root.dark_mode;
+                            h: 30px;
+                            pad-x: Theme.s-2;
+                            has-icon: true;
+                            icon: @image-url("icons/trash.svg");
+                            clicked => { root.delete_preset(root.selected_preset_index); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.s-1;
+                        UiButton {
+                            text: "Import…";
+                            kind: ButtonKind.Ghost;
+                            dark: root.dark_mode;
+                            h: 28px;
+                            pad-x: Theme.s-2;
+                            has-icon: true;
+                            icon: @image-url("icons/download.svg");
+                            clicked => { root.import_presets(); }
+                        }
+                        UiButton {
+                            text: root.presets.length == root.preset_total ? "Export all…" : "Export shown…";
+                            kind: ButtonKind.Ghost;
+                            dark: root.dark_mode;
+                            h: 28px;
+                            pad-x: Theme.s-2;
+                            has-icon: true;
+                            icon: @image-url("icons/upload.svg");
+                            clicked => { root.export_presets(); }
                         }
                     }
                 }
 
-                UiDivider { dark: root.dark_mode; }
+                // ---- editor pane
+                UiCard {
+                    dark: root.dark_mode;
+                    pad: 0px;
+                    gap: 0px;
 
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    UiButton {
-                        text: "New";
-                        kind: ButtonKind.Secondary;
-                        dark: root.dark_mode;
-                        h: 30px;
-                        pad-x: Theme.s-2;
-                        has-icon: true;
-                        icon: @image-url("icons/plus.svg");
-                        clicked => { root.new_preset(); }
-                    }
-                    UiButton {
-                        text: "Clone";
-                        kind: ButtonKind.Secondary;
-                        dark: root.dark_mode;
-                        h: 30px;
-                        pad-x: Theme.s-2;
-                        has-icon: true;
-                        icon: @image-url("icons/copy.svg");
-                        clicked => { root.duplicate_preset(root.selected_preset_index); }
-                    }
-                    UiButton {
-                        text: "Delete";
-                        kind: ButtonKind.Danger;
-                        dark: root.dark_mode;
-                        h: 30px;
-                        pad-x: Theme.s-2;
-                        has-icon: true;
-                        icon: @image-url("icons/trash.svg");
-                        clicked => { root.delete_preset(root.selected_preset_index); }
-                    }
-                }
+                    ScrollView {
+                        // Without this a ScrollView reports its content's
+                        // minimum width as its own and pushes the pane past
+                        // the window edge.
+                        min-width: 0px;
 
-                HorizontalLayout {
-                    spacing: Theme.s-1;
-                    UiButton {
-                        text: "Import";
-                        kind: ButtonKind.Ghost;
-                        dark: root.dark_mode;
-                        h: 28px;
-                        pad-x: Theme.s-2;
-                        has-icon: true;
-                        icon: @image-url("icons/download.svg");
-                        clicked => { root.import_presets(); }
-                    }
-                    UiButton {
-                        text: "Export";
-                        kind: ButtonKind.Ghost;
-                        dark: root.dark_mode;
-                        h: 28px;
-                        pad-x: Theme.s-2;
-                        has-icon: true;
-                        icon: @image-url("icons/upload.svg");
-                        clicked => { root.export_presets(); }
+                        VerticalLayout {
+                            padding: Theme.s-5;
+                            spacing: Theme.s-4;
+
+                            // Title row
+                            HorizontalLayout {
+                                spacing: Theme.s-3;
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 44px;
+                                        height: 44px;
+                                        border-radius: Theme.r-md;
+                                        background: Theme.surface3(root.dark_mode);
+
+                                        Text {
+                                            text: root.edit_ext;
+                                            font-size: Theme.t-sm;
+                                            font-weight: Theme.w-semibold;
+                                            color: Theme.category(root.edit_category, root.dark_mode);
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    horizontal-stretch: 1;
+
+                                    Text {
+                                        text: root.edit_name == "" ? "Untitled preset" : root.edit_name;
+                                        font-size: Theme.t-xl;
+                                        font-weight: Theme.w-semibold;
+                                        color: Theme.text(root.dark_mode);
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: (root.edit_folder != "" ? "In folder " + root.edit_folder + " · " : "")
+                                            + (root.edit_is_default ? "Built-in preset" : "Your preset");
+                                        font-size: Theme.t-sm;
+                                        color: Theme.textMute(root.dark_mode);
+                                        overflow: elide;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    UiButton {
+                                        text: "Convert files…";
+                                        kind: ButtonKind.Primary;
+                                        dark: root.dark_mode;
+                                        has-icon: true;
+                                        icon: @image-url("icons/zap.svg");
+                                        clicked => { root.select_files(); }
+                                    }
+                                }
+                            }
+
+                            if root.preset_warning != "" : UiNotice {
+                                dark: root.dark_mode;
+                                text: root.preset_warning;
+                            }
+
+                            // ------------------------------------------- Name
+                            UiSection {
+                                dark: root.dark_mode;
+                                title: "Name";
+                                subtitle: "Shown in the right-click menu. Folders become sub-menus; use / for nested folders.";
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-3;
+                                    UiFieldLabel { text: "Preset name"; dark: root.dark_mode; }
+                                    LineEdit {
+                                        placeholder-text: "e.g. To MP3";
+                                        text <=> root.edit_name;
+                                        edited => { root.preset_field_changed(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: Theme.s-3;
+                                    UiFieldLabel { text: "Folder"; dark: root.dark_mode; }
+                                    LineEdit {
+                                        placeholder-text: "None (top level of the menu)";
+                                        text <=> root.edit_folder;
+                                        edited => { root.preset_field_changed(); }
+                                    }
+                                }
+                            }
+
+                            // ----------------------------------------- Output
+                            UiSection {
+                                dark: root.dark_mode;
+                                title: "Output";
+                                subtitle: "The format to create and where the new file is saved.";
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-3;
+                                    UiFieldLabel { text: "Format"; dark: root.dark_mode; }
+                                    ComboBox {
+                                        model: root.output_type_labels;
+                                        current-index <=> root.edit_output_index;
+                                        selected => { root.set_output_type_index(self.current-index); }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-3;
+                                    UiFieldLabel { text: "File name"; dark: root.dark_mode; }
+                                    LineEdit {
+                                        placeholder-text: "(p)(f)";
+                                        text <=> root.edit_template;
+                                        edited => { root.preset_field_changed(); }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-1;
+                                    padding-left: 112px + Theme.s-3;
+                                    alignment: start;
+
+                                    UiChip {
+                                        text: "Same folder";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        selected: root.edit_template == "(p)(f)";
+                                        clicked => { root.set_path_template("(p)(f)"); }
+                                    }
+                                    UiChip {
+                                        text: "\"Converted\" subfolder";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        selected: root.edit_template == "(p)Converted\\(f)";
+                                        clicked => { root.set_path_template("(p)Converted\\(f)"); }
+                                    }
+                                    UiChip {
+                                        text: "Add date";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        selected: root.edit_template == "(p)(f)_(d:yyyy-MM-dd)";
+                                        clicked => { root.set_path_template("(p)(f)_(d:yyyy-MM-dd)"); }
+                                    }
+                                    UiChip {
+                                        text: "Documents";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        selected: root.edit_template == "(p:d)(f)";
+                                        clicked => { root.set_path_template("(p:d)(f)"); }
+                                    }
+                                }
+
+                                // Live preview of the output path
+                                Rectangle {
+                                    background: Theme.surface(root.dark_mode);
+                                    border-radius: Theme.r-sm;
+                                    border-width: 1px;
+                                    border-color: Theme.border(root.dark_mode);
+
+                                    VerticalLayout {
+                                        padding: Theme.s-3;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: "Example: " + root.preview_input;
+                                            font-size: Theme.t-sm;
+                                            color: Theme.textMute(root.dark_mode);
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: "→ " + root.preview_path;
+                                            font-size: Theme.t-md;
+                                            font-weight: Theme.w-medium;
+                                            color: Theme.accent(root.dark_mode);
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Tags: (p) input folder · (f) file name · (F) FILE NAME · (i) input extension · (o) output extension · (n:i) file number · (d:yyyy-MM-dd) date · (p:d) Documents · (p:m) Music · (p:v) Videos · (p:p) Pictures. The extension is added for you.";
+                                    font-size: Theme.t-sm;
+                                    color: Theme.textMute(root.dark_mode);
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            // ----------------------------------------- Inputs
+                            UiSection {
+                                dark: root.dark_mode;
+                                title: "Input files";
+                                subtitle: "The file types this preset is offered for in the right-click menu. Leave empty to offer it for every compatible file.";
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-3;
+                                    UiFieldLabel { text: "Extensions"; dark: root.dark_mode; }
+                                    LineEdit {
+                                        placeholder-text: "e.g. wav, flac, mp3";
+                                        text <=> root.edit_input_types;
+                                        edited => { root.preset_field_changed(); }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-1;
+                                    padding-left: 112px + Theme.s-3;
+                                    alignment: start;
+
+                                    UiChip {
+                                        text: "+ Audio";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        clicked => { root.add_input_category("Audio"); }
+                                    }
+                                    UiChip {
+                                        text: "+ Video";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        clicked => { root.add_input_category("Video"); }
+                                    }
+                                    UiChip {
+                                        text: "+ Images";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        clicked => { root.add_input_category("Image"); }
+                                    }
+                                    UiChip {
+                                        text: "+ Documents";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        clicked => { root.add_input_category("Document"); }
+                                    }
+                                    UiChip {
+                                        text: "Clear";
+                                        dark: root.dark_mode;
+                                        h: 24px;
+                                        clicked => { root.clear_input_types(); }
+                                    }
+                                }
+
+                                if root.input_warning != "" : UiNotice {
+                                    dark: root.dark_mode;
+                                    text: root.input_warning;
+                                }
+                            }
+
+                            // ------------------------------- After conversion
+                            UiSection {
+                                dark: root.dark_mode;
+                                title: "After a successful conversion";
+                                subtitle: "What happens to the original file. Archived files go to a \"Conversion Archives\" folder next to them.";
+
+                                HorizontalLayout {
+                                    spacing: Theme.s-1;
+                                    alignment: start;
+
+                                    UiChip {
+                                        text: "Keep the original";
+                                        dark: root.dark_mode;
+                                        h: 30px;
+                                        pad-x: Theme.s-3;
+                                        selected: root.edit_post_action == "None";
+                                        clicked => { root.set_post_action("None"); }
+                                    }
+                                    UiChip {
+                                        text: "Move to archive folder";
+                                        dark: root.dark_mode;
+                                        h: 30px;
+                                        pad-x: Theme.s-3;
+                                        tone: Theme.warn(root.dark_mode);
+                                        selected: root.edit_post_action == "MoveInArchiveFolder";
+                                        clicked => { root.set_post_action("MoveInArchiveFolder"); }
+                                    }
+                                    UiChip {
+                                        text: "Delete it";
+                                        dark: root.dark_mode;
+                                        h: 30px;
+                                        pad-x: Theme.s-3;
+                                        tone: Theme.danger(root.dark_mode);
+                                        selected: root.edit_post_action == "Delete";
+                                        clicked => { root.set_post_action("Delete"); }
+                                    }
+                                }
+                            }
+
+                            // ------------------------------- Engine settings
+                            UiSection {
+                                dark: root.dark_mode;
+                                title: "Quality and options";
+                                subtitle: "Leave a box empty to use the default. Click a selected choice again to go back to the default.";
+                                gap: Theme.s-2;
+
+                                if root.edit_settings.length == 0 : Text {
+                                    text: "This format has no options.";
+                                    font-size: Theme.t-sm;
+                                    color: Theme.textMute(root.dark_mode);
+                                }
+
+                                for row in root.edit_settings : VerticalLayout {
+                                    spacing: Theme.s-1;
+
+                                    if row.is_group_start : Text {
+                                        text: row.group;
+                                        font-size: Theme.t-xs;
+                                        font-weight: Theme.w-semibold;
+                                        color: Theme.accent(root.dark_mode);
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: Theme.s-3;
+                                        padding-top: 2px;
+
+                                        VerticalLayout {
+                                            width: 150px;
+                                            spacing: 0px;
+                                            alignment: center;
+                                            Text {
+                                                text: row.label;
+                                                font-size: Theme.t-base;
+                                                font-weight: Theme.w-medium;
+                                                color: Theme.textDim(root.dark_mode);
+                                                wrap: word-wrap;
+                                            }
+                                            Text {
+                                                text: row.hint;
+                                                font-size: Theme.t-xs;
+                                                color: Theme.textMute(root.dark_mode);
+                                                wrap: word-wrap;
+                                            }
+                                        }
+
+                                        if row.choices.length == 0 : LineEdit {
+                                            placeholder-text: "default";
+                                            text: row.value;
+                                            edited => { root.set_preset_setting(row.key, self.text); }
+                                        }
+
+                                        if row.choices.length > 0 && row.choices.length <= 4 : HorizontalLayout {
+                                            spacing: Theme.s-1;
+                                            alignment: start;
+                                            for choice in row.choices : VerticalLayout {
+                                                alignment: center;
+                                                UiChip {
+                                                    text: choice;
+                                                    dark: root.dark_mode;
+                                                    h: 26px;
+                                                    pad-x: Theme.s-3;
+                                                    selected: row.value == choice;
+                                                    clicked => { root.set_preset_setting(row.key, row.value == choice ? "" : choice); }
+                                                }
+                                            }
+                                        }
+
+                                        // The first entry of a drop-down is "Default".
+                                        if row.choices.length > 4 : ComboBox {
+                                            model: row.choices;
+                                            current-value: row.value == "" ? row.choices[0] : row.value;
+                                            selected(v) => { root.set_preset_setting(row.key, v == row.choices[0] ? "" : v); }
+                                        }
+
+                                        if row.is_custom : VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 0;
+                                            UiIconButton {
+                                                icon: @image-url("icons/trash.svg");
+                                                dark: root.dark_mode;
+                                                size: 28px;
+                                                tint: Theme.danger(root.dark_mode);
+                                                clicked => { root.remove_preset_setting(row.key); }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                UiDivider { dark: root.dark_mode; }
+
+                                // Escape hatch for keys the editor does not know.
+                                Text {
+                                    text: "Advanced: add another engine setting";
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-semibold;
+                                    color: Theme.textMute(root.dark_mode);
+                                }
+                                HorizontalLayout {
+                                    spacing: Theme.s-2;
+                                    LineEdit {
+                                        placeholder-text: "Key, e.g. AudioNormalize";
+                                        text <=> root.new_setting_key;
+                                    }
+                                    LineEdit {
+                                        placeholder-text: "Value";
+                                        text <=> root.new_setting_value;
+                                        accepted => { root.add_preset_setting(root.new_setting_key, root.new_setting_value); }
+                                    }
+                                    UiButton {
+                                        text: "Add";
+                                        kind: ButtonKind.Secondary;
+                                        dark: root.dark_mode;
+                                        horizontal-stretch: 0;
+                                        has-icon: true;
+                                        icon: @image-url("icons/plus.svg");
+                                        clicked => { root.add_preset_setting(root.new_setting_key, root.new_setting_value); }
+                                    }
+                                }
+
+                                if root.settings_notice != "" : Text {
+                                    text: root.settings_notice;
+                                    font-size: Theme.t-sm;
+                                    font-weight: Theme.w-medium;
+                                    color: root.settings_notice_ok ? Theme.success(root.dark_mode) : Theme.danger(root.dark_mode);
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // ---- studio pane
-            UiCard {
+            // ------------------------------------------------ tab 1: history
+            if root.active_tab == 1 : UiCard {
+                dark: root.dark_mode;
+                pad: Theme.s-4;
+                gap: Theme.s-3;
+
+                HorizontalLayout {
+                    spacing: Theme.s-3;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Conversion history";
+                            font-size: Theme.t-xl;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.text(root.dark_mode);
+                        }
+                        Text {
+                            text: root.history_items.length == root.history_total
+                                ? root.history_total + " files (the latest 200 are kept)"
+                                : root.history_items.length + " of " + root.history_total + " files";
+                            font-size: Theme.t-sm;
+                            color: Theme.textMute(root.dark_mode);
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        LineEdit {
+                            width: 260px;
+                            placeholder-text: "Search files or presets";
+                            text <=> root.history_query;
+                            edited(text) => { root.history_query_changed(text); }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.s-1;
+
+                    UiChip {
+                        text: "All";
+                        dark: root.dark_mode;
+                        h: 26px;
+                        pad-x: Theme.s-3;
+                        selected: root.history_filter == "All";
+                        clicked => { root.history_filter = "All"; root.history_filter_changed("All"); }
+                    }
+                    UiChip {
+                        text: "Converted";
+                        dark: root.dark_mode;
+                        h: 26px;
+                        pad-x: Theme.s-3;
+                        tone: Theme.success(root.dark_mode);
+                        selected: root.history_filter == "Done";
+                        clicked => { root.history_filter = "Done"; root.history_filter_changed("Done"); }
+                    }
+                    UiChip {
+                        text: "Failed";
+                        dark: root.dark_mode;
+                        h: 26px;
+                        pad-x: Theme.s-3;
+                        tone: Theme.danger(root.dark_mode);
+                        selected: root.history_filter == "Failed";
+                        clicked => { root.history_filter = "Failed"; root.history_filter_changed("Failed"); }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    UiButton {
+                        text: "Clear history";
+                        kind: ButtonKind.Danger;
+                        dark: root.dark_mode;
+                        h: 28px;
+                        horizontal-stretch: 0;
+                        enabled-ui: root.history_total > 0;
+                        has-icon: true;
+                        icon: @image-url("icons/trash.svg");
+                        clicked => { root.clear_history(); }
+                    }
+                }
+
+                if root.history_items.length == 0 : VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.s-2;
+                    vertical-stretch: 1;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        IconSearch {
+                            size: 28px;
+                            tint: Theme.textMute(root.dark_mode);
+                        }
+                    }
+                    Text {
+                        text: root.history_total == 0
+                            ? "No conversions yet. Converted files will be listed here."
+                            : "Nothing matches this search.";
+                        color: Theme.textMute(root.dark_mode);
+                        horizontal-alignment: center;
+                    }
+                }
+
+                if root.history_items.length > 0 : ListView {
+                    min-width: 0px;
+                    vertical-stretch: 1;
+                    for item in root.history_items : Rectangle {
+                        height: 60px + Theme.s-1;
+                        HistoryRow {
+                            y: 0px;
+                            width: parent.width;
+                            data: item;
+                            dark: root.dark_mode;
+                            open(path) => { root.open_path(path); }
+                            reveal(path) => { root.reveal_path(path); }
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------------------- tab 2: preferences
+            if root.active_tab == 2 : UiCard {
                 dark: root.dark_mode;
                 pad: 0px;
                 gap: 0px;
 
                 ScrollView {
                     min-width: 0px;
-                    // A Slint ScrollView otherwise reports its content's minimum
-                    // width as its own, which let the studio pane grow past the
-                    // window and silently clip the right edge of every field.
 
                     VerticalLayout {
                         padding: Theme.s-5;
-                        spacing: Theme.s-4;
+                        spacing: Theme.s-3;
 
                         Text {
-                            text: "Preset studio";
+                            text: "Preferences";
                             font-size: Theme.t-xl;
                             font-weight: Theme.w-semibold;
                             color: Theme.text(root.dark_mode);
-                            overflow: elide;
                         }
 
-                        UiDivider { dark: root.dark_mode; }
-
-                        // Preset label
-                        HorizontalLayout {
-                            spacing: Theme.s-3;
-                            UiFieldLabel { text: "Preset label"; dark: root.dark_mode; }
-                            LineEdit {
-                                text <=> root.edit_name;
-                                edited => { root.preset_field_changed(); }
-                            }
-                        }
-
-                        // Target output format
-                        VerticalLayout {
-                            spacing: Theme.s-2;
-
-                            HorizontalLayout {
-                                spacing: Theme.s-3;
-                                UiFieldLabel { text: "Target format"; dark: root.dark_mode; }
-                                LineEdit {
-                                    text <=> root.edit_output_type;
-                                    edited => { root.preset_field_changed(); }
-                                }
-                            }
-
-                            // Quick format picker. Full pane width, no
-                            // label-column indent: eight chips do not fit
-                            // beside a 130px label.
-                            HorizontalLayout {
-                                spacing: Theme.s-1;
-
-                                Text {
-                                    text: "Quick pick";
-                                    width: 72px;
-                                    font-size: Theme.t-sm;
-                                    font-weight: Theme.w-semibold;
-                                    color: Theme.textMute(root.dark_mode);
-                                    vertical-alignment: center;
-                                }
-
-                                UiChip {
-                                    text: "MP3";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Mp3";
-                                    clicked => { root.set_output_type("Mp3"); }
-                                }
-                                UiChip {
-                                    text: "FLAC";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Flac";
-                                    clicked => { root.set_output_type("Flac"); }
-                                }
-                                UiChip {
-                                    text: "PNG";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Png";
-                                    clicked => { root.set_output_type("Png"); }
-                                }
-                                UiChip {
-                                    text: "JPG";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Jpg";
-                                    clicked => { root.set_output_type("Jpg"); }
-                                }
-                                UiChip {
-                                    text: "WEBP";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Webp";
-                                    clicked => { root.set_output_type("Webp"); }
-                                }
-                                UiChip {
-                                    text: "PDF";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Pdf";
-                                    clicked => { root.set_output_type("Pdf"); }
-                                }
-                                UiChip {
-                                    text: "MP4";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Mp4";
-                                    clicked => { root.set_output_type("Mp4"); }
-                                }
-                                UiChip {
-                                    text: "MKV";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    selected: root.edit_output_type == "Mkv";
-                                    clicked => { root.set_output_type("Mkv"); }
-                                }
-                            }
-                        }
-
-                        // Compatible input extensions
-                        HorizontalLayout {
-                            spacing: Theme.s-3;
-                            UiFieldLabel { text: "Input extensions"; dark: root.dark_mode; }
-                            LineEdit {
-                                placeholder-text: "e.g. wav, flac, mp3, mkv, jpg (leave empty to allow all)";
-                                text <=> root.edit_input_types;
-                                edited => { root.preset_field_changed(); }
-                            }
-                        }
-
-                        // Path template
-                        VerticalLayout {
-                            spacing: Theme.s-2;
-
-                            HorizontalLayout {
-                                spacing: Theme.s-3;
-                                UiFieldLabel { text: "Path template"; dark: root.dark_mode; }
-                                LineEdit {
-                                    placeholder-text: "(p)(f)";
-                                    text <=> root.edit_template;
-                                    edited => { root.preset_field_changed(); }
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: Theme.s-1;
-
-                                Text {
-                                    text: "Presets";
-                                    width: 72px;
-                                    font-size: Theme.t-sm;
-                                    font-weight: Theme.w-semibold;
-                                    color: Theme.textMute(root.dark_mode);
-                                    vertical-alignment: center;
-                                }
-
-                                UiChip {
-                                    text: "Same folder";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    clicked => { root.set_path_template("(p)(f)"); }
-                                }
-                                UiChip {
-                                    text: "Subfolder";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    clicked => { root.set_path_template("(p)Converted\\(f)"); }
-                                }
-                                UiChip {
-                                    text: "With date";
-                                    dark: root.dark_mode;
-                                    h: 24px;
-                                    clicked => { root.set_path_template("(p)(f)_(d:yyyyMMdd)"); }
-                                }
-                            }
-                        }
-
-                        // Live output path preview
-                        Rectangle {
-                            background: Theme.surface2(root.dark_mode);
-                            border-radius: Theme.r-md;
-                            border-width: 1px;
-                            border-color: Theme.border(root.dark_mode);
-
-                            VerticalLayout {
-                                padding: Theme.s-3;
-                                spacing: Theme.s-1;
-
-                                Text {
-                                    text: "Live output path";
-                                    font-size: Theme.t-sm;
-                                    font-weight: Theme.w-semibold;
-                                    color: Theme.textMute(root.dark_mode);
-                                }
-                                Text {
-                                    text: root.preview_path;
-                                    font-size: Theme.t-md;
-                                    font-weight: Theme.w-medium;
-                                    color: Theme.accent(root.dark_mode);
-                                    overflow: elide;
-                                }
-                            }
-                        }
-
-                        // Post-conversion action
-                        HorizontalLayout {
-                            spacing: Theme.s-3;
-                            UiFieldLabel { text: "After conversion"; dark: root.dark_mode; }
-
-                            HorizontalLayout {
-                                spacing: Theme.s-1;
-                                UiChip {
-                                    text: "Keep original";
-                                    dark: root.dark_mode;
-                                    h: 30px;
-                                    selected: root.edit_post_action == "None";
-                                    clicked => { root.set_post_action("None"); }
-                                }
-                                UiChip {
-                                    text: "Move to archive";
-                                    dark: root.dark_mode;
-                                    h: 30px;
-                                    tone: Theme.warn(root.dark_mode);
-                                    selected: root.edit_post_action == "MoveInArchiveFolder";
-                                    clicked => { root.set_post_action("MoveInArchiveFolder"); }
-                                }
-                                UiChip {
-                                    text: "Delete permanently";
-                                    dark: root.dark_mode;
-                                    h: 30px;
-                                    tone: Theme.danger(root.dark_mode);
-                                    selected: root.edit_post_action == "Delete";
-                                    clicked => { root.set_post_action("Delete"); }
-                                }
-                            }
-                        }
-
-                        // Conversion settings editor
-                        UiCard {
+                        UiSection {
                             dark: root.dark_mode;
-                            pad: Theme.s-3;
-                            gap: Theme.s-2;
-                            fill: Theme.surface2(root.dark_mode);
-                            radius: Theme.r-md;
+                            title: "Converting";
 
-                            Text {
-                                text: "Conversion settings";
-                                font-size: Theme.t-md;
-                                font-weight: Theme.w-semibold;
-                                color: Theme.text(root.dark_mode);
-                            }
-
-                            Text {
-                                text: "Engine options for this preset: bitrate, quality, scale, rotation. Leave a field empty to use the default.";
-                                font-size: Theme.t-sm;
-                                color: Theme.textMute(root.dark_mode);
-                                wrap: word-wrap;
-                            }
-
-                            if root.edit_settings.length == 0 : Text {
-                                text: "No settings apply to this output type.";
-                                font-size: Theme.t-sm;
-                                color: Theme.textMute(root.dark_mode);
-                            }
-
-                            for row in root.edit_settings : VerticalLayout {
-                                spacing: Theme.s-1;
-
-                                if row.is_group_start : Text {
-                                    text: row.group;
-                                    font-size: Theme.t-xs;
-                                    font-weight: Theme.w-semibold;
-                                    color: Theme.accent(root.dark_mode);
-                                }
-
-                                HorizontalLayout {
-                                    spacing: Theme.s-2;
-                                    padding-top: 2px;
-
-                                    VerticalLayout {
-                                        width: 120px;
-                                        spacing: 0px;
-                                        Text {
-                                            text: row.label;
-                                            font-size: Theme.t-base;
-                                            font-weight: Theme.w-medium;
-                                            color: Theme.textDim(root.dark_mode);
-                                        }
-                                        Text {
-                                            text: row.hint;
-                                            font-size: Theme.t-xs;
-                                            color: Theme.textMute(root.dark_mode);
-                                            wrap: word-wrap;
-                                        }
-                                    }
-
-                                    // Free-text values get an editor.
-                                    if row.choices.length == 0 : LineEdit {
-                                        placeholder-text: "default";
-                                        text: row.value;
-                                        edited => { root.set_preset_setting(row.key, self.text); }
-                                    }
-
-                                    if row.is_custom : UiIconButton {
-                                        icon: @image-url("icons/x.svg");
-                                        dark: root.dark_mode;
-                                        size: 26px;
-                                        tint: Theme.danger(root.dark_mode);
-                                        clicked => { root.remove_preset_setting(row.key); }
-                                    }
-                                }
-
-                                // Short enumerated values become clickable
-                                // chips. Slint has no FlowLayout, so the chip
-                                // row is a plain HorizontalLayout and the
-                                // descriptor data keeps these lists to <= 4.
-                                if row.choices.length > 0 : HorizontalLayout {
-                                    padding-left: 128px;
-                                    spacing: Theme.s-1;
-                                    for choice in row.choices : UiChip {
-                                        text: choice;
-                                        dark: root.dark_mode;
-                                        h: 24px;
-                                        selected: row.value == choice;
-                                        clicked => { root.set_preset_setting(row.key, choice); }
-                                    }
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Start converting as soon as files are dropped";
+                                hint: "Files dropped on this window are converted right away with the selected preset. When off, they wait for you to press Convert.";
+                                Switch {
+                                    checked <=> root.auto_start_on_file_drop;
+                                    toggled => { root.toggle_auto_start(self.checked); }
                                 }
                             }
-
                             UiDivider { dark: root.dark_mode; }
-
-                            // Escape hatch for keys the UI does not know about.
-                            // One editor per row: two LineEdits side by side
-                            // made this the widest row in the pane and dragged
-                            // the studio past the window edge.
-                            HorizontalLayout {
-                                spacing: Theme.s-2;
-                                Text {
-                                    text: "Custom key";
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Files converted at the same time";
+                                hint: root.max_simultaneous_conversions == 0
+                                    ? "0 = automatic (half of your " + root.cpu_count + " processor threads)."
+                                    : "Higher is faster on big batches but uses more memory and processor.";
+                                SpinBox {
                                     width: 120px;
-                                    font-size: Theme.t-sm;
-                                    font-weight: Theme.w-medium;
-                                    color: Theme.textMute(root.dark_mode);
-                                    vertical-alignment: center;
-                                }
-                                LineEdit {
-                                    placeholder-text: "e.g. AudioNormalize";
-                                    text <=> root.new_setting_key;
+                                    minimum: 0;
+                                    maximum: root.cpu_count;
+                                    value: root.max_simultaneous_conversions;
+                                    edited(v) => {
+                                        root.max_simultaneous_conversions = v;
+                                        root.set_max_conversions(v);
+                                    }
                                 }
                             }
+                            UiDivider { dark: root.dark_mode; }
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Video hardware acceleration";
+                                hint: "Auto uses an NVIDIA (CUDA), AMD (AMF) or Intel (QSV) graphics chip when one is available. Choose Off if video conversions fail.";
+                                ComboBox {
+                                    width: 140px;
+                                    model: root.hw_accel_modes;
+                                    current-value: root.hw_accel_mode;
+                                    selected(v) => {
+                                        root.hw_accel_mode = v;
+                                        root.set_hw_accel(v);
+                                    }
+                                }
+                            }
+                        }
+
+                        UiSection {
+                            dark: root.dark_mode;
+                            title: "When conversions finish";
+
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Copy the new files to the clipboard";
+                                hint: "Paste them straight into a folder, an e-mail or a chat.";
+                                Switch {
+                                    checked <=> root.copy_files_in_clipboard_after_conversion;
+                                    toggled => { root.toggle_copy_clipboard(self.checked); }
+                                }
+                            }
+                            UiDivider { dark: root.dark_mode; }
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Close the progress window automatically";
+                                hint: "Only when every file converted. It stays open when something failed, so you can read why.";
+                                Switch {
+                                    checked <=> root.exit_application_when_conversions_finished;
+                                    toggled => { root.toggle_auto_close(self.checked); }
+                                }
+                            }
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Wait before closing (seconds)";
+                                hint: "";
+                                enabled-ui: root.exit_application_when_conversions_finished;
+                                SpinBox {
+                                    width: 120px;
+                                    minimum: 0;
+                                    maximum: 10;
+                                    enabled: root.exit_application_when_conversions_finished;
+                                    value: Math.round(root.exit_delay_seconds);
+                                    edited(v) => {
+                                        root.exit_delay_seconds = v;
+                                        root.set_exit_delay(v);
+                                    }
+                                }
+                            }
+                        }
+
+                        UiSection {
+                            dark: root.dark_mode;
+                            title: "Appearance";
+
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Theme";
+                                hint: "Applies to this window and the progress window. Saved right away.";
+                                ComboBox {
+                                    width: 160px;
+                                    model: root.theme_modes;
+                                    current-index <=> root.theme_mode_index;
+                                    selected => { root.set_theme_mode(self.current-index); }
+                                }
+                            }
+                        }
+
+                        UiSection {
+                            dark: root.dark_mode;
+                            title: "Explorer right-click menu";
+                            subtitle: "Adds a \"File Converter\" sub-menu with your presets when you right-click files in Explorer. Windows asks for administrator permission.";
 
                             HorizontalLayout {
                                 spacing: Theme.s-2;
-                                Text {
-                                    text: "Custom value";
-                                    width: 120px;
-                                    font-size: Theme.t-sm;
-                                    font-weight: Theme.w-medium;
-                                    color: Theme.textMute(root.dark_mode);
-                                    vertical-alignment: center;
-                                }
-                                LineEdit {
-                                    placeholder-text: "Value";
-                                    text <=> root.new_setting_value;
-                                }
+                                alignment: start;
                                 UiButton {
-                                    text: "Add";
+                                    text: "Add to the menu";
                                     kind: ButtonKind.Secondary;
                                     dark: root.dark_mode;
-                                    h: 30px;
-                                    pad-x: Theme.s-3;
-                                    clicked => {
-                                        root.add_preset_setting(root.new_setting_key, root.new_setting_value);
-                                    }
+                                    has-icon: true;
+                                    icon: @image-url("icons/plug.svg");
+                                    clicked => { root.register_shell(); }
                                 }
-                            }
-
-                            if root.settings_notice != "" : Text {
-                                text: root.settings_notice;
-                                font-size: Theme.t-sm;
-                                font-weight: Theme.w-medium;
-                                color: root.settings_notice == "✓ Added" || root.settings_notice == "✓ Removed" || root.settings_notice == "✓ Updated"
-                                    ? Theme.success(root.dark_mode) : Theme.danger(root.dark_mode);
-                                wrap: word-wrap;
+                                UiButton {
+                                    text: "Remove from the menu";
+                                    kind: ButtonKind.Ghost;
+                                    dark: root.dark_mode;
+                                    has-icon: true;
+                                    icon: @image-url("icons/x.svg");
+                                    clicked => { root.unregister_shell(); }
+                                }
                             }
                         }
 
-                        // Drop zone
-                        Rectangle {
-                            height: 116px;
-                            border-radius: Theme.r-lg;
-                            background: root.pending_files_count > 0
-                                ? Theme.successSoft(root.dark_mode)
-                                : Theme.surface2(root.dark_mode);
-                            border-width: 1px;
-                            border-color: root.pending_files_count > 0
-                                ? Theme.success(root.dark_mode)
-                                : Theme.borderStrong(root.dark_mode);
-                            animate background { duration: Theme.base; }
-                            animate border-color { duration: Theme.base; }
+                        UiSection {
+                            dark: root.dark_mode;
+                            title: "Updates";
 
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: Theme.s-1;
-                                padding: Theme.s-3;
-
-                                Icon {
-                                    source: root.pending_files_count > 0
-                                        ? @image-url("icons/check.svg")
-                                        : @image-url("icons/folder.svg");
-                                    size: 22px;
-                                    tint: root.pending_files_count > 0
-                                        ? Theme.success(root.dark_mode)
-                                        : Theme.textMute(root.dark_mode);
-                                }
-
-                                Text {
-                                    text: root.pending_files_count > 0
-                                        ? root.pending_files_count + " file(s) staged and ready"
-                                        : "Click or drop files here";
-                                    font-size: Theme.t-lg;
-                                    font-weight: Theme.w-semibold;
-                                    color: root.pending_files_count > 0
-                                        ? Theme.success(root.dark_mode)
-                                        : Theme.text(root.dark_mode);
-                                    horizontal-alignment: center;
-                                }
-
-                                Text {
-                                    text: root.pending_files_count > 0
-                                        ? root.pending_files_summary + " · click to stage more"
-                                        : "Drop files anywhere in this window to convert using " + root.edit_name;
-                                    font-size: Theme.t-base;
-                                    color: Theme.textMute(root.dark_mode);
-                                    horizontal-alignment: center;
-                                    overflow: elide;
-                                }
-
-                                if root.pending_files_count > 0 : HorizontalLayout {
-                                    alignment: center;
-                                    spacing: Theme.s-1;
-
-                                    UiButton {
-                                        text: "Convert now";
-                                        kind: ButtonKind.Primary;
-                                        dark: root.dark_mode;
-                                        h: 28px;
-                                        has-icon: true;
-                                        icon: @image-url("icons/zap.svg");
-                                        clicked => { root.start_pending_conversion(); }
-                                    }
-
-                                    UiButton {
-                                        text: "Clear queue";
-                                        kind: ButtonKind.Ghost;
-                                        dark: root.dark_mode;
-                                        h: 28px;
-                                        has-icon: true;
-                                        icon: @image-url("icons/x.svg");
-                                        clicked => { root.clear_pending_files(); }
-                                    }
+                            UiSettingRow {
+                                dark: root.dark_mode;
+                                title: "Check for updates when this window opens";
+                                hint: "Only looks up the latest version number; nothing is downloaded without asking.";
+                                Switch {
+                                    checked <=> root.check_upgrade_at_startup;
+                                    toggled => { root.toggle_check_upgrade(self.checked); }
                                 }
                             }
+                            HorizontalLayout {
+                                alignment: start;
+                                UiButton {
+                                    text: "Check now";
+                                    kind: ButtonKind.Secondary;
+                                    dark: root.dark_mode;
+                                    has-icon: true;
+                                    icon: @image-url("icons/download.svg");
+                                    clicked => { root.check_updates_now(); }
+                                }
+                            }
+                        }
 
-                            TouchArea {
-                                clicked => { root.select_files(); }
+                        UiSection {
+                            dark: root.dark_mode;
+                            title: "Settings file";
+                            subtitle: root.settings_path;
+
+                            HorizontalLayout {
+                                spacing: Theme.s-2;
+                                alignment: start;
+                                UiButton {
+                                    text: "Open folder";
+                                    kind: ButtonKind.Secondary;
+                                    dark: root.dark_mode;
+                                    has-icon: true;
+                                    icon: @image-url("icons/folder-open.svg");
+                                    clicked => { root.open_settings_folder(); }
+                                }
+                                UiButton {
+                                    text: "Restore built-in presets";
+                                    kind: ButtonKind.Ghost;
+                                    dark: root.dark_mode;
+                                    has-icon: true;
+                                    icon: @image-url("icons/rotate-ccw.svg");
+                                    clicked => { root.restore_default_presets(); }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // ----------------------------------------------------- tab 1: history
-        if root.active_tab == 1 : UiCard {
-            dark: root.dark_mode;
-            pad: Theme.s-4;
-            gap: Theme.s-3;
+            // -------------------------------------------------- tab 3: about
+            if root.active_tab == 3 : UiCard {
+                dark: root.dark_mode;
+                pad: Theme.s-6;
+                gap: Theme.s-4;
 
-            Text {
-                text: "Conversion history";
-                font-size: Theme.t-xl;
-                font-weight: Theme.w-semibold;
-                color: Theme.text(root.dark_mode);
-            }
+                HorizontalLayout {
+                    spacing: Theme.s-4;
+                    alignment: start;
 
-            ScrollView {
-                min-width: 0px;
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: Theme.r-lg;
+                        background: Theme.accentSoft(root.dark_mode);
 
-                VerticalLayout {
-                    spacing: Theme.s-1;
-                    for item in root.history_items : HistoryRow {
-                        data: item;
-                        dark: root.dark_mode;
+                        IconZap {
+                            size: 28px;
+                            tint: Theme.accent(root.dark_mode);
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text {
+                            text: "File Converter";
+                            font-size: Theme.t-2xl;
+                            font-weight: Theme.w-semibold;
+                            color: Theme.text(root.dark_mode);
+                        }
+                        Text {
+                            text: "Version " + root.app_version;
+                            font-size: Theme.t-md;
+                            color: Theme.textMute(root.dark_mode);
+                        }
                     }
                 }
-            }
-        }
 
-        // ------------------------------------------------- tab 2: preferences
-        if root.active_tab == 2 : UiCard {
-            dark: root.dark_mode;
-            pad: 0px;
-            gap: 0px;
+                Text {
+                    text: "Convert and compress audio, video, image and document files straight from the right-click menu in Windows Explorer.";
+                    color: Theme.textDim(root.dark_mode);
+                    wrap: word-wrap;
+                }
 
-            ScrollView {
-                min-width: 0px;
-
-                VerticalLayout {
-                    padding: Theme.s-5;
-                    spacing: Theme.s-3;
+                UiSection {
+                    dark: root.dark_mode;
+                    title: "Quick start";
 
                     Text {
-                        text: "Preferences";
-                        font-size: Theme.t-xl;
-                        font-weight: Theme.w-semibold;
-                        color: Theme.text(root.dark_mode);
-                    }
-
-                    UiDivider { dark: root.dark_mode; }
-
-                    PrefCard {
-                        title: "Zero-click auto-start on file drop";
-                        hint: "Immediately begin conversion using the selected preset as soon as files are dropped into the window.";
-                        dark: root.dark_mode;
-                        checked <=> root.auto_start_on_file_drop;
-                        toggled(v) => { root.toggle_auto_start(v); }
-                    }
-
-                    PrefCard {
-                        title: "Copy output paths to clipboard";
-                        hint: "Automatically copy the newly generated destination file paths to the Windows clipboard once conversion finishes.";
-                        dark: root.dark_mode;
-                        checked <=> root.copy_files_in_clipboard_after_conversion;
-                        toggled(v) => { root.toggle_copy_clipboard(v); }
-                    }
-
-                    PrefCard {
-                        title: "Auto-close window when finished";
-                        hint: "Automatically dismiss the conversion progress window after all files have finished processing.";
-                        dark: root.dark_mode;
-                        checked <=> root.exit_application_when_conversions_finished;
-                        toggled(v) => { root.toggle_auto_close(v); }
+                        text: "1. Add File Converter to the Explorer menu (Preferences → Explorer right-click menu).\n2. Select files in Explorer, right-click, choose File Converter and a preset.\n3. Or drop files on this window and press Convert.\n\nTips: Ctrl+S saves. The arrows above the preset list change the order of the menu.";
+                        color: Theme.textDim(root.dark_mode);
+                        wrap: word-wrap;
                     }
                 }
+
+                Text {
+                    text: "A Rust port of File Converter by Adrien Allard. Free software under the GNU GPL v3. Audio and video conversions use FFmpeg.";
+                    font-size: Theme.t-sm;
+                    color: Theme.textMute(root.dark_mode);
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.s-2;
+                    alignment: start;
+                    UiButton {
+                        text: "Project page";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/external-link.svg");
+                        clicked => { root.open_update_url(root.project_url); }
+                    }
+                    UiButton {
+                        text: "Report a problem";
+                        kind: ButtonKind.Ghost;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/external-link.svg");
+                        clicked => { root.open_update_url(root.project_url + "/issues"); }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ toast
+    if root.status_msg != "" : Rectangle {
+        width: min(toast-row.preferred-width, root.width - 64px);
+        height: 38px;
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.s-5;
+        border-radius: 19px;
+        background: Theme.text(root.dark_mode);
+        drop-shadow-color: Theme.shadow(root.dark_mode);
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 3px;
+
+        toast-row := HorizontalLayout {
+            padding-left: Theme.s-4;
+            padding-right: Theme.s-4;
+
+            Text {
+                text: root.status_msg;
+                font-size: Theme.t-md;
+                font-weight: Theme.w-medium;
+                color: Theme.bg(root.dark_mode);
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        TouchArea {
+            clicked => { root.status_msg = ""; }
         }
     }
 }
@@ -1346,13 +1838,20 @@ export component SettingsWindow inherits Window {
 // ---------------------------------------------------------------------------
 
 export component ProgressWindow inherits Window {
-    title: "File Converter — Progress";
+    // Live percentage in the title, so progress is visible from the taskbar.
+    title: root.is_finished ? "File Converter — Finished"
+        : Math.round(root.overall_progress * 100) + "% — File Converter";
     preferred-width: 720px;
     preferred-height: 520px;
     min-width: 620px;
     min-height: 420px;
     default-font-family: "Segoe UI Variable Text";
     default-font-size: Theme.t-md;
+    // The Fluent widgets (text boxes, drop-downs, switches) follow Windows'
+    // theme unless told otherwise; with the app in light mode on a dark
+    // Windows they drew white text on white boxes. Keep them in step.
+    init => { Palette.color-scheme = root.dark_mode ? ColorScheme.dark : ColorScheme.light; }
+    changed dark_mode => { Palette.color-scheme = root.dark_mode ? ColorScheme.dark : ColorScheme.light; }
     background: Theme.bg(root.dark_mode);
 
     in-out property <bool> dark_mode: false;
@@ -1361,10 +1860,20 @@ export component ProgressWindow inherits Window {
     in-out property <string> overall_status_text: "Converting files...";
     in-out property <[JobProgressData]> jobs: [];
     in-out property <bool> is_finished: false;
+    // True once finished with at least one failed or canceled file.
+    in-out property <bool> has_failures: false;
+    // Countdown / guidance line under the list ("Closing in 3 s ...").
+    in-out property <string> info_message: "";
+    // True while the auto-close countdown runs, to offer "Keep open".
+    in-out property <bool> auto_close_pending: false;
 
     callback open_output_folder();
     callback copy_output_paths();
     callback cancel_job(int);
+    callback reveal_output(int);
+    callback cancel_all();
+    callback retry_failed();
+    callback keep_open();
     callback close_window();
     callback toggle_theme(bool);
 
@@ -1395,9 +1904,13 @@ export component ProgressWindow inherits Window {
 
                     HorizontalLayout {
                         spacing: Theme.s-2;
-                        IconZap {
-                            size: 15px;
-                            tint: Theme.accent(root.dark_mode);
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            IconZap {
+                                size: 15px;
+                                tint: Theme.accent(root.dark_mode);
+                            }
                         }
                         Text {
                             text: root.preset_name;
@@ -1425,7 +1938,9 @@ export component ProgressWindow inherits Window {
                         text: Math.round(root.overall_progress * 100) + "%";
                         font-size: Theme.t-2xl;
                         font-weight: Theme.w-semibold;
-                        color: Theme.accent(root.dark_mode);
+                        color: root.is_finished && root.has_failures ? Theme.warn(root.dark_mode)
+                            : root.is_finished ? Theme.success(root.dark_mode)
+                            : Theme.accent(root.dark_mode);
                         vertical-alignment: center;
                     }
 
@@ -1451,18 +1966,44 @@ export component ProgressWindow inherits Window {
             pad: 0px;
             gap: 0px;
 
-            ScrollView {
+            // ListView only instantiates the rows that are visible, so a
+            // batch of thousands of files stays responsive.
+            ListView {
                 min-width: 0px;
-
-                VerticalLayout {
-                    padding: Theme.s-3;
-                    spacing: Theme.s-2;
-                    for job in root.jobs : JobRow {
+                for job in root.jobs : Rectangle {
+                    height: 80px + Theme.s-2;
+                    JobRow {
+                        x: Theme.s-3;
+                        y: Theme.s-2;
+                        width: parent.width - 2 * Theme.s-3;
                         data: job;
                         dark: root.dark_mode;
                         cancel(id) => { root.cancel_job(id); }
+                        reveal(id) => { root.reveal_output(id); }
                     }
                 }
+            }
+        }
+
+        if root.info_message != "" : HorizontalLayout {
+            spacing: Theme.s-2;
+            alignment: space-between;
+
+            Text {
+                text: root.info_message;
+                font-size: Theme.t-md;
+                color: Theme.textDim(root.dark_mode);
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if root.auto_close_pending : UiButton {
+                text: "Keep open";
+                kind: ButtonKind.Secondary;
+                dark: root.dark_mode;
+                h: 28px;
+                horizontal-stretch: 0;
+                clicked => { root.keep_open(); }
             }
         }
 
@@ -1494,12 +2035,30 @@ export component ProgressWindow inherits Window {
                     }
 
                     UiButton {
-                        text: "Copy paths";
+                        text: "Copy files";
                         kind: ButtonKind.Secondary;
                         dark: root.dark_mode;
                         has-icon: true;
                         icon: @image-url("icons/copy.svg");
                         clicked => { root.copy_output_paths(); }
+                    }
+
+                    if !root.is_finished : UiButton {
+                        text: "Cancel all";
+                        kind: ButtonKind.Danger;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/x.svg");
+                        clicked => { root.cancel_all(); }
+                    }
+
+                    if root.is_finished && root.has_failures : UiButton {
+                        text: "Retry failed";
+                        kind: ButtonKind.Secondary;
+                        dark: root.dark_mode;
+                        has-icon: true;
+                        icon: @image-url("icons/rotate-ccw.svg");
+                        clicked => { root.retry_failed(); }
                     }
                 }
 

@@ -12,8 +12,20 @@ use crate::types::{
 use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// Name of the folder that receives inputs when a preset uses
+/// `MoveInArchiveFolder`. Matches the C# original ("Conversion Archives").
+pub const DEFAULT_ARCHIVE_FOLDER_NAME: &str = "Conversion Archives";
+
+/// Start/end instants of a job, used for elapsed time and ETA display.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JobTiming {
+    pub started: Option<Instant>,
+    pub finished: Option<Instant>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobStatus {
@@ -35,6 +47,15 @@ pub struct ConversionJob {
     /// Set when `prepare` failed so the job can report the reason instead of
     /// failing later with a generic "no output path" message.
     pub preparation_error: Option<String>,
+    /// Engine chosen during `prepare` (sniffing the file is not free, so it is
+    /// done once instead of again at run time).
+    pub engine: Option<JobEngine>,
+    /// True when the output path is the input path itself and the preset will
+    /// archive or delete the input afterwards. The input is then moved aside
+    /// to a temporary name while converting so the output keeps the original
+    /// name (C# parity) instead of becoming "name (2).ext".
+    pub replaces_input: bool,
+    pub timing: Arc<Mutex<JobTiming>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -200,7 +221,47 @@ impl ConversionJob {
             progress: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             status: Arc::new(Mutex::new(JobStatus::Queue)),
             preparation_error: None,
+            engine: None,
+            replaces_input: false,
+            timing: Arc::new(Mutex::new(JobTiming::default())),
         }
+    }
+
+    /// Time spent converting so far (or in total once finished).
+    pub fn elapsed(&self) -> Option<Duration> {
+        let t = *self.timing.lock();
+        let start = t.started?;
+        Some(
+            t.finished
+                .unwrap_or_else(Instant::now)
+                .duration_since(start),
+        )
+    }
+
+    /// Rough remaining time extrapolated from progress so far, like the C#
+    /// progress window. `None` until enough progress has been made.
+    pub fn estimated_remaining(&self) -> Option<Duration> {
+        let t = *self.timing.lock();
+        if t.finished.is_some() {
+            return None;
+        }
+        let elapsed = t.started?.elapsed();
+        let progress = self.get_progress();
+        if !(0.02..1.0).contains(&progress) || elapsed < Duration::from_secs(1) {
+            return None;
+        }
+        let total = elapsed.as_secs_f32() / progress;
+        Some(Duration::from_secs_f32(
+            (total - elapsed.as_secs_f32()).max(0.0),
+        ))
+    }
+
+    /// True while the job is queued or converting.
+    pub fn is_active(&self) -> bool {
+        matches!(
+            *self.status.lock(),
+            JobStatus::Queue | JobStatus::Converting(_)
+        )
     }
 
     pub fn get_progress(&self) -> f32 {
@@ -254,6 +315,7 @@ impl ConversionJob {
 
     pub fn prepare(&mut self, list_index: usize, total_count: usize) -> Result<()> {
         self.preparation_error = None;
+        self.replaces_input = false;
 
         self.validate()
             .inspect_err(|e| self.preparation_error = Some(e.to_string()))?;
@@ -267,7 +329,9 @@ impl ConversionJob {
         // A PDF input produces one file per page *unless* it is being rewritten
         // to PDF (the optimisation path emits a single file).
         let pdf_identity = self.preset.output_type == OutputType::Pdf;
-        let count = match determine_job_engine(&self.preset, &self.input_path) {
+        let engine = determine_job_engine(&self.preset, &self.input_path);
+        self.engine = Some(engine);
+        let count = match engine {
             JobEngine::Image if ext.eq_ignore_ascii_case("pdf") && !pdf_identity => {
                 image::get_pdf_page_count(&self.input_path).unwrap_or(1)
             }
@@ -278,20 +342,29 @@ impl ConversionJob {
 
         let mut paths = Vec::new();
 
-        // `(n:c)` should describe the number of files produced for *this* input
-        // (e.g. the page count of a paged PDF conversion), not the number of
-        // input files in the batch.
-        let number_max = if count > 1 { count } else { total_count };
+        // When one input produces several files (pages of a PDF), `(n:i)` /
+        // `(n:c)` number those files ("1 of N" .. "N of N"), as in the C#
+        // original. A single-output job is numbered by its position in the
+        // batch instead, which makes `(n:i)` useful for renaming batches.
+        // (Mixing both used to number page 1 of the second file as "2 of N".)
+        let (number_base, number_max) = if count > 1 {
+            (0, count)
+        } else {
+            (list_index, total_count.max(1))
+        };
+
+        let archives_or_deletes_input = matches!(
+            self.preset.input_post_conversion_action,
+            InputPostConversionAction::MoveInArchiveFolder | InputPostConversionAction::Delete
+        );
 
         for index in 0..count {
-            let out_path = self.preset.output_file_name_template.clone();
-
             // Generate templated path
             let generated = path_helpers::generate_file_path_from_template(
                 &self.input_path,
                 self.preset.output_type.extension(),
-                &out_path,
-                list_index + index + 1,
+                &self.preset.output_file_name_template,
+                number_base + index + 1,
                 number_max,
             );
 
@@ -307,6 +380,18 @@ impl ConversionJob {
                 return Err(FileConverterError::Invalid(
                     "Failed to create output directory folders".to_string(),
                 ));
+            }
+
+            // The input itself sits on the generated path. If it is going to be
+            // archived or deleted anyway, keep the name: the input is moved aside
+            // while converting (see `run`).
+            if count == 1
+                && archives_or_deletes_input
+                && path_helpers::is_same_path(&generated, &self.input_path)
+            {
+                self.replaces_input = true;
+                paths.push(generated);
+                continue;
             }
 
             // Generate unique path to avoid collisions
@@ -342,6 +427,10 @@ impl ConversionJob {
             }
             *status = JobStatus::Converting("Preparing".to_string());
         }
+        self.timing.lock().started = Some(Instant::now());
+        let _finish = scopeguard::guard((), |_| {
+            self.timing.lock().finished = Some(Instant::now());
+        });
 
         // A job whose preparation was rejected must not run: it has no output
         // paths and would otherwise fail with a misleading message.
@@ -349,6 +438,36 @@ impl ConversionJob {
             *self.status.lock() = JobStatus::Failed(err.clone());
             return;
         }
+
+        // Output replaces the input: move the input aside first so the engine
+        // can write the output under the original name.
+        let moved_input = if self.replaces_input {
+            let path = Path::new(&self.input_path);
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("input");
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_default();
+            let temp = path_helpers::generate_unique_path(
+                path.with_file_name(format!("{stem}_TEMP{ext}")),
+                &[],
+            );
+            if let Err(e) = std::fs::rename(&self.input_path, &temp) {
+                *self.status.lock() =
+                    JobStatus::Failed(format!("Could not move the input file aside: {e}"));
+                return;
+            }
+            Some(temp.to_string_lossy().to_string())
+        } else {
+            None
+        };
+        let source = moved_input.as_deref().unwrap_or(&self.input_path);
+        let restore_input = || {
+            if let Some(temp) = &moved_input {
+                let _ = std::fs::rename(temp, &self.input_path);
+            }
+        };
 
         let progress_clone = self.progress.clone();
         let status_clone = self.status.clone();
@@ -361,7 +480,7 @@ impl ConversionJob {
             }
         };
 
-        let result = self.execute(&progress_cb, hw_accel);
+        let result = self.execute(source, &progress_cb, hw_accel);
 
         let mut status = self.status.lock();
         if *status == JobStatus::Canceled {
@@ -369,6 +488,7 @@ impl ConversionJob {
             for path in &self.output_file_paths {
                 let _ = std::fs::remove_file(path);
             }
+            restore_input();
             return;
         }
 
@@ -390,17 +510,26 @@ impl ConversionJob {
                     for path in &self.output_file_paths {
                         let _ = std::fs::remove_file(path);
                     }
+                    restore_input();
                     return;
                 }
 
                 *status = JobStatus::Done;
                 self.progress.store(1.0f32.to_bits(), Ordering::Relaxed);
 
-                // Copy timestamp from input file to output files
-                self.sync_file_timestamps();
+                // Copy timestamps (created / accessed / modified) from the input.
+                self.sync_file_timestamps(source);
 
                 // Apply post conversion action
-                let _ = self.apply_post_conversion_action();
+                if let Err(e) = self.apply_post_conversion_action(source) {
+                    tracing::warn!(
+                        "Post-conversion action failed for {}: {}",
+                        self.input_path,
+                        e
+                    );
+                    // Never leave the input stranded under its temporary name.
+                    restore_input();
+                }
             }
             Err(e) => {
                 // A cancel request that raced the engine is reported as
@@ -416,90 +545,82 @@ impl ConversionJob {
                 for path in &self.output_file_paths {
                     let _ = std::fs::remove_file(path);
                 }
+                restore_input();
             }
         }
     }
 
     fn execute(
         &self,
+        source: &str,
         progress_cb: &(dyn Fn(f32, &str) + Sync),
         hw_accel: HardwareAccelerationMode,
     ) -> Result<()> {
         let out_path = self.output_file_paths.first().ok_or_else(|| {
             FileConverterError::Invalid("No output path specified for job".to_string())
         })?;
-        let engine = determine_job_engine(&self.preset, &self.input_path);
+        let engine = self
+            .engine
+            .unwrap_or_else(|| determine_job_engine(&self.preset, source));
 
         match engine {
             JobEngine::Epub => doc_convert::run_epub_conversion(
-                &self.input_path,
+                source,
                 out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::Markdown => doc_convert::run_markdown_conversion(
-                &self.input_path,
+                source,
                 out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::Typst => doc_convert::run_typst_conversion(
-                &self.input_path,
+                source,
                 out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
             JobEngine::TextDocument => doc_convert::run_text_document_conversion(
-                &self.input_path,
+                source,
                 out_path,
                 self.preset.output_type,
                 progress_cb,
             ),
-            JobEngine::Oxipng => image::run_oxipng_compression(
-                Some(&self.preset),
-                &self.input_path,
-                out_path,
-                progress_cb,
-            ),
+            JobEngine::Oxipng => {
+                image::run_oxipng_compression(Some(&self.preset), source, out_path, progress_cb)
+            }
             JobEngine::Ico => {
                 // ICO is written natively (multi-resolution, aspect preserved).
                 image::run_image_conversion(
                     &self.preset,
-                    &self.input_path,
+                    source,
                     std::slice::from_ref(out_path),
                     progress_cb,
                 )
             }
             JobEngine::Gif => {
-                if image::source_is_animated(&self.input_path) {
+                if image::source_is_animated(source) {
                     // Animated images keep the two-pass palettegen/paletteuse
                     // recipe, which needs real frame timing to work.
-                    let passes = ffmpeg::get_ffmpeg_passes(
-                        &self.preset,
-                        &self.input_path,
-                        out_path,
-                        hw_accel,
-                    )?;
+                    let passes =
+                        ffmpeg::get_ffmpeg_passes(&self.preset, source, out_path, hw_accel)?;
                     run_ffmpeg_passes(
                         &passes,
-                        &self.input_path,
+                        source,
                         out_path,
                         1.0,
                         &|| self.is_cancelled(),
                         progress_cb,
                     )
                 } else {
-                    image::run_still_gif_conversion(
-                        &self.preset,
-                        &self.input_path,
-                        out_path,
-                        progress_cb,
-                    )
+                    image::run_still_gif_conversion(&self.preset, source, out_path, progress_cb)
                 }
             }
             JobEngine::Image => {
                 if self.preset.output_type == OutputType::Pdf
-                    && self.input_path.to_lowercase().ends_with(".pdf")
+                    && source.to_lowercase().ends_with(".pdf")
                 {
                     progress_cb(0.1, "Optimizing PDF");
                     let dpi = self
@@ -517,14 +638,13 @@ impl ConversionJob {
                             .filter(|q| *q > 0)
                             .unwrap_or(75),
                     };
-                    let res =
-                        crate::pdf_compress::compress_pdf(&self.input_path, out_path, &options);
+                    let res = crate::pdf_compress::compress_pdf(source, out_path, &options);
                     progress_cb(1.0, "Complete");
                     res
                 } else {
                     image::run_image_conversion(
                         &self.preset,
-                        &self.input_path,
+                        source,
                         &self.output_file_paths,
                         progress_cb,
                     )
@@ -533,30 +653,29 @@ impl ConversionJob {
             JobEngine::Word => office::run_office_conversion(
                 &self.preset,
                 "winword.exe",
-                &self.input_path,
+                source,
                 &self.output_file_paths,
                 progress_cb,
             ),
             JobEngine::Excel => office::run_office_conversion(
                 &self.preset,
                 "excel.exe",
-                &self.input_path,
+                source,
                 &self.output_file_paths,
                 progress_cb,
             ),
             JobEngine::PowerPoint => office::run_office_conversion(
                 &self.preset,
                 "powerpnt.exe",
-                &self.input_path,
+                source,
                 &self.output_file_paths,
                 progress_cb,
             ),
             JobEngine::Ffmpeg => {
-                let passes =
-                    ffmpeg::get_ffmpeg_passes(&self.preset, &self.input_path, out_path, hw_accel)?;
+                let passes = ffmpeg::get_ffmpeg_passes(&self.preset, source, out_path, hw_accel)?;
                 run_ffmpeg_passes(
                     &passes,
-                    &self.input_path,
+                    source,
                     out_path,
                     1.0,
                     &|| self.is_cancelled(),
@@ -566,31 +685,40 @@ impl ConversionJob {
         }
     }
 
-    fn sync_file_timestamps(&self) {
-        if let Ok(metadata) = std::fs::metadata(&self.input_path) {
-            // Windows cannot portably set the creation time, so only the
-            // access/modified stamps are propagated.
-            let accessed_time = metadata
-                .accessed()
-                .unwrap_or_else(|_| std::time::SystemTime::now());
-            let modified_time = metadata
-                .modified()
-                .unwrap_or_else(|_| std::time::SystemTime::now());
+    /// Copies the input's creation, access and modification times onto every
+    /// output, as the C# original does. Creation time used to be skipped
+    /// ("cannot be set portably"), but `std` supports it on Windows.
+    fn sync_file_timestamps(&self, source: &str) {
+        let Ok(metadata) = std::fs::metadata(source) else {
+            return;
+        };
 
-            for path in &self.output_file_paths {
-                let _ = filetime::set_file_times(
-                    path,
-                    filetime::FileTime::from_system_time(accessed_time),
-                    filetime::FileTime::from_system_time(modified_time),
-                );
+        let mut times = std::fs::FileTimes::new();
+        if let Ok(t) = metadata.accessed() {
+            times = times.set_accessed(t);
+        }
+        if let Ok(t) = metadata.modified() {
+            times = times.set_modified(t);
+        }
+        #[cfg(windows)]
+        if let Ok(t) = metadata.created() {
+            use std::os::windows::fs::FileTimesExt;
+            times = times.set_created(t);
+        }
+
+        for path in &self.output_file_paths {
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+                let _ = file.set_times(times);
             }
         }
     }
 
-    fn apply_post_conversion_action(&self) -> Result<()> {
+    fn apply_post_conversion_action(&self, source: &str) -> Result<()> {
         match self.preset.input_post_conversion_action {
             InputPostConversionAction::None => Ok(()),
             InputPostConversionAction::MoveInArchiveFolder => {
+                // The archived copy keeps the *original* name even when the
+                // input was moved aside to a temporary name.
                 let input_path = Path::new(&self.input_path);
                 let parent = input_path.parent().ok_or_else(|| {
                     FileConverterError::Invalid("No parent folder found".to_string())
@@ -603,7 +731,8 @@ impl ConversionJob {
                 let archive_folder_name = self
                     .preset
                     .get_setting_value("ConversionArchiveFolderName")
-                    .unwrap_or("Archive");
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(DEFAULT_ARCHIVE_FOLDER_NAME);
                 let archive_dir = parent.join(archive_folder_name);
 
                 if !archive_dir.exists() {
@@ -612,11 +741,11 @@ impl ConversionJob {
 
                 let target_path =
                     path_helpers::generate_unique_path(archive_dir.join(file_name), &[]);
-                std::fs::rename(input_path, target_path).map_err(FileConverterError::Io)?;
+                std::fs::rename(source, target_path).map_err(FileConverterError::Io)?;
                 Ok(())
             }
             InputPostConversionAction::Delete => {
-                trash::delete(&self.input_path).map_err(|e| {
+                trash::delete(source).map_err(|e| {
                     FileConverterError::Io(std::io::Error::other(format!(
                         "Failed to move file to Recycle Bin: {:?}",
                         e
@@ -685,8 +814,10 @@ impl ConversionScheduler {
         }
     }
 
-    pub fn execute_all(&self) {
-        let max_concurrency = if self.max_threads == 0 {
+    /// Number of worker threads to use for this batch.
+    pub fn concurrency(&self) -> usize {
+        let configured = if self.max_threads == 0 {
+            // Same default as the C# original: half the logical CPUs.
             std::cmp::max(
                 1,
                 thread::available_parallelism()
@@ -697,26 +828,55 @@ impl ConversionScheduler {
         } else {
             self.max_threads
         };
+        configured.clamp(1, self.jobs.len().max(1))
+    }
 
-        use rayon::prelude::*;
-        if max_concurrency == rayon::current_num_threads() {
-            self.jobs.par_iter().for_each(|job| {
-                job.run(self.hw_accel);
-            });
-        } else if let Ok(pool) = rayon::ThreadPoolBuilder::new()
-            .num_threads(max_concurrency)
-            .build()
-        {
-            pool.install(|| {
-                self.jobs.par_iter().for_each(|job| {
-                    job.run(self.hw_accel);
-                });
-            });
-        } else {
-            for job in &self.jobs {
-                job.run(self.hw_accel);
-            }
+    /// Requests cancellation of every job that has not finished yet.
+    pub fn cancel_all(&self) {
+        for job in &self.jobs {
+            job.cancel();
         }
+    }
+
+    pub fn execute_all(&self) {
+        // Workers pull jobs strictly in list order (like the C# queue), so
+        // the progress window fills from the top instead of jumping around as
+        // rayon's recursive splitting did. Engines that parallelise internally
+        // (PDF page rendering, image recompression) still use the global rayon
+        // pool, and no throw-away thread pool is built per batch.
+        let next = AtomicUsize::new(0);
+        let workers = self.concurrency();
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(job) = self.jobs.get(index) else {
+                            break;
+                        };
+                        // A panic inside one engine must not take the whole batch
+                        // (and the progress window) down with it.
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                job.run(self.hw_accel)
+                            }));
+                        if let Err(panic) = outcome {
+                            let reason = panic
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| panic.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown error".to_string());
+                            *job.status.lock() =
+                                JobStatus::Failed(format!("Internal error: {reason}"));
+                            job.timing.lock().finished = Some(Instant::now());
+                            for path in &job.output_file_paths {
+                                let _ = std::fs::remove_file(path);
+                            }
+                        }
+                    }
+                });
+            }
+        });
 
         // Copy files to clipboard on completion.
         // Only files that actually exist are offered.
