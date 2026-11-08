@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Security
+- **`zip` 4.6.1 → 9.4.2** and **`ebook-rs` 0.16.6 → 0.18.0**, closing 1 critical,
+  3 high and 1 moderate advisory: a ZIP64 size overflow that allowed a denial
+  of service (now fixed in 9.0.5), an arbitrary-file-write outside the
+  extraction directory caused by lexical symlink validation, unbounded
+  symlink-target handling that could abort or exhaust memory, and an AES entry
+  HMAC authentication bypass on premature EOF.
+- Dependabot could not raise these on its own: `ebook-rs` 0.16.x requires
+  `zip ^7`, which caps the graph at 7.4.0 — below the 9.0.5 fix — so every
+  "cargo in /. for zip - Update" run ended with `security_update_not_possible`.
+  `ebook-rs` 0.18 requires `zip ^9.1`, so both were bumped together.
+- `ZipFile::name()` is fallible in `zip` 9 (it rejects entries whose local and
+  central headers disagree). FFmpeg extraction now skips such an entry instead
+  of failing the whole download.
+- EPUB conversion re-verified end to end against the new `ebook-rs`/`zip`
+  stack on a real 137 KB EPUB (14 sections, ~169 KB of extracted text).
+
+### CI
+- `actions/checkout` 4 → 7 and `actions/cache` 4 → 6, clearing the
+  "Node.js 20 is deprecated" runner annotations.
+- `dtolnay/rust-toolchain` stays pinned at 1.99.0 on purpose: with
+  `-D warnings`, a new stable release can fail an unchanged tree through newly
+  added lints.
+
+---
+
 ## [0.11.0] - 2026-11-08
 
 ### Settings window redesign (UI and ease of use)

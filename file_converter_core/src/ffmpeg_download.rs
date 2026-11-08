@@ -111,7 +111,14 @@ pub fn ensure_ffmpeg_available() -> Result<PathBuf> {
             .by_index(i)
             .map_err(|e| FileConverterError::Invalid(e.to_string()))?;
 
-        if file.name().ends_with("ffmpeg.exe") {
+        // `name` became fallible in zip 9 (it rejects entry names that the
+        // archive's headers disagree about), so a malformed entry is skipped
+        // instead of aborting the extraction of a known-good ffmpeg.exe.
+        let is_ffmpeg = file
+            .name()
+            .map(|name| name.ends_with("ffmpeg.exe"))
+            .unwrap_or(false);
+        if is_ffmpeg {
             let mut out_file = fs::File::create(&final_target)?;
             std::io::copy(&mut file, &mut out_file)?;
             found = true;

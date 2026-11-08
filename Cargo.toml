@@ -20,7 +20,7 @@ strum = { version = "0.26", features = ["derive"] }
 
 # Network, Archive & System
 ureq = "3"
-zip = "4"
+zip = "9"
 trash = "5.1"
 tempfile = "3"
 clipboard-win = "5.0"
@@ -49,7 +49,7 @@ resvg = "0.45"
 jxl-oxide = { version = "0.12.6", features = ["image"] }
 lopdf = "0.42"
 pdf-writer = "0.15.0"
-ebook-rs = "0.16.1"
+ebook-rs = "0.18"
 pulldown-cmark = "0.12"
 infer = "0.22"
 
