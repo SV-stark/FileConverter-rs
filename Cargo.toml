@@ -47,7 +47,7 @@ fast_image_resize = { version = "6.0.0", features = ["image"] }
 oxipng = "9.0"
 resvg = "0.45"
 jxl-oxide = { version = "0.12.6", features = ["image"] }
-lopdf = "0.35"
+lopdf = "0.42"
 pdf-writer = "0.15.0"
 ebook-rs = "0.16.1"
 pulldown-cmark = "0.12"
